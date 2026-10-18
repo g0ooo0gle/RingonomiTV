@@ -374,7 +374,7 @@ final class RecordingPlaybackController: ObservableObject {
             Task { @MainActor [weak self, weak item] in
                 guard let self, let item, !self.isStopped, !self.isSuspendedForBackground,
                       !self.isChangingQuality, !self.preparing,
-                      self.generation == expected, self.player.currentItem === item else { return }
+                      self.player.currentItem === item else { return }
                 self.status = "再生終了（再生ボタンで最初から）"
                 self.player.pause()
                 self.wantsPause = true
