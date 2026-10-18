@@ -344,18 +344,41 @@ final class RecordingPlaybackController: ObservableObject {
     }
     func load(_ url: URL, preservingEndState: Bool = false) {
         guard !isSuspendedForBackground, currentURL != url else { return }
+        let keepEnded = reachedEnd && (preservingEndState || isChangingQuality)
         isStopped = false
         isSuspendedForBackground = false
         isChangingQuality = false
         currentURL = url
         commercialMetadataUsable = commercialMetadataComplete && commercialTimeline != nil
         resetAudioSelection(clearPreferred: false)
-        if !preservingEndState { reachedEnd = false }
+        reachedEnd = keepEnded
         generation += 1
         cancelPreparation()
         observations.forEach { $0.invalidate() }
         observations.removeAll()
-        if let endToken { NotificationCenter.default.removeObserver(endToken) }
+        if let endToken {
+            NotificationCenter.default.removeObserver(endToken)
+            self.endToken = nil
+        }
+        if keepEnded {
+            // Quality can be chosen at EOF without restarting the recording.
+            // Remember the new URL and defer decoding until replay or seek.
+            timer?.cancel()
+            timer = nil
+            if let clockToken {
+                player.removeTimeObserver(clockToken)
+                self.clockToken = nil
+            }
+            captions.stop()
+            player.replaceCurrentItem(with: nil)
+            preparing = false
+            prerolled = false
+            isLoading = false
+            waitingSince = nil
+            status = "再生終了（再生ボタンで最初から）"
+            updateTime()
+            return
+        }
         let item = AVPlayerItem(url: url)
         item.preferredForwardBufferDuration = 3
         captions.attach(to: item, targetSeconds: targetSeconds)
