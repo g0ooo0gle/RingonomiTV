@@ -159,6 +159,7 @@ struct PlaybackView: View {
                 NativeRecordingVideo(url: streamURL, controller: recordingController)
                     .ignoresSafeArea()
                     .focusable(surfaceIsFocusable, interactions: .activate)
+                    .focusEffectDisabled()
                     .focused($playbackFocus, equals: .surface)
                     .onMoveCommand { handleMoveCommand($0) }
                     .onTapGesture { revealBottomPanel() }
@@ -166,6 +167,7 @@ struct PlaybackView: View {
                 VLCVideo(url: streamURL, controller: controller)
                     .ignoresSafeArea()
                     .focusable(surfaceIsFocusable, interactions: .activate)
+                    .focusEffectDisabled()
                     .focused($playbackFocus, equals: .surface)
                     .onMoveCommand { handleMoveCommand($0) }
                     .onTapGesture { revealBottomPanel() }
@@ -286,7 +288,7 @@ struct PlaybackView: View {
         .onChange(of: playbackFocus) { _, focus in
             if !isLoading, failure == nil, let focus, focus != .retry { lastReadyPlaybackFocus = focus }
 #if DEBUG
-            print("RingonomiPlaybackFocus: \(focus?.rawValue ?? "none")")
+            print("RingonomiPlaybackFocus: \(focus?.rawValue ?? "none") uptime=\(ProcessInfo.processInfo.systemUptime)")
 #endif
         }
         .onChange(of: controller.isPaused) { _, _ in updateLiveCommentClock() }
@@ -301,7 +303,7 @@ struct PlaybackView: View {
         }
         .onChange(of: visiblePanel) { _, panel in
 #if DEBUG
-            print("RingonomiPlaybackPanel: \(panel.map { $0 == .top ? "top" : "bottom" } ?? "hidden")")
+            print("RingonomiPlaybackPanel: \(panel.map { $0 == .top ? "top" : "bottom" } ?? "hidden") uptime=\(ProcessInfo.processInfo.systemUptime)")
 #endif
             if let panel {
                 playbackFocus = focusForPanel(panel, preferring: lastReadyPlaybackFocus)
