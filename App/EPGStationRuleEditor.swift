@@ -66,7 +66,7 @@ struct EPGStationRuleEditor: View {
                 Button("プレビュー") {
                     store.search(address: address, values: options.searchValues)
                     showingPreview = true
-                }.disabled(submitting || store.loading || store.error != nil || options.isTimeSpecification == true)
+                }.disabled(submitting || store.loading || store.previewing || store.error != nil || options.isTimeSpecification == true)
                 Button("保存内容を確認") { confirm = true }.disabled(!canSave)
             }
             .sheet(isPresented: $showingPreview) {
@@ -89,7 +89,7 @@ struct EPGStationRuleEditor: View {
             .interactiveDismissDisabled(submitting)
             .onExitCommand(perform: close)
             .confirmationDialog("この内容でルールを保存しますか？", isPresented: $confirm, titleVisibility: .visible) {
-                Button("保存する") { operation = Task { await save() } }
+                Button("保存する", action: beginSave)
                 Button("戻って修正", role: .cancel) {}
             } message: {
                 Text(epgStationRuleTitle(options) + "\n" + (options.enabled == true ? "有効" : "無効")
@@ -111,7 +111,7 @@ struct EPGStationRuleEditor: View {
             .onDisappear {
                 // tvOS presents these child screens full-screen. Their
                 // appearance must not discard the draft's search result.
-                guard !showingPreview, !confirm else { return }
+                guard !showingPreview, !confirm, !submitting else { return }
                 store.cancel()
                 operation?.cancel()
             }
@@ -150,10 +150,13 @@ struct EPGStationRuleEditor: View {
     private func previewChannel(_ program: EPGStationScheduleProgram) -> String? {
         store.channels.first(where: { $0.id == program.channelID }).map { $0.halfWidthName ?? $0.name }
     }
-    private func save() async {
+    private func beginSave() {
         guard canSave else { return }
         submitting = true
         message = nil
+        operation = Task { await save() }
+    }
+    private func save() async {
         defer { submitting = false }
         do {
             try await EPGStationRuleActions.save(address: address, original: original, edited: options, mutation: mutation)
