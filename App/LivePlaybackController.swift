@@ -26,6 +26,12 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
     // and its polling task must be released until the app is foregrounded
     // again.  This flag also makes repeated lifecycle notifications safe.
     private var isSuspendedForBackground = false
+    // A paused live connection can be kept alive by VLC for a short period,
+    // but reusing it indefinitely eventually resumes into a terminal state.
+    // This is an application policy for deciding when to create fresh media,
+    // not a claim about the stream protocol's timeout.
+    private static let longPauseReconnectInterval: TimeInterval = 30
+    private var pauseStartedAt: Date?
     private var isChangingQuality = false
     @Published private var wantsPause = false
     var isPaused: Bool { wantsPause }
@@ -109,6 +115,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         player.delegate = self
         isChangingQuality = false
         currentURL = url
+        pauseStartedAt = wantsPause ? Date() : nil
         monitor?.cancel()
         resetAudioCatalog()
         player.stop()
@@ -137,10 +144,26 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
     }
     func togglePause() {
         guard !isStopped, !isSuspendedForBackground, failure == nil else { return }
-        wantsPause.toggle()
-        if !isLoading {
-            if wantsPause { player.pause(); player.audio?.isMuted = true }
-            else { beginWaiting(); player.play() }
+        if wantsPause {
+            let shouldReconnect = shouldReconnectAfterPause
+            wantsPause = false
+            pauseStartedAt = nil
+            if shouldReconnect {
+                // A long-lived or already-terminal connection cannot be
+                // resumed reliably.  Reuse the existing quality URL, but
+                // create a new VLC media so the normal readiness gate applies.
+                retry()
+            } else if !isLoading {
+                beginWaiting()
+                player.play()
+            }
+        } else {
+            wantsPause = true
+            pauseStartedAt = Date()
+            if !isLoading {
+                player.pause()
+                player.audio?.isMuted = true
+            }
         }
         updateStatus()
     }
@@ -148,6 +171,24 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         guard !isStopped, !isSuspendedForBackground, let url = currentURL else { return }
         currentURL = nil
         load(url)
+    }
+
+    private var isTerminalPlaybackState: Bool {
+        switch player.state {
+        case .stopped, .ended, .error:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private var shouldReconnectAfterPause: Bool {
+        // An initial load failure should still be shown to the user.  This
+        // policy only applies after a ready stream has actually been paused.
+        guard !isLoading, !isChangingQuality, currentURL != nil else { return false }
+        if isTerminalPlaybackState { return true }
+        guard let pauseStartedAt else { return false }
+        return Date().timeIntervalSince(pauseStartedAt) >= Self.longPauseReconnectInterval
     }
 
     /// Releases the live decoder while the application is in the background.
@@ -193,6 +234,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         isStopped = true
         isSuspendedForBackground = false
         currentURL = nil
+        pauseStartedAt = nil
         player.delegate = nil
         clearAudioCatalog(notifyUI: false)
         player.audio?.isMuted = true
@@ -507,8 +549,17 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
     private func updateStatus() {
         guard !isStopped, !isSuspendedForBackground, !isChangingQuality,
               currentURL != nil, failure == nil else { return }
-        if player.state == .error || player.state == .ended {
-            fail("配信が中断されました。接続を確認して再試行してください。")
+        if isTerminalPlaybackState {
+            // A paused stream is allowed to outlive its transport.  Keep the
+            // user's pause state visible and rebuild the media only when they
+            // explicitly resume.  Initial loading failures remain visible.
+            if wantsPause, !isLoading {
+                status = "一時停止"
+                return
+            }
+            if player.state == .error || player.state == .ended || !isLoading {
+                fail("配信が中断されました。接続を確認して再試行してください。")
+            }
             return
         }
         refreshAudioTracks()
