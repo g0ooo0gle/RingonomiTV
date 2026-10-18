@@ -36,6 +36,7 @@ final class RecordingPlaybackController: ObservableObject {
     private var preparing = false
     private var prerolled = false
     private var preparationInFlight = false
+    private var playbackStartRequested = false
     private var advancedSincePreroll = false
     private var generation = 0
     private weak var videoLayer: AVPlayerLayer?
@@ -373,6 +374,7 @@ final class RecordingPlaybackController: ObservableObject {
             player.replaceCurrentItem(with: nil)
             preparing = false
             prerolled = false
+            playbackStartRequested = false
             isLoading = false
             waitingSince = nil
             status = "再生終了（再生ボタンで最初から）"
@@ -387,6 +389,7 @@ final class RecordingPlaybackController: ObservableObject {
         captions.attach(to: item, targetSeconds: targetSeconds)
         preparing = true
         prerolled = false
+        playbackStartRequested = false
         beginWaiting()
         player.replaceCurrentItem(with: item)
         let expected = generation
@@ -464,6 +467,7 @@ final class RecordingPlaybackController: ObservableObject {
         isChangingQuality = false
         preparing = false
         prerolled = false
+        playbackStartRequested = false
         preparationInFlight = false
         advancedSincePreroll = false
         isLoading = true
@@ -549,6 +553,7 @@ final class RecordingPlaybackController: ObservableObject {
                             // 一部のHLSはprerollだけでは最初の映像を出力しない。
                             // 先読み後にミュートで描画を開始し、最初のフレームまで覆いを保つ。
                             self.player.isMuted = true
+                            self.playbackStartRequested = true
                             self.player.playImmediately(atRate: 1)
                         }
                         self.revealWhenReady()
@@ -562,17 +567,56 @@ final class RecordingPlaybackController: ObservableObject {
               failure == nil, preparing, prerolled,
               player.currentItem?.status == .readyToPlay,
               videoLayer?.isReadyForDisplay == true else { return }
+        if wantsPause {
+            // A user-paused item is ready as soon as preroll and the first
+            // frame are available. It must not wait for an actual playing
+            // transition just to report the paused state.
+            playbackStartRequested = false
+            player.pause()
+            player.isMuted = true
+            preparing = false
+            advancedSincePreroll = false
+            isLoading = false
+            waitingSince = nil
+            restorePreferredAudioIfReady()
+            // A restored track goes through prepareExistingPosition, which
+            // reopens the loading gate. Do not reveal the old item underneath
+            // it.
+            if preparing { return }
+            status = reachedEnd ? "再生終了（再生ボタンで最初から）" : "一時停止"
+            updateTime()
+            checkpoint(force: true)
+#if DEBUG
+            print("RingonomiTVNativeReady: target=\(targetSeconds) actual=\(player.currentTime().seconds) rate=\(player.rate) muted=\(player.isMuted) layerReady=true paused=true")
+#endif
+            return
+        }
+
+        // Keep the readiness gate closed while the new item is still waiting
+        // to play. VLC/AVPlayer can expose a first frame before the transport
+        // has actually entered .playing; unmuting here would briefly produce
+        // audio over a stale or black frame. Request play once while muted and
+        // let the KVO callback/timer call this method again.
+        player.isMuted = true
+        if player.timeControlStatus != .playing {
+            if !playbackStartRequested {
+                playbackStartRequested = true
+                player.play()
+            }
+            guard player.timeControlStatus == .playing else { return }
+        }
+
         preparing = false
         advancedSincePreroll = false
         isLoading = false
         waitingSince = nil
         restorePreferredAudioIfReady()
         // A restored track goes through prepareExistingPosition, which
-        // reopens the loading gate. Do not start the old item underneath it.
+        // reopens the loading gate. Do not reveal the old item underneath it.
         if preparing { return }
-        player.isMuted = wantsPause
-        if wantsPause { player.pause() } else { player.play() }
-        status = reachedEnd ? "再生終了（再生ボタンで最初から）" : (wantsPause ? "一時停止" : "再生中")
+        // The item is already playing here; no extra play call is needed.
+        player.isMuted = false
+        status = reachedEnd ? "再生終了（再生ボタンで最初から）" : "再生中"
         updateTime()
         checkpoint(force: true)
 #if DEBUG
@@ -624,6 +668,7 @@ final class RecordingPlaybackController: ObservableObject {
         cancelPreparation()
         preparing = true
         prerolled = false
+        playbackStartRequested = false
         beginWaiting()
     }
     func togglePause() {
@@ -759,6 +804,7 @@ final class RecordingPlaybackController: ObservableObject {
         cancelPreparation()
         preparing = true
         prerolled = false
+        playbackStartRequested = false
         beginWaiting()
         preparePosition(generation)
     }
@@ -819,6 +865,7 @@ final class RecordingPlaybackController: ObservableObject {
         generation += 1
         cancelPreparation()
         preparing = false
+        playbackStartRequested = false
         captions.stop()
         failure = message
         status = "再生できません"
@@ -855,6 +902,7 @@ final class RecordingPlaybackController: ObservableObject {
         timer?.cancel()
         timer = nil
         cancelPreparation()
+        playbackStartRequested = false
         observations.forEach { $0.invalidate() }
         observations.removeAll()
         layerObservation?.invalidate()
