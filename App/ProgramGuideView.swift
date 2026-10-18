@@ -4,6 +4,7 @@ import RingonomiCore
 /// 番組表の取得と詳細表示。検索は取得した一日分の番組に対して行う。
 struct ProgramGuideView: View {
     let address: String
+    @ObservedObject var reservations: ReservationStore
     let onPlay: (GuideChannel) -> Void
     @State private var channelType = "GR"
     @State private var dayOffset = 0
@@ -88,7 +89,7 @@ struct ProgramGuideView: View {
                     onPlay(channel)
                 } else { returnFocusRevision += 1 }
             }) { selection in
-                GuideProgramDetail(selection: selection) {
+                GuideProgramDetail(selection: selection, address: address, reservations: reservations) {
                     pendingPlayback = selection.channel
                     selected = nil
                 }
@@ -171,6 +172,9 @@ private struct GuideSelection: Identifiable {
 }
 private struct GuideProgramDetail: View {
     let selection: GuideSelection
+    let address: String
+    @ObservedObject var reservations: ReservationStore
+    @State private var editingReservation = false
     let onPlay: () -> Void
     @Environment(\.dismiss) private var dismiss
     var body: some View {
@@ -192,10 +196,22 @@ private struct GuideProgramDetail: View {
                     if selection.channel.isWatchable {
                         Button("このチャンネルを見る", action: onPlay)
                     }
+                    if (selection.program.endDate ?? .distantPast) > Date() {
+                        Button(reservations.reservation(for: selection.program.id) == nil ? "録画予約" : "予約を変更") { editingReservation = true }
+                            .disabled(reservations.loading || reservations.saving || reservations.error != nil)
+                        if let error = reservations.error {
+                            Text(error).font(.caption).foregroundStyle(.red)
+                            Button("予約情報を再試行") { Task { await reservations.refresh(address: address) } }
+                        }
+                    }
                     Button("閉じる") { dismiss() }
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(60)
             }
+        }.sheet(isPresented: $editingReservation) {
+            ReservationEditor(address: address, store: reservations, program: selection.program, channel: selection.channel,
+                              original: reservations.reservation(for: selection.program.id))
         }
+        .task { await reservations.refresh(address: address) }
     }
 }
 private func guideTime(_ date: Date?) -> String {

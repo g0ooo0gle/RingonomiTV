@@ -1,0 +1,40 @@
+# Third-party notices
+
+RingonomiTV's original Swift/tvOS implementation is licensed under MIT; see
+[LICENSE](LICENSE). Third-party names identify compatibility or attribution.
+They do not imply endorsement or affiliation.
+
+## Komorebi
+
+- Source: https://github.com/BeerEgg2001/Komorebi
+- Copyright (c) 2026 BeerEgg2001
+- License: MIT. The notice and full terms are retained in [LICENSE](LICENSE).
+- RingonomiTV reimplements its television UI and client behavior for tvOS.
+
+## KonomiTV
+
+- Source: https://github.com/tsukumijima/KonomiTV
+- Copyright (c) 2021-2026 tsukumi
+- License: MIT. The full notice is in [KonomiTV-MIT.txt](App/Licenses/KonomiTV-MIT.txt).
+- API field names, request/response contracts, and recording settings follow
+  KonomiTV's API schemas. The server implementation is not bundled here.
+
+## TVVLCKit / VLCKit
+
+- Source: https://code.videolan.org/videolan/VLCKit/
+- Official binary source: https://downloads.videolan.org/cocoapods/prod/
+- License: GNU Lesser General Public License, version 2.1; see the upstream
+  [COPYING notice](App/Licenses/TVVLCKit-COPYING.txt).
+- The binary framework is downloaded locally by `bootstrap.sh` and is excluded
+  from this Git repository. RingonomiTV does not modify the framework.
+- The MIT license for RingonomiTV does not replace the terms of VLCKit, libVLC,
+  or their included components. Before distributing a built application,
+  review the exact bundled components, notices, corresponding source, and
+  relinking obligations for that distribution. This repository currently
+  distributes source, not signed application binaries.
+
+## XcodeGen
+
+- Source: https://github.com/yonaskolb/XcodeGen
+- License: MIT. This development tool is downloaded separately and is not
+  included in the application or this Git repository.

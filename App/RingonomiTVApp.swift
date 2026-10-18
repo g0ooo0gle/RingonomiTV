@@ -31,6 +31,7 @@ struct LibraryView: View {
     @State private var loading = false
     @State private var playback: Playback?
     @State private var selectedTab = 0
+    @StateObject private var reservations = ReservationStore()
 #if DEBUG
     /// A private test server may be supplied without persisting its address in user defaults.
     private var runtimeServerAddress: String? {
@@ -82,16 +83,19 @@ struct LibraryView: View {
                     }
                 }.navigationTitle("最近の録画")
             }.tabItem { Label("録画", systemImage: "film") }.tag(1)
-            ProgramGuideView(address: effectiveAddress) { channel in
+            ProgramGuideView(address: effectiveAddress, reservations: reservations) { channel in
                 do {
                     let client = try RingonomiClient(address: effectiveAddress)
                     playback = Playback(client: client, channelID: channel.displayChannelId,
                                         videoID: nil, title: channel.name, initialQuality: quality)
                 } catch { self.error = error.localizedDescription }
             }.tabItem { Label("番組表", systemImage: "calendar") }.tag(2)
+            ReservationListView(address: effectiveAddress, store: reservations)
+                .tabItem { Label("予約", systemImage: "record.circle") }.tag(3)
             Form {
                 TextField("視聴サーバーURL（ポート番号を含む）", text: $address)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .disabled(reservations.saving)
                 Picker("画質", selection: $quality) {
                     ForEach(["1080p", "720p", "540p", "360p"], id: \.self) { Text($0) }
                 }
@@ -100,17 +104,19 @@ struct LibraryView: View {
                 Text("Apple TVのIPではなく、視聴サーバーのURLを入力してください。")
                 if loading { ProgressView() }
                 if let error { Text(error).foregroundStyle(.red) }
-            }.tabItem { Label("設定", systemImage: "gear") }.tag(3)
+            }.tabItem { Label("設定", systemImage: "gear") }.tag(4)
         }
         .task {
-            if effectiveAddress.isEmpty { selectedTab = 3 }
+            if effectiveAddress.isEmpty { selectedTab = 4 }
             else {
                 await refresh()
 #if DEBUG
                 if ProcessInfo.processInfo.arguments.contains("--show-guide") { selectedTab = 2 }
+                if ProcessInfo.processInfo.arguments.contains("--show-reservations") { selectedTab = 3 }
 #endif
             }
         }
+        .task(id: effectiveAddress) { await reservations.refresh(address: effectiveAddress) }
         .fullScreenCover(item: $playback) { item in PlaybackView(item: item) }
         .alert("接続エラー", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
             Button("閉じる") { error = nil }

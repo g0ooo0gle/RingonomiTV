@@ -3,9 +3,12 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 jobs:
   core:
+    # Private repositories use local checks unless a maintainer starts CI explicitly.
+    if: github.event_name == 'workflow_dispatch' || github.event.repository.private == false
     runs-on: macos-15
     env:
       RINGONOMITV_CACHE_ROOT: ${{ github.workspace }}/.cache
