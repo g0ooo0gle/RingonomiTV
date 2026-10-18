@@ -55,16 +55,8 @@ import RingonomiCore
                 let latest = try await client.reservation(id: original.id)
                 try requireCurrent(expected)
                 guard latest.program.id == original.program.id else { throw ReservationUIError("予約の番組が変更されています。画面を閉じて開き直してください。") }
-                var values = latest.recordSettings.rawValues
-                for key in Set(settings.rawValues.keys).union(original.recordSettings.rawValues.keys) {
-                    let before = original.recordSettings.rawValues[key]
-                    let after = settings.rawValues[key]
-                    guard before != after else { continue }
-                    guard values[key] == before || values[key] == after else {
-                        throw ReservationUIError("同じ設定が別の画面で変更されています。画面を閉じて開き直してください。")
-                    }
-                    values[key] = after
-                }
+                let values = try mergingEditedSettings(original: original.recordSettings.rawValues,
+                    edited: settings.rawValues, latest: latest.recordSettings.rawValues)
                 let updated = try await client.updateReservation(id: original.id, settings: RecordSettings(rawValues: values))
                 guard updated.id == original.id, updated.program.id == original.program.id else { throw ReservationError.invalidResponse }
             } else {

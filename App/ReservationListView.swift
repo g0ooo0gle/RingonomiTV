@@ -4,6 +4,7 @@ import RingonomiCore
 struct ReservationListView: View {
     let address: String
     @ObservedObject var store: ReservationStore
+    @ObservedObject var keywords: KeywordReservationStore
     @State private var selected: Reservation?
     var body: some View {
         NavigationStack {
@@ -33,7 +34,10 @@ struct ReservationListView: View {
                 }
             }
             .navigationTitle("録画予約")
-            .toolbar { Button("更新") { Task { await store.refresh(address: address) } }.disabled(store.loading || store.saving) }
+            .toolbar {
+                NavigationLink("キーワード") { KeywordReservationListView(address: address, store: keywords) }
+                Button("更新") { Task { await store.refresh(address: address) } }.disabled(store.loading || store.saving)
+            }
             .task(id: address) { await store.refresh(address: address) }
             .sheet(item: $selected) { item in
                 ReservationEditor(address: address, store: store, program: item.program, channel: item.channel, original: item)

@@ -19,10 +19,16 @@ public struct Recording: Decodable, Identifiable, Sendable {
     public let description: String
     public let recordedVideo: RecordedVideo
     public let isFree: Bool
+    /// True when the source recording did not cover the complete program.
+    /// Older server responses may omit this field.
+    public let isPartiallyRecorded: Bool?
 }
 public struct RecordedVideo: Decodable, Sendable {
     public let id: Int
     public let duration: Double
+    /// Server lifecycle state, for example `Recording` or `Recorded`.
+    /// Older server responses may omit this field.
+    public let status: String?
 }
 public struct RecordingsResponse: Decodable, Sendable {
     public let total: Int

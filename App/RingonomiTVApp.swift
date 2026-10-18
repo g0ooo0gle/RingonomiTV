@@ -32,6 +32,7 @@ struct LibraryView: View {
     @State private var playback: Playback?
     @State private var selectedTab = 0
     @StateObject private var reservations = ReservationStore()
+    @StateObject private var keywords = KeywordReservationStore()
 #if DEBUG
     /// A private test server may be supplied without persisting its address in user defaults.
     private var runtimeServerAddress: String? {
@@ -78,6 +79,12 @@ struct LibraryView: View {
                     } label: {
                         VStack(alignment: .leading) {
                             Text(recording.title).font(.headline)
+                            if recording.recordedVideo.status == "Recording" {
+                                Text("録画中").font(.caption).foregroundStyle(.secondary)
+                            }
+                            if recording.isPartiallyRecorded == true {
+                                Text("一部のみ録画されています").font(.caption).foregroundStyle(.orange)
+                            }
                             Text(recording.description).lineLimit(3)
                         }
                     }
@@ -90,12 +97,12 @@ struct LibraryView: View {
                                         videoID: nil, title: channel.name, initialQuality: quality)
                 } catch { self.error = error.localizedDescription }
             }.tabItem { Label("番組表", systemImage: "calendar") }.tag(2)
-            ReservationListView(address: effectiveAddress, store: reservations)
+            ReservationListView(address: effectiveAddress, store: reservations, keywords: keywords)
                 .tabItem { Label("予約", systemImage: "record.circle") }.tag(3)
             Form {
                 TextField("視聴サーバーURL（ポート番号を含む）", text: $address)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
-                    .disabled(reservations.saving)
+                    .disabled(reservations.saving || keywords.saving)
                 Picker("画質", selection: $quality) {
                     ForEach(["1080p", "720p", "540p", "360p"], id: \.self) { Text($0) }
                 }
@@ -116,7 +123,10 @@ struct LibraryView: View {
 #endif
             }
         }
-        .task(id: effectiveAddress) { await reservations.refresh(address: effectiveAddress) }
+        .task(id: effectiveAddress) {
+            await reservations.refresh(address: effectiveAddress)
+            await keywords.refresh(address: effectiveAddress)
+        }
         .fullScreenCover(item: $playback) { item in PlaybackView(item: item) }
         .alert("接続エラー", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
             Button("閉じる") { error = nil }

@@ -505,7 +505,7 @@ public extension RingonomiClient {
     }
 }
 
-private extension RingonomiClient {
+extension RingonomiClient {
     func request<T: Decodable & Sendable>(
         path: [String],
         method: String,
