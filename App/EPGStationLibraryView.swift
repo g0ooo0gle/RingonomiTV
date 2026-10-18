@@ -354,7 +354,14 @@ private struct EPGStationRecordingDetailView: View {
             do {
                 let client = try EPGStationClient(address: address)
                 let url = try client.videoURL(fileID: file.id)
-                let duration = try? await client.videoDuration(fileID: file.id)
+                // A growing recording has no stable end yet. Avoid waiting
+                // for a duration request that would be discarded below.
+                let duration: Double?
+                if recording.isRecording {
+                    duration = nil
+                } else {
+                    duration = try? await client.videoDuration(fileID: file.id)
+                }
                 try Task.checkCancellation()
                 guard generation == expected else { return }
                 // Namespace the start token so another backend's numeric IDs

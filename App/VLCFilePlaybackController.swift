@@ -72,6 +72,8 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
     private var pendingPositionSeconds: Double?
     private var pendingPositionGeneration = 0
     private var pendingPositionApplied = false
+    private var pendingPositionAppliedAt: Date?
+    private var pendingPositionFallbackApplied = false
     private var pendingPositionStartedAt: Date?
     private var pendingPositionIsInitial = false
     private var retryFromBeginningAfterPositionFailure = false
@@ -344,6 +346,8 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         pendingPositionSeconds = nil
         pendingPositionGeneration = generation
         pendingPositionApplied = false
+        pendingPositionAppliedAt = nil
+        pendingPositionFallbackApplied = false
         pendingPositionStartedAt = nil
         pendingPositionIsInitial = false
         currentURL = nil
@@ -396,6 +400,8 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         pendingPositionSeconds = nil
         pendingPositionGeneration = generation
         pendingPositionApplied = false
+        pendingPositionAppliedAt = nil
+        pendingPositionFallbackApplied = false
         pendingPositionStartedAt = nil
         pendingPositionIsInitial = false
         if targetSeconds > positionTolerance(for: targetSeconds, duration: effectiveDuration) {
@@ -611,6 +617,8 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         pendingPositionSeconds = target
         pendingPositionGeneration = generation
         pendingPositionApplied = false
+        pendingPositionAppliedAt = nil
+        pendingPositionFallbackApplied = false
         pendingPositionStartedAt = Date()
         pendingPositionIsInitial = isInitial
         resetReadinessBaseline()
@@ -631,6 +639,8 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
             pendingPositionSeconds = nil
             pendingPositionStartedAt = nil
             pendingPositionApplied = false
+            pendingPositionAppliedAt = nil
+            pendingPositionFallbackApplied = false
             return false
         }
 
@@ -656,6 +666,8 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
             targetSeconds = target
             pendingPositionSeconds = target
             pendingPositionApplied = true
+            pendingPositionAppliedAt = Date()
+            pendingPositionFallbackApplied = false
             resetReadinessBaseline()
             player.audio?.isMuted = true
             // Decode muted frames while the gate waits for the seek to take
@@ -673,21 +685,40 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
             return true
         }
 
-        guard let actual = rawPlaybackSeconds else {
-            if Date().timeIntervalSince(startedAt) >= 8 { failPositionRequest() }
-            return true
-        }
-        let tolerance = positionTolerance(for: requested, duration: durationSeconds ?? durationHint)
-        if abs(actual - requested) <= tolerance {
+        let effectiveDuration = validDuration(durationSeconds ?? durationHint)
+        let tolerance = positionTolerance(for: requested, duration: effectiveDuration)
+        if let actual = rawPlaybackSeconds, abs(actual - requested) <= tolerance {
             targetSeconds = requested
             pendingPositionSeconds = nil
             pendingPositionStartedAt = nil
             pendingPositionApplied = false
+            pendingPositionAppliedAt = nil
+            pendingPositionFallbackApplied = false
             resetReadinessBaseline()
 #if DEBUG
             print("RingonomiFilePosition: ack target=\(requested) actual=\(actual)")
 #endif
             return true
+        }
+
+        // Some HTTP MPEG-TS demux paths accept the time command but leave the
+        // decoder at its old timestamp. VLC's input core normally performs
+        // this ratio fallback itself, so keep the app-level retry bounded to a
+        // single attempt and only use a finite, effective media duration.
+        if !pendingPositionFallbackApplied,
+           let appliedAt = pendingPositionAppliedAt,
+           Date().timeIntervalSince(appliedAt) >= 1,
+           let duration = effectiveDuration {
+            let ratio = min(1.0, max(0.0, requested / duration))
+            guard ratio.isFinite else {
+                failPositionRequest()
+                return true
+            }
+            pendingPositionFallbackApplied = true
+            player.position = Float(ratio)
+#if DEBUG
+            print("RingonomiFilePosition: strategy=position target=\(requested) duration=\(duration) ratio=\(ratio)")
+#endif
         }
 
         if Date().timeIntervalSince(startedAt) >= 8 {
@@ -701,11 +732,13 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         pendingPositionSeconds = nil
         pendingPositionStartedAt = nil
         pendingPositionApplied = false
+        pendingPositionAppliedAt = nil
+        pendingPositionFallbackApplied = false
         pendingPositionIsInitial = false
         retryFromBeginningAfterPositionFailure = true
         let message = wasInitial
             ? "指定位置から再生できませんでした。再試行すると先頭から開始します。"
-            : "指定位置へ移動できませんでした。再試行してください。"
+            : "指定位置へ移動できませんでした。再試行すると先頭から開始します。"
 #if DEBUG
         print("RingonomiFilePosition: failed initial=\(wasInitial)")
 #endif
