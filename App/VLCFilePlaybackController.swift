@@ -581,7 +581,12 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
 #if DEBUG
             if Date().timeIntervalSince(lastDebugStatusDate) >= 5 {
                 lastDebugStatusDate = Date()
-                print("RingonomiFileStats: pictures=\(totalPictures) delta=\(pictures) decodedAudio=\(decodedAudio) playedAudio=\(playedAudio) loading=\(isLoading) muted=\(player.audio?.isMuted == true) state=\(player.state.rawValue)")
+                let rawSeconds = rawPlaybackSeconds ?? -1
+                let remainingMilliseconds = player.remainingTime?.value?.doubleValue ?? -1
+                let remainingSeconds = remainingMilliseconds >= 0 ? remainingMilliseconds / 1000 : -1
+                let mediaLengthMilliseconds = media.length.value?.doubleValue ?? -1
+                let mediaLengthSeconds = mediaLengthMilliseconds >= 0 ? mediaLengthMilliseconds / 1000 : -1
+                print("RingonomiFileStats: rawSeconds=\(rawSeconds) position=\(player.position) remainingSeconds=\(remainingSeconds) mediaLengthSeconds=\(mediaLengthSeconds) readBytes=\(stats.readBytes) demuxReadBytes=\(stats.demuxReadBytes) inputBitrate=\(stats.inputBitrate) demuxBitrate=\(stats.demuxBitrate) pictures=\(totalPictures) delta=\(pictures) decodedAudio=\(decodedAudio) playedAudio=\(playedAudio) loading=\(isLoading) muted=\(player.audio?.isMuted == true) state=\(player.state.rawValue)")
             }
 #endif
 
