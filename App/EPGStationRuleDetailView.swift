@@ -12,7 +12,15 @@ struct EPGStationRuleDetailView: View {
     @State private var message: String?
     @State private var submitting = false
     @State private var operation: Task<Void, Never>?
+    @FocusState private var focusedTarget: FocusTarget?
+    @State private var pendingFocus: FocusTarget?
+    @State private var focusGeneration = 0
     private enum Action: String, Identifiable { case toggle, delete; var id: String { rawValue } }
+    private enum FocusTarget: Hashable { case toggle, message, loadError }
+
+    private var focusTaskID: String {
+        "\(store.loading)-\(submitting)-\(focusGeneration)"
+    }
 
     var body: some View {
         List {
@@ -20,7 +28,7 @@ struct EPGStationRuleDetailView: View {
                 ProgressView("ルールと関連する予約を読み込んでいます…")
                 Button("読み込みを中止") { store.cancel() }
             } else if let error = store.error {
-                Text(error).foregroundStyle(.red)
+                Text(error).foregroundStyle(.red).focusable().focused($focusedTarget, equals: .loadError)
                 Button("再試行", action: reload)
             } else if store.cancelled {
                 Text("読み込みを中止しました。")
@@ -37,6 +45,7 @@ struct EPGStationRuleDetailView: View {
                 Section("操作") {
                     Button("検索条件・録画設定を編集") { editor = .init(address: address, original: item) }
                     Button(item.options.enabled == true ? "ルールを無効にする" : "ルールを有効にする") { confirmation = .toggle }
+                        .focused($focusedTarget, equals: .toggle)
                     Button("ルールを削除", role: .destructive) { confirmation = .delete }
                 }.disabled(submitting || mutation.busy || mutation.pending != nil || store.loading)
                 Section("関連する録画予約") {
@@ -57,7 +66,9 @@ struct EPGStationRuleDetailView: View {
                     }
                 }
             }
-            if let message { Section { Text(message).foregroundStyle(.orange).focusable() } }
+            if let message {
+                Section { Text(message).foregroundStyle(.orange).focusable().focused($focusedTarget, equals: .message) }
+            }
             if mutation.pending != nil, !submitting {
                 Text("前の操作結果が未確認です。一覧へ戻り、結果を確認してください。")
                     .foregroundStyle(.orange).focusable()
@@ -75,7 +86,7 @@ struct EPGStationRuleDetailView: View {
         .confirmationDialog(confirmation == .delete ? "このルールを削除しますか？" : "ルールの有効状態を変更しますか？", isPresented: Binding(get: { confirmation != nil }, set: { if !$0 { confirmation = nil } }), titleVisibility: .visible) {
             if let action = confirmation, let item = store.item {
                 Button(action == .delete ? "ルールを削除する" : item.options.enabled == true ? "無効にする" : "有効にする", role: action == .delete ? .destructive : nil) {
-                    operation = Task { await apply(action, item: item) }
+                    beginApply(action, item: item)
                 }
             }
             Button("戻る", role: .cancel) {}
@@ -85,15 +96,34 @@ struct EPGStationRuleDetailView: View {
                  : "関連する録画予約が追加・変更・取り消される場合があります。処理には時間がかかることがあります。")
         }
         .onAppear { if store.item == nil || store.cancelled { reload() } }
-        .onDisappear { store.cancel(); operation?.cancel() }
+        .task(id: focusTaskID) {
+            guard let pendingFocus, !store.loading, !submitting else { return }
+            await Task.yield()
+            guard !Task.isCancelled, self.pendingFocus == pendingFocus, !store.loading, !submitting else { return }
+            self.pendingFocus = nil
+            if store.error != nil, pendingFocus == .toggle {
+                focusedTarget = .loadError
+            } else {
+                focusedTarget = pendingFocus
+            }
+        }
+        .onDisappear {
+            guard !submitting else { return }
+            pendingFocus = nil
+            store.cancel()
+            operation?.cancel()
+        }
         .onExitCommand { if !submitting { dismiss() } }
     }
 
     private func reload() { store.load(address: address, id: id) }
-    private func apply(_ action: Action, item: EPGStationRule) async {
+    private func beginApply(_ action: Action, item: EPGStationRule) {
         guard !submitting else { return }
         submitting = true
         message = nil
+        operation = Task { await apply(action, item: item) }
+    }
+    private func apply(_ action: Action, item: EPGStationRule) async {
         defer { submitting = false }
         do {
             switch action {
@@ -104,11 +134,15 @@ struct EPGStationRuleDetailView: View {
             if action == .delete { dismiss() }
             else {
                 message = "ルールの変更を確認しました。録画予約の再計算は続いている場合があります。更新して確認してください。"
+                pendingFocus = .toggle
+                focusGeneration &+= 1
                 reload()
             }
         } catch {
             guard !Task.isCancelled else { return }
             message = error.localizedDescription
+            pendingFocus = .message
+            focusGeneration &+= 1
         }
     }
 }
