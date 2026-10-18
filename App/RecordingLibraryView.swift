@@ -35,8 +35,12 @@ struct RecordingLibraryView: View {
     let address: String
     @ObservedObject var resumeStore: RecordingResumeStore
     let onPlay: (Recording, RingonomiClient) -> Void
-    @StateObject private var store = RecordingLibraryStore()
-    @StateObject private var catalog = RecordingCatalogStore()
+    @StateObject private var store = RecordingLibraryStore(fetch: { request in
+        try await RingonomiClient.connected(to: request.address).recordings(query: request.query)
+    })
+    @StateObject private var catalog = RecordingCatalogStore(fetch: { request in
+        try await RingonomiClient.connected(to: request.address).recordings(query: request.query)
+    })
     @State private var mode = RecordingLibraryMode.all
     @State private var groupID: String?
     @State private var draft = ""
@@ -262,7 +266,7 @@ struct RecordingLibraryView: View {
     }
     private func client() -> RingonomiClient? {
         guard isCurrent, !busy else { return nil }
-        return try? RingonomiClient(address: request.address)
+        return try? RingonomiClient.connected(to: request.address)
     }
     private func play(_ recording: Recording) {
         guard let client = client() else { return }

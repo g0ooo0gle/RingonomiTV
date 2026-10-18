@@ -198,7 +198,7 @@ struct KeywordReservationEditor: View {
             condition.isEnabled = true
             previewing = true
             defer { if previewGeneration == expected { previewing = false } }
-            let result = try await RingonomiClient(address: address).searchPrograms(condition: condition)
+            let result = try await RingonomiClient.connected(to: address).searchPrograms(condition: condition)
             guard !Task.isCancelled, previewGeneration == expected else { return }
             preview = result
 #if DEBUG

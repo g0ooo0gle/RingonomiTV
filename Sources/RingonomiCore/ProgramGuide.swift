@@ -417,12 +417,14 @@ public extension RingonomiClient {
         start: Date? = nil,
         end: Date? = nil,
         type: String? = nil,
-        pinnedChannelIDs: [String]? = nil
+        pinnedChannelIDs: [String]? = nil,
+        using session: URLSession = .shared
     ) async throws -> ProgramGuideResponse {
         try await fetchWithQuery(
             ["api", "programs", "timetable"],
             queryItems: URLComponents(url: programGuideURL(start: start, end: end, type: type, pinnedChannelIDs: pinnedChannelIDs), resolvingAgainstBaseURL: false)?.queryItems ?? [],
-            as: ProgramGuideResponse.self
+            as: ProgramGuideResponse.self,
+            using: session
         )
     }
 }
@@ -431,7 +433,8 @@ private extension RingonomiClient {
     func fetchWithQuery<T: Decodable & Sendable>(
         _ path: [String],
         queryItems: [URLQueryItem],
-        as type: T.Type
+        as type: T.Type,
+        using session: URLSession
     ) async throws -> T {
         guard var components = URLComponents(url: endpoint(path), resolvingAgainstBaseURL: false) else {
             throw ConnectionError.invalidAddress
@@ -441,7 +444,7 @@ private extension RingonomiClient {
 
         var request = URLRequest(url: url)
         request.timeoutInterval = 20
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await backendData(for: request, using: session)
         guard let response = response as? HTTPURLResponse else { throw ConnectionError.http(0) }
         guard (200..<300).contains(response.statusCode) else { throw ConnectionError.http(response.statusCode) }
         let decoder = JSONDecoder()

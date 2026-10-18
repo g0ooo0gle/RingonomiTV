@@ -530,10 +530,31 @@ extension RingonomiClient {
             request.httpBody = body
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
-        let (data, response) = try await session.data(for: request)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await backendData(for: request, using: session)
+        } catch let error as ConnectionError {
+            // Keep the pre-transport invalid-response contract. HTTP status
+            // errors intentionally remain available as URLResponse values so
+            // this API can preserve its server-detail behavior for 4xx/409.
+            if case .http(0) = error {
+                throw ReservationError.invalidResponse
+            }
+            throw error
+        }
         guard let response = response as? HTTPURLResponse else { throw ReservationError.invalidResponse }
         guard (200..<300).contains(response.statusCode) else {
-            throw ReservationError.http(status: response.statusCode, detail: Self.serverDetail(from: data))
+            let detail: String?
+            switch response.statusCode {
+            case 401, 403:
+                // Do not echo an arbitrary server response into a user-facing
+                // error. Keep a stable client-side HTTP description instead.
+                detail = ConnectionError.http(response.statusCode).errorDescription
+            default:
+                detail = Self.serverDetail(from: data)
+            }
+            throw ReservationError.http(status: response.statusCode, detail: detail)
         }
         return (data, response.statusCode)
     }
