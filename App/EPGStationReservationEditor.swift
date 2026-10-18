@@ -256,7 +256,6 @@ struct EPGStationReservationEditor: View {
                     guard directory.isEmpty || config.recordedDirectories.contains(directory) else {
                         throw ReservationUIError("保存先が変更されました。画面を開き直してください。")
                     }
-                    _ = try creationRequest()
                     if let selected = request.program {
                         let day = epgStationCalendar.startOfDay(for: Date(timeIntervalSince1970: selected.startAt / 1000))
                         let schedules = try await client.channelSchedule(channelID: selected.channelID, startAt: day.timeIntervalSince1970 * 1000)
@@ -267,6 +266,9 @@ struct EPGStationReservationEditor: View {
                         }
                     }
                     try await epgStationCheckDuplicate(client: client, draft: request)
+                    // Revalidate the user-entered time after all network checks and immediately
+                    // before returning the draft that will be journaled and submitted.
+                    _ = try creationRequest()
                     return request
                 }, send: { request in
                     let identifier: Int
