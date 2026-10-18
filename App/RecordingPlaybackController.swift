@@ -32,10 +32,252 @@ final class RecordingPlaybackController: ObservableObject {
     private var lastCheckpoint = Date.distantPast
     private var reachedEnd = false
     private var onCheckpoint: ((Double, Double?, Bool) -> Void)?
+    @Published private(set) var audioOptions: [PlaybackAudioOption] = []
+    @Published private(set) var selectedAudioID: String?
+    @Published private(set) var audioSelectionError: String?
+    private var audioTask: Task<Void, Never>?
+    private var audioGeneration = 0
+    private var audioSourceID: UUID?
+    private weak var audioDiscoveryItem: AVPlayerItem?
+    private var audioGroup: AVMediaSelectionGroup?
+    private var audioOptionMap: [String: AVMediaSelectionOption] = [:]
+    private var preferredAudioKey: String?
+    private var audioRestorePending = false
+    private var audioRestoreAttempted = false
 
     init() {
         player.automaticallyWaitsToMinimizeStalling = true
         player.isMuted = true
+    }
+
+    /// Selects one of the options discovered on the current asset.  The
+    /// identifier is source-scoped, so an option from a previous quality or
+    /// retry cannot accidentally select a reused track index.
+    func selectAudioTrack(id: String) {
+        selectAudioTrack(id: id, forcedPause: nil)
+    }
+
+    private func selectAudioTrack(id: String, forcedPause: Bool?) {
+        // Menus can outlive an item replacement or a quality change.  Ignore
+        // those callbacks while the normal ready gate is closed instead of
+        // reporting a misleading selection error to the user.
+        guard !isLoading, !preparing, failure == nil,
+              let item = player.currentItem,
+              item.status == .readyToPlay,
+              player.status == .readyToPlay else { return }
+        guard let group = audioGroup,
+              let option = audioOptionMap[id],
+              audioOptions.contains(where: { $0.id == id }),
+              group.options.contains(where: { $0.isEqual(option) }) else {
+            audioSelectionError = "選択した音声を利用できません。"
+            return
+        }
+
+        let previousID = selectedAudioID
+        let previousOption = item.currentMediaSelection.selectedMediaOption(in: group)
+        let shouldRemainPaused = forcedPause ?? (wantsPause || player.timeControlStatus == .paused)
+        let capturedSeconds = safeTime()
+
+        let isAlreadySelected = isSameAudioOption(previousOption, option)
+        if isAlreadySelected {
+            selectedAudioID = id
+            preferredAudioKey = audioOptions.first(where: { $0.id == id })?.preferenceKey
+            audioSelectionError = nil
+            return
+        }
+
+        // Selecting a media option can momentarily change the player's
+        // timing state. Freeze both playback and audio before doing so, then
+        // run the same seek/preroll gate used by normal playback.
+        player.pause()
+        player.isMuted = true
+
+        item.select(option, in: group)
+        let selected = item.currentMediaSelection.selectedMediaOption(in: group)
+        guard isSameAudioOption(selected, option) else {
+            // Keep the previous selection when the player rejects the change.
+            if let previousOption {
+                item.select(previousOption, in: group)
+            }
+            selectedAudioID = previousID
+            audioSelectionError = "音声を切り替えられませんでした。"
+            wantsPause = shouldRemainPaused
+            prepareExistingPosition(capturedSeconds)
+            return
+        }
+
+        selectedAudioID = id
+        preferredAudioKey = audioOptions.first(where: { $0.id == id })?.preferenceKey
+        audioSelectionError = nil
+        wantsPause = shouldRemainPaused
+        prepareExistingPosition(capturedSeconds)
+#if DEBUG
+        print("RingonomiTVAudio: selectedID=\(id)")
+#endif
+    }
+
+    private func isSameAudioOption(
+        _ lhs: AVMediaSelectionOption?,
+        _ rhs: AVMediaSelectionOption?
+    ) -> Bool {
+        switch (lhs, rhs) {
+        case (nil, nil): return true
+        case let (lhs?, rhs?): return lhs.isEqual(rhs)
+        default: return false
+        }
+    }
+
+    private func resetAudioSelection(clearPreferred: Bool) {
+        audioGeneration &+= 1
+        audioTask?.cancel()
+        audioTask = nil
+        audioSourceID = nil
+        audioDiscoveryItem = nil
+        audioGroup = nil
+        audioOptionMap.removeAll()
+        audioOptions = []
+        selectedAudioID = nil
+        audioSelectionError = nil
+        audioRestorePending = false
+        audioRestoreAttempted = false
+        if clearPreferred { preferredAudioKey = nil }
+    }
+
+    private func discoverAudio(for item: AVPlayerItem) {
+        guard player.currentItem === item else { return }
+        guard audioDiscoveryItem !== item else { return }
+        audioDiscoveryItem = item
+        audioTask?.cancel()
+        audioGeneration &+= 1
+        let expectedAudioGeneration = audioGeneration
+        let sourceID = UUID()
+        audioSourceID = sourceID
+        audioGroup = nil
+        audioOptionMap.removeAll()
+        audioOptions = []
+        selectedAudioID = nil
+        audioSelectionError = nil
+        audioRestorePending = false
+        audioRestoreAttempted = false
+        let asset = item.asset
+
+        audioTask = Task { @MainActor [weak self, weak item] in
+            do {
+                let group = try await asset.loadMediaSelectionGroup(for: .audible)
+                try Task.checkCancellation()
+                guard let self,
+                      let item,
+                      self.audioGeneration == expectedAudioGeneration,
+                      self.audioSourceID == sourceID,
+                      self.player.currentItem === item else { return }
+                self.applyAudioGroup(
+                    group,
+                    item: item,
+                    sourceID: sourceID,
+                    expectedGeneration: expectedAudioGeneration
+                )
+            } catch is CancellationError {
+                return
+            } catch {
+                guard let self,
+                      let item,
+                      self.audioGeneration == expectedAudioGeneration,
+                      self.audioSourceID == sourceID,
+                      self.player.currentItem === item else { return }
+                self.audioOptions = []
+                self.selectedAudioID = nil
+                self.audioSelectionError = "音声トラックを読み込めませんでした。"
+#if DEBUG
+                print("RingonomiTVAudio: discovery failed")
+#endif
+            }
+        }
+    }
+
+    private func applyAudioGroup(
+        _ group: AVMediaSelectionGroup?,
+        item: AVPlayerItem,
+        sourceID: UUID,
+        expectedGeneration: Int
+    ) {
+        guard audioGeneration == expectedGeneration,
+              audioSourceID == sourceID,
+              player.currentItem === item else { return }
+        guard let group, !group.options.isEmpty else {
+            // Some streams have no selectable alternate audio.  That is a
+            // valid engine default, not a playback error.
+            audioGroup = group
+            audioOptions = []
+            audioOptionMap.removeAll()
+            selectedAudioID = nil
+            audioSelectionError = nil
+#if DEBUG
+            print("RingonomiTVAudio: optionCount=0 selectedID=nil")
+#endif
+            return
+        }
+
+        let descriptors = group.options.enumerated().map { index, option in
+            PlaybackAudioDescriptor(trackID: index, name: option.displayName)
+        }
+        let options = PlaybackAudioCatalog.options(sourceID: sourceID, descriptors: descriptors)
+        guard !options.isEmpty else {
+            audioGroup = group
+            audioOptions = []
+            audioOptionMap.removeAll()
+            selectedAudioID = nil
+            audioSelectionError = nil
+#if DEBUG
+            print("RingonomiTVAudio: optionCount=0 selectedID=nil")
+#endif
+            return
+        }
+
+        audioGroup = group
+        audioOptions = options
+        guard options.count == group.options.count else {
+            audioOptions = []
+            audioOptionMap.removeAll()
+            audioRestorePending = false
+            audioSelectionError = nil
+            return
+        }
+        audioOptionMap = Dictionary(uniqueKeysWithValues: zip(options, group.options).map { pair in
+            (pair.0.id, pair.1)
+        })
+        audioSelectionError = nil
+
+        audioRestorePending = PlaybackAudioCatalog.preferredID(named: preferredAudioKey, in: options) != nil
+        if let current = item.currentMediaSelection.selectedMediaOption(in: group),
+           let currentIndex = group.options.firstIndex(where: { $0.isEqual(current) }),
+           options.indices.contains(currentIndex) {
+            selectedAudioID = options[currentIndex].id
+        }
+        restorePreferredAudioIfReady()
+#if DEBUG
+        print("RingonomiTVAudio: optionCount=\(options.count) selectedID=\(selectedAudioID ?? "nil")")
+#endif
+    }
+
+    /// Restores a named user choice once the initial video gate has opened.
+    /// A missing/ambiguous label intentionally falls back to the engine's
+    /// default and is still considered one completed attempt for this asset.
+    private func restorePreferredAudioIfReady() {
+        guard !audioRestoreAttempted,
+              !isLoading,
+              !preparing,
+              failure == nil,
+              !audioOptions.isEmpty else { return }
+        audioRestoreAttempted = true
+        guard audioRestorePending,
+              let preferredID = PlaybackAudioCatalog.preferredID(named: preferredAudioKey, in: audioOptions) else {
+            audioRestorePending = false
+            return
+        }
+        audioRestorePending = false
+        // The player is paused as part of the initial seek/preroll even when
+        // the user did not request pause. Preserve only the explicit intent.
+        selectAudioTrack(id: preferredID, forcedPause: wantsPause)
     }
     /// 動画を読み込み始める前に一度だけ設定する。
     func configurePosition(seconds: Double, durationHint: Double?, onCheckpoint: @escaping (Double, Double?, Bool) -> Void) {
@@ -72,6 +314,7 @@ final class RecordingPlaybackController: ObservableObject {
     func load(_ url: URL) {
         guard currentURL != url else { return }
         currentURL = url
+        resetAudioSelection(clearPreferred: false)
         reachedEnd = false
         generation += 1
         cancelPreparation()
@@ -115,6 +358,7 @@ final class RecordingPlaybackController: ObservableObject {
         case .failed: fail("録画を読み込めませんでした。接続先と配信状態を確認してください。")
         case .readyToPlay:
             guard preparing else { return }
+            discoverAudio(for: item)
             preparePosition(expected)
         default: break
         }
@@ -168,6 +412,10 @@ final class RecordingPlaybackController: ObservableObject {
         advancedSincePreroll = false
         isLoading = false
         waitingSince = nil
+        restorePreferredAudioIfReady()
+        // A restored track goes through prepareExistingPosition, which
+        // reopens the loading gate. Do not start the old item underneath it.
+        if preparing { return }
         player.isMuted = wantsPause
         if wantsPause { player.pause() } else { player.play() }
         status = wantsPause ? "一時停止" : "再生中"
@@ -212,6 +460,7 @@ final class RecordingPlaybackController: ObservableObject {
     func prepareQualityChange() {
         flushPosition()
         if !isLoading { targetSeconds = safeTime() }
+        resetAudioSelection(clearPreferred: false)
         generation += 1
         cancelPreparation()
         preparing = true
@@ -307,6 +556,7 @@ final class RecordingPlaybackController: ObservableObject {
         checkpoint(force: true)
         if !preparing, !isLoading { targetSeconds = safeTime() }
         timer?.cancel()
+        resetAudioSelection(clearPreferred: false)
         generation += 1
         cancelPreparation()
         preparing = false
@@ -327,6 +577,7 @@ final class RecordingPlaybackController: ObservableObject {
     }
     func stop() {
         flushPosition()
+        resetAudioSelection(clearPreferred: true)
         generation += 1
         timer?.cancel()
         timer = nil

@@ -57,7 +57,7 @@ public enum RecordingLibraryError: Error, LocalizedError, Equatable {
 
 public extension RingonomiClient {
     /// Fetch one page from `/api/videos` or `/api/videos/search`.
-    public func recordings(
+    func recordings(
         query: RecordingQuery = RecordingQuery(),
         using session: URLSession = .shared
     ) async throws -> RecordingsResponse {
@@ -76,7 +76,7 @@ public extension RingonomiClient {
 
     /// Fetch one recorded program detail.  The route expects the
     /// `RecordedProgram.id`, not `RecordedVideo.id`.
-    public func recording(
+    func recording(
         id: Int,
         using session: URLSession = .shared
     ) async throws -> Recording {

@@ -60,6 +60,9 @@ struct PlaybackView: View {
     private var isRecording: Bool { item.recordingID != nil }
     private var isLoading: Bool { isRecording ? recordingController.isLoading : controller.isLoading }
     private var failure: String? { isRecording ? recordingController.failure : controller.failure }
+    private var audioOptions: [PlaybackAudioOption] { isRecording ? recordingController.audioOptions : controller.audioOptions }
+    private var selectedAudioID: String? { isRecording ? recordingController.selectedAudioID : controller.selectedAudioID }
+    private var audioSelectionError: String? { isRecording ? recordingController.audioSelectionError : controller.audioSelectionError }
 #endif
     var body: some View {
         Group {
@@ -140,6 +143,7 @@ struct PlaybackView: View {
                 Text(isRecording ? recordingController.status : controller.status).font(.caption)
                 if item.recordingID != nil { Text(recordingController.playbackTime).font(.caption).monospacedDigit() }
                 if let maintenanceError { Text(maintenanceError).font(.caption) }
+                if let audioSelectionError { Text(audioSelectionError).font(.caption).foregroundStyle(.orange) }
             }.padding(40).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .allowsHitTesting(false)
 #else
@@ -157,6 +161,17 @@ struct PlaybackView: View {
                         RecordingChapterControls(client: item.client, recordingID: recordingID,
                                                  fileID: item.recordedFileID, controller: recordingController)
                     }
+                }
+                if audioOptions.count > 1 {
+                    Menu("音声") {
+                        ForEach(audioOptions) { option in
+                            Button(option.id == selectedAudioID ? "✓ \(option.name)" : option.name) {
+                                if isRecording { recordingController.selectAudioTrack(id: option.id) }
+                                else { controller.selectAudioTrack(id: option.id) }
+                            }
+                        }
+                    }.disabled(isLoading || failure != nil)
+                        .accessibilityLabel("音声を選択")
                 }
                 Menu("画質：\(quality)") {
                     ForEach(["1080p", "720p", "540p", "360p"], id: \.self) { value in
