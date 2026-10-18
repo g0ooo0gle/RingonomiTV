@@ -10,7 +10,6 @@ struct LibraryView: View {
     @AppStorage("quality") private var quality = "720p"
     @AppStorage("guideSubchannels") private var guideSubchannels = false
     @State private var channels: [Channel] = []
-    @State private var recordings: [Recording] = []
     @State private var error: String?
     @State private var loading = false
     @State private var playback: Playback?
@@ -54,26 +53,8 @@ struct LibraryView: View {
                 }.navigationTitle("りんごのみTV · ライブ")
                 .toolbar { Button("更新") { Task { await refresh() } }.disabled(loading) }
             }.tabItem { Label("ライブ", systemImage: "tv") }.tag(0)
-            NavigationStack {
-                List(recordings) { recording in
-                    Button {
-                        openRecording(recording)
-                    } label: {
-                        VStack(alignment: .leading) {
-                            Text(recording.title).font(.headline)
-                            if recording.recordedVideo.status == "Recording" {
-                                Text("録画中").font(.caption).foregroundStyle(.secondary)
-                            }
-                            if recording.isPartiallyRecorded == true {
-                                Text("一部のみ録画されています").font(.caption).foregroundStyle(.orange)
-                            }
-                            if let position = resumePosition(recording) {
-                                Text("続き：\(Playback.timestamp(position))").font(.caption).foregroundStyle(.secondary)
-                            }
-                            Text(recording.description).lineLimit(3)
-                        }
-                    }
-                }.navigationTitle("最近の録画")
+            RecordingLibraryView(address: effectiveAddress, resumeStore: resumeStore) { recording, client in
+                openRecording(recording, client: client)
             }.tabItem { Label("録画", systemImage: "film") }.tag(1)
             ProgramGuideView(address: effectiveAddress, reservations: reservations) { channel in
                 do {
@@ -103,6 +84,7 @@ struct LibraryView: View {
             else {
                 await refresh()
 #if DEBUG
+                if ProcessInfo.processInfo.arguments.contains("--show-recordings") { selectedTab = 1 }
                 if ProcessInfo.processInfo.arguments.contains("--show-guide") { selectedTab = 2 }
                 if ProcessInfo.processInfo.arguments.contains("--show-reservations") { selectedTab = 3 }
 #endif
@@ -133,12 +115,10 @@ struct LibraryView: View {
                let channel = channels.first(where: { $0.displayChannelId == arguments[index + 1] }) {
                 playback = Playback(client: client, channelID: channel.displayChannelId, recordingID: nil, title: channel.name, initialQuality: quality)
             }
-#endif
-            recordings = try await client.fetch(["api", "videos"], as: RecordingsResponse.self).recordedPrograms
-#if DEBUG
             if let index = arguments.firstIndex(of: "--play-recording"), index + 1 < arguments.count,
-               let recording = recordings.first(where: { String($0.id) == arguments[index + 1] && $0.isFree }) {
-                openRecording(recording)
+               let id = Int(arguments[index + 1]) {
+                let recording = try await client.recording(id: id)
+                if recording.isFree { openRecording(recording, client: client) }
             }
             if arguments.contains("--test-recording-failure") {
                 playback = Playback(client: client, channelID: nil, recordingID: -1,
@@ -148,34 +128,13 @@ struct LibraryView: View {
         } catch { self.error = error.localizedDescription }
     }
 
-    private func resumePosition(_ recording: Recording) -> Double? {
-        guard let client = try? RingonomiClient(address: effectiveAddress),
-              let id = resumeID(recording, client: client) else { return nil }
-        return resumeStore.position(for: id,
-                                    duration: recording.recordedVideo.duration, status: recording.recordedVideo.status)
-    }
-
-    private func resumeID(_ recording: Recording, client: RingonomiClient) -> RecordingResumeID? {
-        // 開始時刻のない古い応答は、再利用された動画IDと区別できないため保存しない。
-        guard let startTime = recording.startTime?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !startTime.isEmpty else { return nil }
-        return RecordingResumeID(serverURL: client.baseURL, videoID: recording.recordedVideo.id,
-                                 recordingStartTime: startTime)
-    }
-
-    private func openRecording(_ recording: Recording) {
-        do {
-            let client = try RingonomiClient(address: effectiveAddress)
-            let id = resumeID(recording, client: client)
-            let savedPosition = id.flatMap {
-                resumeStore.position(for: $0, duration: recording.recordedVideo.duration,
-                                     status: recording.recordedVideo.status)
-            }
-            playback = Playback(client: client, channelID: nil, recordingID: recording.playbackID,
-                                title: recording.title, initialQuality: quality,
-                                resumeID: id, durationHint: recording.recordedVideo.duration,
-                                recordingStatus: recording.recordedVideo.status,
-                                savedPosition: savedPosition, recordedFileID: recording.recordedVideo.id)
-        } catch { self.error = error.localizedDescription }
+    private func openRecording(_ recording: Recording, client: RingonomiClient) {
+        let id = resumeStore.identity(for: recording, client: client)
+        let savedPosition = resumeStore.position(for: recording, client: client)
+        playback = Playback(client: client, channelID: nil, recordingID: recording.playbackID,
+                            title: recording.title, initialQuality: quality,
+                            resumeID: id, durationHint: recording.recordedVideo.duration,
+                            recordingStatus: recording.recordedVideo.status,
+                            savedPosition: savedPosition, recordedFileID: recording.recordedVideo.id)
     }
 }

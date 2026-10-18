@@ -22,6 +22,19 @@ final class RecordingResumeStore: ObservableObject {
         return RecordingResumePolicy.candidate(entry: entry, duration: duration, status: status)
     }
 
+    func identity(for recording: Recording, client: RingonomiClient) -> RecordingResumeID? {
+        // 開始時刻がない応答は、再利用されたファイルIDと区別できないため保存しない。
+        guard let start = recording.startTime?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !start.isEmpty else { return nil }
+        return RecordingResumeID(serverURL: client.baseURL, videoID: recording.recordedVideo.id,
+                                 recordingStartTime: start)
+    }
+
+    func position(for recording: Recording, client: RingonomiClient) -> Double? {
+        guard let id = identity(for: recording, client: client) else { return nil }
+        return position(for: id, duration: recording.recordedVideo.duration, status: recording.recordedVideo.status)
+    }
+
     func save(_ id: RecordingResumeID, seconds: Double, duration: Double?, status: String?, reachedEnd: Bool) {
         guard let seconds = RecordingResumePolicy.clamp(seconds: seconds, duration: duration) else { return }
         if seconds < 5 || RecordingResumePolicy.shouldClear(

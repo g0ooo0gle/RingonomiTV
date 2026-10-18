@@ -13,6 +13,59 @@ public struct Channel: Decodable, Identifiable, Sendable {
     public let isDisplay: Bool
     public let programPresent: Program?
 }
+/// Channel metadata embedded in a recorded-program response.
+///
+/// This is intentionally separate from the live `Channel` model because the
+/// recorded-program API does not include the live-only display/program fields.
+public struct RecordingChannel: Decodable, Identifiable, Sendable {
+    public let id: String
+    public let displayChannelId: String
+    public let networkId: Int?
+    public let serviceId: Int?
+    public let transportStreamId: Int?
+    public let remoconId: Int?
+    public let channelNumber: String
+    public let type: String
+    public let name: String
+    public let terrestrialRegions: [String]?
+    public let jikkyoForce: Int?
+    public let isSubchannel: Bool
+    public let isRadiochannel: Bool
+    public let isWatchable: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case id, displayChannelId, networkId, serviceId, transportStreamId
+        case remoconId, channelNumber, type, name, terrestrialRegions
+        case jikkyoForce, isSubchannel, isRadiochannel, isWatchable
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let id = try container.decode(String.self, forKey: .id)
+        guard !id.isEmpty else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .id,
+                in: container,
+                debugDescription: "recording channel id must not be empty"
+            )
+        }
+        self.id = id
+        displayChannelId = (try? container.decode(String.self, forKey: .displayChannelId)) ?? ""
+        networkId = try? container.decode(Int.self, forKey: .networkId)
+        serviceId = try? container.decode(Int.self, forKey: .serviceId)
+        transportStreamId = try? container.decode(Int.self, forKey: .transportStreamId)
+        remoconId = try? container.decode(Int.self, forKey: .remoconId)
+        channelNumber = (try? container.decode(String.self, forKey: .channelNumber)) ?? ""
+        type = (try? container.decode(String.self, forKey: .type)) ?? ""
+        name = (try? container.decode(String.self, forKey: .name)) ?? ""
+        terrestrialRegions = try? container.decode([String].self, forKey: .terrestrialRegions)
+        jikkyoForce = try? container.decode(Int.self, forKey: .jikkyoForce)
+        isSubchannel = (try? container.decode(Bool.self, forKey: .isSubchannel)) ?? false
+        isRadiochannel = (try? container.decode(Bool.self, forKey: .isRadiochannel)) ?? false
+        isWatchable = (try? container.decode(Bool.self, forKey: .isWatchable)) ?? false
+    }
+}
+
 public struct Recording: Decodable, Identifiable, Sendable {
     public let id: Int
     public let title: String
@@ -25,6 +78,60 @@ public struct Recording: Decodable, Identifiable, Sendable {
     /// True when the source recording did not cover the complete program.
     /// Older server responses may omit this field.
     public let isPartiallyRecorded: Bool?
+    public let endTime: String?
+    public let channel: RecordingChannel?
+    public let networkId: Int?
+    public let serviceId: Int?
+    public let eventId: Int?
+    public let seriesId: Int?
+    public let seriesBroadcastPeriodId: Int?
+    public let seriesTitle: String?
+    public let episodeNumber: String?
+    public let subtitle: String?
+    public let detail: [String: String]?
+    public let genres: [GuideGenre]
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, description, recordedVideo, isFree
+        case startTime, endTime, isPartiallyRecorded, channel
+        case networkId, serviceId, eventId, seriesId, seriesBroadcastPeriodId
+        case seriesTitle, episodeNumber, subtitle, detail, genres
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let id = try container.decode(Int.self, forKey: .id)
+        guard id > 0 else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .id,
+                in: container,
+                debugDescription: "recording id must be positive"
+            )
+        }
+        self.id = id
+        // The media object and the basic program classification are required
+        // for playback and access-control decisions.  Additional metadata
+        // below is intentionally defensive because older list responses can
+        // omit it.
+        recordedVideo = try container.decode(RecordedVideo.self, forKey: .recordedVideo)
+        title = try container.decode(String.self, forKey: .title)
+        description = try container.decode(String.self, forKey: .description)
+        isFree = try container.decode(Bool.self, forKey: .isFree)
+        startTime = try? container.decode(String.self, forKey: .startTime)
+        endTime = try? container.decode(String.self, forKey: .endTime)
+        isPartiallyRecorded = try? container.decode(Bool.self, forKey: .isPartiallyRecorded)
+        channel = try? container.decode(RecordingChannel.self, forKey: .channel)
+        networkId = try? container.decode(Int.self, forKey: .networkId)
+        serviceId = try? container.decode(Int.self, forKey: .serviceId)
+        eventId = try? container.decode(Int.self, forKey: .eventId)
+        seriesId = try? container.decode(Int.self, forKey: .seriesId)
+        seriesBroadcastPeriodId = try? container.decode(Int.self, forKey: .seriesBroadcastPeriodId)
+        seriesTitle = try? container.decode(String.self, forKey: .seriesTitle)
+        episodeNumber = try? container.decode(String.self, forKey: .episodeNumber)
+        subtitle = try? container.decode(String.self, forKey: .subtitle)
+        detail = try? container.decode([String: String].self, forKey: .detail)
+        genres = (try? container.decode([GuideGenre].self, forKey: .genres)) ?? []
+    }
 
     /// RecordedProgram ID expected by the stream and detail routes.
     /// This is distinct from `recordedVideo.id`, which identifies the media
@@ -47,7 +154,15 @@ public struct RecordedVideo: Decodable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.decode(Int.self, forKey: .id)
+        let id = try container.decode(Int.self, forKey: .id)
+        guard id > 0 else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .id,
+                in: container,
+                debugDescription: "recorded video id must be positive"
+            )
+        }
+        self.id = id
         duration = try container.decode(Double.self, forKey: .duration)
         status = try container.decodeIfPresent(String.self, forKey: .status)
         cmSections = Self.decodeCommercialSections(from: container)
@@ -90,6 +205,29 @@ public struct RecordedVideo: Decodable, Sendable {
 public struct RecordingsResponse: Decodable, Sendable {
     public let total: Int
     public let recordedPrograms: [Recording]
+
+    private enum CodingKeys: String, CodingKey {
+        case total, recordedPrograms
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let total = try container.decode(Int.self, forKey: .total)
+        guard total >= 0 else { throw RecordingLibraryError.negativeTotal }
+        let programs = try container.decode([Recording].self, forKey: .recordedPrograms)
+        guard programs.count <= RecordingQuery.pageSize else {
+            throw RecordingLibraryError.pageTooLarge
+        }
+        guard programs.count <= total || (total == 0 && programs.isEmpty) else {
+            throw RecordingLibraryError.listExceedsTotal
+        }
+        var identifiers = Set<Int>(minimumCapacity: programs.count)
+        guard programs.allSatisfy({ identifiers.insert($0.id).inserted }) else {
+            throw RecordingLibraryError.invalidResponse
+        }
+        self.total = total
+        recordedPrograms = programs
+    }
 }
 public enum ConnectionError: Error, LocalizedError {
     case invalidAddress, http(Int)
