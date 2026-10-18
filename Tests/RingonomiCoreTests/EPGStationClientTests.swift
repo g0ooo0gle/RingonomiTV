@@ -901,6 +901,12 @@ final class EPGStationClientTests: XCTestCase {
         XCTAssertEqual(encodeOption["encodeParentDirectoryName1"] as? String, "変換")
         XCTAssertEqual(encodeOption["directory1"] as? String, "番組")
         XCTAssertEqual(encodeOption["isDeleteOriginalAfterEncode"] as? Bool, true)
+        XCTAssertNil(encodeOption["mode2"])
+        XCTAssertNil(encodeOption["encodeParentDirectoryName2"])
+        XCTAssertNil(encodeOption["directory2"])
+        XCTAssertNil(encodeOption["mode3"])
+        XCTAssertNil(encodeOption["encodeParentDirectoryName3"])
+        XCTAssertNil(encodeOption["directory3"])
 
         let timeReservationID = try await client.createTimeSpecifiedReservation(
             name: "時間指定",
@@ -961,9 +967,50 @@ final class EPGStationClientTests: XCTestCase {
         XCTAssertEqual(encodeOption["encodeParentDirectoryName2"] as? String, "変換2")
         XCTAssertEqual(encodeOption["directory2"] as? String, "番組2")
         XCTAssertTrue(encodeOption["isDeleteOriginalAfterEncode"] as? Bool == true)
-        XCTAssertTrue(encodeOption.keys.contains("mode3"))
-        XCTAssertTrue(encodeOption.keys.contains("encodeParentDirectoryName3"))
-        XCTAssertTrue(encodeOption.keys.contains("directory3"))
+        XCTAssertNil(encodeOption["mode3"])
+        XCTAssertNil(encodeOption["encodeParentDirectoryName3"])
+        XCTAssertNil(encodeOption["directory3"])
+    }
+
+    func testManualReservationOmitsNullOptionFieldsButKeepsConfiguredValues() async throws {
+        let recorder = EPGStationRequestRecorder()
+        EPGStationURLProtocol.handler = { request in
+            recorder.append(request)
+            return EPGStationURLProtocol.Stub(
+                status: 201,
+                body: Data(#"{"reserveId":303}"#.utf8)
+            )
+        }
+        defer { EPGStationURLProtocol.handler = nil }
+
+        let client = try client()
+        let options = EPGStationReservationEditOptions(
+            saveOption: EPGStationReservationSaveOption(
+                directory: "番組"
+            ),
+            encodeOption: EPGStationReservationEncodeOption(
+                mode1: "H.264",
+                isDeleteOriginalAfterEncode: true
+            )
+        )
+        let reservationID = try await client.createReservation(
+            programID: 31,
+            options: options
+        )
+        XCTAssertEqual(reservationID, 303)
+
+        let request = try XCTUnwrap(recorder.all.first)
+        let body = try jsonBody(request)
+        let saveOption = try XCTUnwrap(body["saveOption"] as? [String: Any])
+        XCTAssertNil(saveOption["parentDirectoryName"])
+        XCTAssertEqual(saveOption["directory"] as? String, "番組")
+        XCTAssertNil(saveOption["recordedFormat"])
+
+        let encodeOption = try XCTUnwrap(body["encodeOption"] as? [String: Any])
+        XCTAssertEqual(encodeOption["mode1"] as? String, "H.264")
+        XCTAssertNil(encodeOption["encodeParentDirectoryName1"])
+        XCTAssertNil(encodeOption["directory1"])
+        XCTAssertEqual(encodeOption["isDeleteOriginalAfterEncode"] as? Bool, true)
     }
 
     func testDeleteReservationSendsNoBodyAndAcceptsServerSuccessBodies() async throws {

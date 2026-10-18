@@ -51,11 +51,12 @@ public struct EPGStationReservationSaveOption: Codable, Equatable, Sendable {
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        // EPGStation treats an omitted nested field as a null value.  Keep
-        // all three keys present so an edit can preserve the latest response.
-        try container.encode(parentDirectoryName, forKey: .parentDirectoryName)
-        try container.encode(directory, forKey: .directory)
-        try container.encode(recordedFormat, forKey: .recordedFormat)
+        // The API schema declares these fields as strings, not nullable
+        // strings.  EPGStation's DB update maps an omitted field to null, so
+        // encode nil as omission while retaining the clear-on-edit behavior.
+        try container.encodeIfPresent(parentDirectoryName, forKey: .parentDirectoryName)
+        try container.encodeIfPresent(directory, forKey: .directory)
+        try container.encodeIfPresent(recordedFormat, forKey: .recordedFormat)
     }
 
     fileprivate func validate() throws {
@@ -113,17 +114,19 @@ public struct EPGStationReservationEncodeOption: Codable, Equatable, Sendable {
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        // Keep nil slots explicit.  The server clears an omitted slot, so
-        // every current slot must be represented in a preserving edit.
-        try container.encode(mode1, forKey: .mode1)
-        try container.encode(encodeParentDirectoryName1, forKey: .encodeParentDirectoryName1)
-        try container.encode(directory1, forKey: .directory1)
-        try container.encode(mode2, forKey: .mode2)
-        try container.encode(encodeParentDirectoryName2, forKey: .encodeParentDirectoryName2)
-        try container.encode(directory2, forKey: .directory2)
-        try container.encode(mode3, forKey: .mode3)
-        try container.encode(encodeParentDirectoryName3, forKey: .encodeParentDirectoryName3)
-        try container.encode(directory3, forKey: .directory3)
+        // The manual-reserve checker tests typeof(value) against undefined.
+        // JSON null therefore looks like a supplied encode mode/directory and
+        // can be rejected.  Omission is also the server's clear-on-edit
+        // representation, so only configured values belong in the payload.
+        try container.encodeIfPresent(mode1, forKey: .mode1)
+        try container.encodeIfPresent(encodeParentDirectoryName1, forKey: .encodeParentDirectoryName1)
+        try container.encodeIfPresent(directory1, forKey: .directory1)
+        try container.encodeIfPresent(mode2, forKey: .mode2)
+        try container.encodeIfPresent(encodeParentDirectoryName2, forKey: .encodeParentDirectoryName2)
+        try container.encodeIfPresent(directory2, forKey: .directory2)
+        try container.encodeIfPresent(mode3, forKey: .mode3)
+        try container.encodeIfPresent(encodeParentDirectoryName3, forKey: .encodeParentDirectoryName3)
+        try container.encodeIfPresent(directory3, forKey: .directory3)
         try container.encode(isDeleteOriginalAfterEncode, forKey: .isDeleteOriginalAfterEncode)
     }
 
