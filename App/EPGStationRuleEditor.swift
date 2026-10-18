@@ -105,7 +105,16 @@ struct EPGStationRuleEditor: View {
             .onChange(of: submitting) { _, busy in
                 if !busy, message != nil { footerFocus = .close }
             }
-            .onDisappear { store.cancel(); operation?.cancel() }
+            .onChange(of: showingPreview) { _, visible in
+                if !visible, store.previewing { store.invalidatePreview() }
+            }
+            .onDisappear {
+                // tvOS presents these child screens full-screen. Their
+                // appearance must not discard the draft's search result.
+                guard !showingPreview, !confirm else { return }
+                store.cancel()
+                operation?.cancel()
+            }
         }
     }
 
