@@ -87,6 +87,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
 
     private weak var videoSurface: UIView?
     private var gate = PlaybackReadinessGate()
+    private var endGate = FilePlaybackEndGate()
     private var monitor: Task<Void, Never>?
     private var stopTask: Task<Void, Never>?
     private var pendingLoadURL: URL?
@@ -250,6 +251,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         isEnded = false
         wantsPause = wantsPause || isPaused
         beginWaiting()
+        endGate.reset()
         resetReadinessBaseline()
         player.audio?.isMuted = true
         updateContinuousDisplayNeed()
@@ -305,6 +307,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
             targetSeconds = safeCurrentSeconds
         }
         if !preservingTrustedPosition, !isLoading, failure == nil { reportProgress(force: true) }
+        endGate.reset()
         isSuspendedForBackground = true
         generation &+= 1
         pendingLoadURL = nil
@@ -364,6 +367,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         isStopped = true
         isSuspendedForBackground = false
         generation &+= 1
+        endGate.reset()
         pendingLoadURL = nil
         pendingLoadGeneration = 0
         pendingPositionSeconds = nil
@@ -416,6 +420,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         player.delegate = self
         currentURL = url
         generation &+= 1
+        endGate.reset()
         pendingLoadGeneration = generation
         pendingLoadURL = url
         let effectiveDuration = durationHint ?? durationSeconds
@@ -497,7 +502,8 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
     }
 
     private func updateStatus() {
-        guard !isStopped, !isSuspendedForBackground, failure == nil, currentURL != nil else { return }
+        guard !isStopped, !isSuspendedForBackground, failure == nil,
+              currentURL != nil, !isEnded else { return }
 
         if pendingLoadURL != nil {
             startPendingLoadIfReady(for: generation)
@@ -578,6 +584,25 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
                     ? decodedAudio > audioBaselineDecoded && playedAudio > audioBaselinePlayed
                     : decodedAudio > 0 && playedAudio > 0
             }
+
+            let detectedEnd = endGate.update(
+                currentSeconds: rawPlaybackSeconds,
+                duration: durationHint,
+                position: Double(player.position),
+                remainingSeconds: rawRemainingSeconds,
+                isPaused: player.state == .paused,
+                hasPendingSeek: pendingPositionSeconds != nil,
+                displayedPictures: totalPictures,
+                playedAudioBuffers: playedAudio,
+                at: ProcessInfo.processInfo.systemUptime
+            )
+            if detectedEnd {
+#if DEBUG
+                print("RingonomiFileEndGate: confirmed current=\(rawPlaybackSeconds ?? -1) duration=\(durationHint ?? -1) position=\(player.position) remaining=\(rawRemainingSeconds ?? -1)")
+#endif
+                finishPlayback()
+                return
+            }
 #if DEBUG
             if Date().timeIntervalSince(lastDebugStatusDate) >= 5 {
                 lastDebugStatusDate = Date()
@@ -657,6 +682,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         pendingPositionFallbackApplied = false
         pendingPositionStartedAt = Date()
         pendingPositionIsInitial = isInitial
+        endGate.reset()
         resetReadinessBaseline()
         player.audio?.isMuted = true
         updateContinuousDisplayNeed()
@@ -806,11 +832,13 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
     private func finishPlayback() {
         guard !isStopped, !isSuspendedForBackground else { return }
         guard !isEnded else { return }
+        endGate.reset()
         isEnded = true
         wantsPause = true
         isPaused = true
         isLoading = false
         waitingSince = Date()
+        player.pause()
         player.audio?.isMuted = true
         if let duration = durationSeconds { currentSeconds = duration }
         status = "再生終了（再生ボタンで最初から）"
@@ -826,6 +854,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         if !isLoading {
             resetReadinessBaseline()
             gate.reset()
+            endGate.reset()
             waitingSince = Date()
             isLoading = true
         }
@@ -837,6 +866,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
 
     private func fail(_ message: String) {
         guard !isStopped, !isSuspendedForBackground, failure == nil else { return }
+        endGate.reset()
         player.audio?.isMuted = true
         player.pause()
         failure = message
@@ -862,6 +892,13 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
               value.isFinite, value >= 0 else { return nil }
         let seconds = value / 1000
         return seconds.isFinite && seconds >= 0 ? seconds : nil
+    }
+
+    private var rawRemainingSeconds: Double? {
+        guard let value = player.remainingTime?.value?.doubleValue,
+              value.isFinite else { return nil }
+        let seconds = value / 1000
+        return seconds.isFinite ? seconds : nil
     }
 
     private func positionTolerance(for _: Double, duration: Double?) -> Double {

@@ -174,8 +174,14 @@ struct FilePlaybackView: View {
                 isSeeking = false
                 visiblePanel = nil
                 playbackFocus = controller.failure == nil ? .loadingClose : .retry
-            } else if controller.failure == nil, visiblePanel == nil {
-                playbackFocus = .surface
+            } else if controller.failure == nil {
+                if controller.isEnded {
+                    isSeeking = false
+                    setPanel(.bottom)
+                    playbackFocus = .playPause
+                } else if visiblePanel == nil {
+                    playbackFocus = .surface
+                }
             }
         }
         .onChange(of: controller.failure, initial: true) { _, failure in
@@ -186,6 +192,12 @@ struct FilePlaybackView: View {
             } else if !controller.isLoading, visiblePanel == nil {
                 playbackFocus = .surface
             }
+        }
+        .onChange(of: controller.isEnded, initial: true) { _, ended in
+            guard ended, !controller.isLoading, controller.failure == nil else { return }
+            isSeeking = false
+            setPanel(.bottom)
+            playbackFocus = .playPause
         }
         .onChange(of: visiblePanel) { _, panel in
 #if DEBUG
@@ -396,6 +408,7 @@ struct FilePlaybackView: View {
         case .top:
             return controller.audioOptions.count > 1 ? .audio : .topClose
         case .bottom:
+            if controller.isEnded { return .playPause }
             return controller.canSeek ? .seek : .playPause
         }
     }

@@ -6,6 +6,7 @@ final class EPGStationLibraryStore: ObservableObject {
     @Published private(set) var records: [EPGStationRecording] = []
     @Published private(set) var total = 0
     @Published private(set) var loading = false
+    @Published private(set) var cancelled = false
     @Published private(set) var error: String?
     private var request: Task<Void, Never>?
     private var generation = UUID()
@@ -15,7 +16,9 @@ final class EPGStationLibraryStore: ObservableObject {
         let expected = UUID()
         generation = expected
         records = []
+        total = 0
         error = nil
+        cancelled = false
         loading = true
         request = Task { @MainActor [weak self] in
             do {
@@ -43,10 +46,12 @@ final class EPGStationLibraryStore: ObservableObject {
     }
 
     func cancel() {
+        let wasLoading = loading
         generation = UUID()
         request?.cancel()
         request = nil
         loading = false
+        if wasLoading { cancelled = true }
     }
 }
 
@@ -120,6 +125,9 @@ struct EPGStationLibraryView: View {
                         Button("読み込みを中止") { store.cancel() }
                     } else if let error = store.error {
                         Text(error).foregroundStyle(.red)
+                        Button("再試行", action: reload)
+                    } else if store.cancelled {
+                        Text("読み込みを中止しました。")
                         Button("再試行", action: reload)
                     } else if store.records.isEmpty {
                         Text(keyword.isEmpty ? "録画がありません。" : "一致する録画がありません。")
