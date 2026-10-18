@@ -22,6 +22,10 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
     // actor while SwiftUI is dismantling the representable.  Teardown must
     // not publish into that invalidating graph.
     private var isStopped = false
+    // Background transitions keep the controller alive, but the VLC decoder
+    // and its polling task must be released until the app is foregrounded
+    // again.  This flag also makes repeated lifecycle notifications safe.
+    private var isSuspendedForBackground = false
     private var isChangingQuality = false
     @Published private var wantsPause = false
     var isPaused: Bool { wantsPause }
@@ -88,7 +92,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
     }
 
     func prepareQualityChange() {
-        guard !isStopped else { return }
+        guard !isStopped, !isSuspendedForBackground else { return }
         // Ignore callbacks from the old media until SwiftUI supplies the new URL.
         isChangingQuality = true
         monitor?.cancel()
@@ -99,8 +103,10 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         gate.reset()
     }
     func load(_ url: URL) {
-        guard currentURL != url else { return }
+        guard !isSuspendedForBackground, currentURL != url else { return }
         isStopped = false
+        isSuspendedForBackground = false
+        player.delegate = self
         isChangingQuality = false
         currentURL = url
         monitor?.cancel()
@@ -118,6 +124,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         waitingSince = Date()
         isLoading = true
         player.media = VLCMedia(url: url)
+        if let videoSurface { player.drawable = videoSurface }
         player.audio?.isMuted = true
         player.play()
         monitor = Task { @MainActor [weak self] in
@@ -129,7 +136,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         }
     }
     func togglePause() {
-        guard !isStopped, failure == nil else { return }
+        guard !isStopped, !isSuspendedForBackground, failure == nil else { return }
         wantsPause.toggle()
         if !isLoading {
             if wantsPause { player.pause(); player.audio?.isMuted = true }
@@ -138,15 +145,55 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         updateStatus()
     }
     func retry() {
-        guard !isStopped, let url = currentURL else { return }
+        guard !isStopped, !isSuspendedForBackground, let url = currentURL else { return }
         currentURL = nil
         load(url)
     }
+
+    /// Releases the live decoder while the application is in the background.
+    /// The URL and the user's pause intent remain available for a fresh media
+    /// load when the app becomes active again.
+    func suspendForBackground() {
+        guard !isStopped, !isSuspendedForBackground, currentURL != nil, failure == nil else { return }
+        isSuspendedForBackground = true
+#if DEBUG
+        print("RingonomiLiveLifecycle: suspended paused=\(wantsPause)")
+#endif
+        monitor?.cancel()
+        monitor = nil
+        isLoading = true
+        waitingSince = Date()
+        gate.reset()
+        lastFrameDate = .distantPast
+        lastPictures = 0
+        player.audio?.isMuted = true
+        player.delegate = nil
+        player.stop()
+        player.drawable = nil
+        status = "読み込み中…"
+    }
+
+    /// Recreates the live media after a background transition.  A paused
+    /// stream keeps `wantsPause`; the readiness gate will pause the new media
+    /// before unmuting it.
+    func resumeFromBackground() {
+        guard isSuspendedForBackground, !isStopped, failure == nil,
+              let url = currentURL else { return }
+        isSuspendedForBackground = false
+#if DEBUG
+        print("RingonomiLiveLifecycle: resumed paused=\(wantsPause)")
+#endif
+        currentURL = nil
+        load(url)
+    }
+
     func stop() {
         monitor?.cancel()
         monitor = nil
         isStopped = true
+        isSuspendedForBackground = false
         currentURL = nil
+        player.delegate = nil
         clearAudioCatalog(notifyUI: false)
         player.audio?.isMuted = true
         player.stop()
@@ -160,6 +207,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         Task { @MainActor [weak self] in self?.updateStatus() }
     }
     private func beginWaiting() {
+        guard !isSuspendedForBackground else { return }
         if !isLoading { waitingSince = Date(); gate.reset() }
         isLoading = true
         player.audio?.isMuted = true
@@ -457,7 +505,8 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
     }
 
     private func updateStatus() {
-        guard !isStopped, !isChangingQuality, currentURL != nil, failure == nil else { return }
+        guard !isStopped, !isSuspendedForBackground, !isChangingQuality,
+              currentURL != nil, failure == nil else { return }
         if player.state == .error || player.state == .ended {
             fail("配信が中断されました。接続を確認して再試行してください。")
             return
