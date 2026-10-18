@@ -8,8 +8,8 @@ jobs:
   core:
     runs-on: macos-15
     env:
-      RINGONOMITV_CACHE_ROOT: ${{ runner.temp }}/ringonomitv-cache
-      RINGONOMITV_BUILD_TMPDIR: ${{ runner.temp }}/ringonomitv-tmp
+      RINGONOMITV_CACHE_ROOT: ${{ github.workspace }}/.cache
+      RINGONOMITV_BUILD_TMPDIR: ${{ github.workspace }}/.tmp
     steps:
       - name: Check out source
         uses: actions/checkout@v4
