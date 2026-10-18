@@ -152,6 +152,9 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
                 // A long-lived or already-terminal connection cannot be
                 // resumed reliably.  Reuse the existing quality URL, but
                 // create a new VLC media so the normal readiness gate applies.
+#if DEBUG
+                print("RingonomiLivePause: reconnecting after pause")
+#endif
                 retry()
             } else if !isLoading {
                 beginWaiting()
@@ -559,8 +562,10 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
             }
             if player.state == .error || player.state == .ended || !isLoading {
                 fail("配信が中断されました。接続を確認して再試行してください。")
+                return
             }
-            return
+            // A not-yet-started player can report stopped while loading.
+            // Keep polling so the normal loading timeout remains reachable.
         }
         refreshAudioTracks()
         if isLoading { player.audio?.isMuted = true }
