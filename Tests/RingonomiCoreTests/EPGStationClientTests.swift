@@ -166,6 +166,45 @@ final class EPGStationClientTests: XCTestCase {
         Data(recordingObjectJSON().utf8)
     }
 
+    private func reservationObjectJSON(
+        id: Int = 21,
+        includeOptionals: Bool = true
+    ) -> String {
+        let optionalFields = includeOptionals
+            ? """
+              "ruleId": 7,
+              "programId": 31,
+              "description": "予約詳細\\n次の行\\t項目",
+              "extended": "拡張\\r\\n補足",
+              """
+            : ""
+        return """
+        {
+          "id": \(id),
+          "channelId": 2,
+          \(optionalFields)
+          "startAt": 1700000000000,
+          "endAt": 1700003600000,
+          "name": "予約番組",
+          "isSkip": false,
+          "isConflict": true,
+          "isOverlap": false,
+          "allowEndLack": true,
+          "isTimeSpecified": false,
+          "isDeleteOriginalAfterEncode": false,
+          "futureEncodeMode": "ignored"
+        }
+        """
+    }
+
+    private func reservationPageJSON(
+        reservations: String? = nil,
+        total: Int = 3
+    ) -> Data {
+        let reservations = reservations ?? "[\(reservationObjectJSON())]"
+        return Data("{\"reserves\":\(reservations),\"total\":\(total)}".utf8)
+    }
+
     func testRecordingsBuildExpectedQueryAndDecodeUnknownFileType() async throws {
         let recorder = EPGStationRequestRecorder()
         EPGStationURLProtocol.handler = { request in
@@ -215,6 +254,316 @@ final class EPGStationClientTests: XCTestCase {
         XCTAssertEqual(recording.videoFiles[0].id, 101)
         XCTAssertEqual(recording.videoFiles[1].type, "future")
         XCTAssertNil(recording.videoFiles[1].filename)
+    }
+
+    func testReservationsBuildExpectedQueryAndDecodeUnknownFields() async throws {
+        let recorder = EPGStationRequestRecorder()
+        EPGStationURLProtocol.handler = { request in
+            recorder.append(request)
+            return EPGStationURLProtocol.Stub(body: self.reservationPageJSON())
+        }
+        defer { EPGStationURLProtocol.handler = nil }
+
+        let client = try client(
+            additionalHeaders: [
+                "Authorization": "secret-token",
+                "Cookie": "secret-cookie",
+                "X-Test": "kept"
+            ]
+        )
+        let page = try await client.reservations(
+            offset: 10,
+            limit: 25,
+            filter: .conflict,
+            ruleID: 7
+        )
+
+        let request = try XCTUnwrap(recorder.all.first)
+        XCTAssertEqual(request.httpMethod, "GET")
+        XCTAssertEqual(request.url?.path, "/proxy/api/reserves")
+        XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+        XCTAssertNil(request.value(forHTTPHeaderField: "Cookie"))
+        XCTAssertFalse(request.httpShouldHandleCookies)
+        let queryItems = try XCTUnwrap(
+            URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false)?.queryItems
+        )
+        let query = Dictionary(uniqueKeysWithValues: queryItems.compactMap { item in
+            item.value.map { (item.name, $0) }
+        })
+        XCTAssertEqual(query["isHalfWidth"], "true")
+        XCTAssertEqual(query["type"], "conflict")
+        XCTAssertEqual(query["offset"], "10")
+        XCTAssertEqual(query["limit"], "25")
+        XCTAssertEqual(query["ruleId"], "7")
+
+        let reservation = try XCTUnwrap(page.reservations.first)
+        XCTAssertEqual(page.total, 3)
+        XCTAssertEqual(reservation.id, 21)
+        XCTAssertEqual(reservation.channelID, 2)
+        XCTAssertEqual(reservation.ruleID, 7)
+        XCTAssertEqual(reservation.programID, 31)
+        XCTAssertEqual(reservation.startAt, 1_700_000_000_000)
+        XCTAssertEqual(reservation.endAt, 1_700_003_600_000)
+        XCTAssertEqual(reservation.description, "予約詳細\n次の行\t項目")
+        XCTAssertEqual(reservation.extended, "拡張\r\n補足")
+        XCTAssertFalse(reservation.isSkip)
+        XCTAssertTrue(reservation.isConflict)
+        XCTAssertFalse(reservation.isOverlap)
+        XCTAssertTrue(reservation.allowEndLack)
+        XCTAssertFalse(reservation.isTimeSpecified)
+        XCTAssertFalse(reservation.isDeleteOriginalAfterEncode)
+    }
+
+    func testReservationDetailUsesReservationIDAndRejectsMismatchedResponse() async throws {
+        let recorder = EPGStationRequestRecorder()
+        EPGStationURLProtocol.handler = { request in
+            recorder.append(request)
+            return EPGStationURLProtocol.Stub(
+                body: Data(self.reservationObjectJSON(id: 21).utf8)
+            )
+        }
+        defer { EPGStationURLProtocol.handler = nil }
+
+        let client = try client()
+        let reservation = try await client.reservation(id: 21)
+        XCTAssertEqual(reservation.id, 21)
+        let request = try XCTUnwrap(recorder.all.first)
+        XCTAssertEqual(request.url?.path, "/proxy/api/reserves/21")
+        XCTAssertEqual(request.url?.query, "isHalfWidth=true")
+
+        EPGStationURLProtocol.handler = { _ in
+            EPGStationURLProtocol.Stub(
+                body: Data(self.reservationObjectJSON(id: 22).utf8)
+            )
+        }
+        do {
+            _ = try await client.reservation(id: 21)
+            XCTFail("a detail response for another reservation must fail")
+        } catch let error as EPGStationError {
+            XCTAssertEqual(error, .invalidResponse)
+        }
+    }
+
+    func testMinimalReservationPreservesMissingOptionalFields() throws {
+        let payload = Data(
+            #"{"id":22,"channelId":2,"startAt":1700000000000,"endAt":1700000001000,"name":"最小予約","isSkip":false,"isConflict":false,"isOverlap":false,"allowEndLack":false,"isTimeSpecified":true,"isDeleteOriginalAfterEncode":false}"#.utf8
+        )
+        let reservation = try JSONDecoder().decode(EPGStationReservation.self, from: payload)
+        XCTAssertEqual(reservation.id, 22)
+        XCTAssertNil(reservation.ruleID)
+        XCTAssertNil(reservation.programID)
+        XCTAssertNil(reservation.description)
+        XCTAssertNil(reservation.extended)
+        XCTAssertEqual(
+            EPGStationReservationFilter.allCases.map(\.rawValue),
+            ["all", "normal", "conflict", "skip", "overlap"]
+        )
+    }
+
+    func testReservationRequiredFieldsAndValuesAreValidated() throws {
+        let missingFlag = reservationObjectJSON()
+            .replacingOccurrences(of: "\"isConflict\": true,", with: "")
+        XCTAssertFalse(missingFlag.contains("\"isConflict\""))
+        let wrongFlagType = reservationObjectJSON()
+            .replacingOccurrences(of: "\"isConflict\": true", with: "\"isConflict\": \"true\"")
+        let reversedTime = reservationObjectJSON()
+            .replacingOccurrences(of: "\"endAt\": 1700003600000", with: "\"endAt\": 1699999999000")
+        let unsafeDescription = reservationObjectJSON()
+            .replacingOccurrences(of: "予約詳細\\n次の行\\t項目", with: "不正\\u0000文字")
+        let invalidIdentifier = reservationObjectJSON()
+            .replacingOccurrences(of: "\"id\": 21", with: "\"id\": 0")
+        let invalidRuleIdentifier = reservationObjectJSON()
+            .replacingOccurrences(of: "\"ruleId\": 7", with: "\"ruleId\": -1")
+
+        // A missing required flag must remain a decoding failure; it must not
+        // be silently defaulted to false.
+        XCTAssertThrowsError(
+            try JSONDecoder().decode(EPGStationReservation.self, from: Data(missingFlag.utf8))
+        ) { error in
+            XCTAssertTrue(error is DecodingError)
+        }
+        XCTAssertThrowsError(
+            try JSONDecoder().decode(EPGStationReservation.self, from: Data(wrongFlagType.utf8))
+        ) { error in
+            XCTAssertTrue(error is DecodingError)
+        }
+        for source in [
+            reversedTime,
+            unsafeDescription,
+            invalidIdentifier,
+            invalidRuleIdentifier
+        ] {
+            XCTAssertThrowsError(
+                try JSONDecoder().decode(EPGStationReservation.self, from: Data(source.utf8))
+            ) { error in
+                XCTAssertEqual(error as? EPGStationError, .invalidResponse)
+            }
+        }
+    }
+
+    func testReservationPaginationParametersAndDuplicateIDsAreRejected() async throws {
+        let client = try client()
+        do {
+            _ = try await client.reservations(offset: -1)
+            XCTFail("negative offset must fail")
+        } catch let error as EPGStationError {
+            XCTAssertEqual(error, .invalidRequest)
+        }
+        do {
+            _ = try await client.reservations(limit: 0)
+            XCTFail("zero limit must fail")
+        } catch let error as EPGStationError {
+            XCTAssertEqual(error, .invalidRequest)
+        }
+        do {
+            _ = try await client.reservations(limit: EPGStationClient.maximumPageLimit + 1)
+            XCTFail("an oversized limit must fail")
+        } catch let error as EPGStationError {
+            XCTAssertEqual(error, .invalidRequest)
+        }
+        do {
+            _ = try await client.reservations(ruleID: 0)
+            XCTFail("zero rule ID must fail")
+        } catch let error as EPGStationError {
+            XCTAssertEqual(error, .invalidIdentifier)
+        }
+
+        EPGStationURLProtocol.handler = { _ in
+            let one = self.reservationObjectJSON()
+            return EPGStationURLProtocol.Stub(
+                body: self.reservationPageJSON(reservations: "[\(one),\(one)]", total: 2)
+            )
+        }
+        defer { EPGStationURLProtocol.handler = nil }
+        do {
+            _ = try await client.reservations(limit: 2)
+            XCTFail("duplicate reservation IDs must fail")
+        } catch let error as EPGStationError {
+            XCTAssertEqual(error, .invalidResponse)
+        }
+
+        EPGStationURLProtocol.handler = { _ in
+            let one = self.reservationObjectJSON(id: 21)
+            let two = self.reservationObjectJSON(id: 22)
+            return EPGStationURLProtocol.Stub(
+                body: self.reservationPageJSON(reservations: "[\(one),\(two)]", total: 2)
+            )
+        }
+        do {
+            _ = try await client.reservations(limit: 1)
+            XCTFail("a page larger than the requested limit must fail")
+        } catch let error as EPGStationError {
+            XCTAssertEqual(error, .invalidResponse)
+        }
+    }
+
+    func testReservationHTTPStatusAndMalformedResponsesMapToSafeErrors() async throws {
+        let client = try client()
+        defer { EPGStationURLProtocol.handler = nil }
+
+        EPGStationURLProtocol.handler = { _ in
+            EPGStationURLProtocol.Stub(
+                status: 404,
+                body: Data(#"{"secret":"must not appear"}"#.utf8)
+            )
+        }
+        do {
+            _ = try await client.reservation(id: 21)
+            XCTFail("HTTP 404 must fail")
+        } catch let error as EPGStationError {
+            XCTAssertEqual(error, .httpStatus(404))
+            XCTAssertFalse(error.localizedDescription.contains("secret"))
+        }
+
+        EPGStationURLProtocol.handler = { _ in
+            EPGStationURLProtocol.Stub(status: 503, body: Data())
+        }
+        do {
+            _ = try await client.reservations()
+            XCTFail("HTTP 503 must fail")
+        } catch let error as EPGStationError {
+            XCTAssertEqual(error, .httpStatus(503))
+        }
+
+        EPGStationURLProtocol.handler = { _ in
+            EPGStationURLProtocol.Stub(body: Data(#"{"reserves":}"#.utf8))
+        }
+        do {
+            _ = try await client.reservations()
+            XCTFail("malformed JSON must fail")
+        } catch let error as EPGStationError {
+            XCTAssertEqual(error, .invalidResponse)
+        }
+    }
+
+    func testChannelsUseReadOnlyGETAndIgnoreUnknownFields() async throws {
+        let recorder = EPGStationRequestRecorder()
+        EPGStationURLProtocol.handler = { request in
+            recorder.append(request)
+            let body = """
+            [
+              {"id":1,"name":"地デジ1","halfWidthName":"地デジ1","serviceId":101,"hasLogoData":true,"futureField":"ignored"},
+              {"id":2,"name":"衛星2","channelType":"BS"}
+            ]
+            """
+            return EPGStationURLProtocol.Stub(body: Data(body.utf8))
+        }
+        defer { EPGStationURLProtocol.handler = nil }
+
+        let client = try client(
+            additionalHeaders: [
+                "Authorization": "secret-token",
+                "Cookie": "secret-cookie"
+            ]
+        )
+        let channels = try await client.channels()
+
+        let request = try XCTUnwrap(recorder.all.first)
+        XCTAssertEqual(request.httpMethod, "GET")
+        XCTAssertEqual(request.url?.path, "/proxy/api/channels")
+        XCTAssertNil(request.url?.query)
+        XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+        XCTAssertNil(request.value(forHTTPHeaderField: "Cookie"))
+        XCTAssertEqual(channels.count, 2)
+        XCTAssertEqual(channels[0].id, 1)
+        XCTAssertEqual(channels[0].name, "地デジ1")
+        XCTAssertEqual(channels[0].halfWidthName, "地デジ1")
+        XCTAssertEqual(channels[1].id, 2)
+        XCTAssertNil(channels[1].halfWidthName)
+    }
+
+    func testChannelsRejectDuplicateIDsAndUnsafeRequiredFields() async throws {
+        let client = try client()
+        defer { EPGStationURLProtocol.handler = nil }
+
+        EPGStationURLProtocol.handler = { _ in
+            EPGStationURLProtocol.Stub(
+                body: Data(#"[{"id":1,"name":"地デジ1"},{"id":1,"name":"重複"}]"#.utf8)
+            )
+        }
+        do {
+            _ = try await client.channels()
+            XCTFail("duplicate channel IDs must fail")
+        } catch let error as EPGStationError {
+            XCTAssertEqual(error, .invalidResponse)
+        }
+
+        let invalidPayloads = [
+            Data(#"[{"id":0,"name":"不正ID"}]"#.utf8),
+            Data(#"[{"id":2,"name":""}]"#.utf8),
+            Data(#"[{"id":3,"name":"不正\u0000文字"}]"#.utf8)
+        ]
+        for payload in invalidPayloads {
+            EPGStationURLProtocol.handler = { _ in
+                EPGStationURLProtocol.Stub(body: payload)
+            }
+            do {
+                _ = try await client.channels()
+                XCTFail("invalid channel payload must fail")
+            } catch let error as EPGStationError {
+                XCTAssertEqual(error, .invalidResponse)
+            }
+        }
     }
 
     func testRecordingDetailAndVideoEndpointsKeepIDsSeparate() async throws {

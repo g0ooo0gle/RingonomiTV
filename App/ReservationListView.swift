@@ -35,6 +35,7 @@ struct ReservationListView: View {
             }
             .navigationTitle("録画予約")
             .toolbar {
+                NavigationLink("EPGStation") { EPGStationReservationListView() }
                 NavigationLink("キーワード") { KeywordReservationListView(address: address, store: keywords) }
                 Button("更新") { Task { await store.refresh(address: address) } }.disabled(store.loading || store.saving)
             }
