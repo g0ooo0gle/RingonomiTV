@@ -110,6 +110,7 @@ struct LibraryView: View {
                         NavigationLink("EPGStationの予約") {
                             EPGStationReservationListView()
                         }
+                        NavigationLink("EPGStationのキーワード予約") { EPGStationRuleListView() }
                         Text("EPGStationの録画一覧から、保存済みの動画を再生します。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -126,6 +127,8 @@ struct LibraryView: View {
                         EPGStationLibraryView()
                     case .epgstationReservations:
                         EPGStationReservationListView()
+                    case .epgstationRules:
+                        EPGStationRuleListView()
                     }
                 }
             }
@@ -146,6 +149,10 @@ struct LibraryView: View {
             if arguments.contains("--show-epgstation-reservations") || arguments.contains("--epgstation-reservation") {
                 selectedTab = 4
                 settingsPath = [.epgstationReservations]
+            }
+            if arguments.contains("--show-epgstation-rules") || arguments.contains("--epgstation-rule") {
+                selectedTab = 4
+                settingsPath = [.epgstationRules]
             }
 #endif
         }
@@ -191,6 +198,10 @@ struct LibraryView: View {
             if arguments.contains("--show-epgstation-reservations") || arguments.contains("--epgstation-reservation") {
                 selectedTab = 4
                 settingsPath = [.epgstationReservations]
+            }
+            if arguments.contains("--show-epgstation-rules") || arguments.contains("--epgstation-rule") {
+                selectedTab = 4
+                settingsPath = [.epgstationRules]
             }
 #endif
         }
@@ -283,4 +294,5 @@ private enum SettingsDestination: Hashable {
     case mirakurun
     case epgstation
     case epgstationReservations
+    case epgstationRules
 }
