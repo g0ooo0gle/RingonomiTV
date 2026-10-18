@@ -110,6 +110,9 @@ struct PlaybackTopControls: View {
                 // command while the quality card is taking over the remote.
                 focus = nil
                 isQualityOverlayPresented = true
+#if DEBUG
+                print("RingonomiQualityOverlay: opened current=\(quality)")
+#endif
             }
             .focused($focus, equals: .quality)
             .disabled(isLoading)
@@ -156,16 +159,24 @@ struct PlaybackTopControls: View {
     private func dismissQualityOverlay(restoreFocus: Bool) {
         guard isQualityOverlayPresented else { return }
         isQualityOverlayPresented = false
+#if DEBUG
+        print("RingonomiQualityOverlay: dismissed active=\(isActive)")
+#endif
         if restoreFocus, isActive {
             focus = .quality
         }
     }
 
     private func finishQualitySelection(_ value: String) {
-        isQualityOverlayPresented = false
-        if isActive {
-            focus = .quality
+        guard isActive else {
+            dismissQualityOverlay(restoreFocus: false)
+            return
         }
+        isQualityOverlayPresented = false
+        focus = .quality
+#if DEBUG
+        print("RingonomiQualityOverlay: selected value=\(value)")
+#endif
         selectQuality(value)
     }
 }
