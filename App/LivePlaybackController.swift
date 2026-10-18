@@ -132,7 +132,10 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         pendingLoadGeneration = expectedLoadGeneration
         monitor?.cancel()
         resetAudioCatalog()
-        player.stop()
+        // Calling stop() for an already-stopped player still dispatches
+        // libvlc_media_player_stop_async. Do not enqueue that extra stop just
+        // before the pending loader observes .stopped and calls play().
+        if player.state != .stopped { player.stop() }
         failure = nil
         gate.reset()
         lastFrameDate = .distantPast
