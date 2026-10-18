@@ -5,26 +5,29 @@ struct Playback: Identifiable {
     let id = UUID()
     let client: RingonomiClient
     let channelID: String?
-    let videoID: Int?
+    /// 番組詳細・配信APIへ渡す録画番組ID。録画ファイルIDとは別。
+    let recordingID: Int?
     let title: String
     let initialQuality: String
     let resumeID: RecordingResumeID?
     let durationHint: Double?
     let recordingStatus: String?
     let savedPosition: Double?
+    let recordedFileID: Int?
 
-    init(client: RingonomiClient, channelID: String?, videoID: Int?, title: String, initialQuality: String,
+    init(client: RingonomiClient, channelID: String?, recordingID: Int?, title: String, initialQuality: String,
          resumeID: RecordingResumeID? = nil, durationHint: Double? = nil,
-         recordingStatus: String? = nil, savedPosition: Double? = nil) {
+         recordingStatus: String? = nil, savedPosition: Double? = nil, recordedFileID: Int? = nil) {
         self.client = client
         self.channelID = channelID
-        self.videoID = videoID
+        self.recordingID = recordingID
         self.title = title
         self.initialQuality = initialQuality
         self.resumeID = resumeID
         self.durationHint = durationHint
         self.recordingStatus = recordingStatus
         self.savedPosition = savedPosition
+        self.recordedFileID = recordedFileID
     }
 
     static func timestamp(_ seconds: Double) -> String {
@@ -32,7 +35,7 @@ struct Playback: Identifiable {
         return String(format: "%02d:%02d", whole / 60, whole % 60)
     }
     func url(quality: String, session: String) -> URL {
-        if let videoID { return client.recordingURL(id: videoID, session: session, quality: quality) }
+        if let recordingID { return client.recordingURL(id: recordingID, session: session, quality: quality) }
         return client.endpoint(["api", "streams", "live", channelID ?? "invalid", quality, "mpegts"])
     }
 }
@@ -54,7 +57,7 @@ struct PlaybackView: View {
 #if canImport(TVVLCKit)
     @StateObject private var controller = PlaybackController()
     @StateObject private var recordingController = RecordingPlaybackController()
-    private var isRecording: Bool { item.videoID != nil }
+    private var isRecording: Bool { item.recordingID != nil }
     private var isLoading: Bool { isRecording ? recordingController.isLoading : controller.isLoading }
     private var failure: String? { isRecording ? recordingController.failure : controller.failure }
 #endif
@@ -100,7 +103,7 @@ struct PlaybackView: View {
 
     private func flushPosition() {
 #if canImport(TVVLCKit)
-        if item.videoID != nil { recordingController.flushPosition() }
+        if item.recordingID != nil { recordingController.flushPosition() }
 #endif
     }
 
@@ -135,7 +138,7 @@ struct PlaybackView: View {
             VStack(alignment: .leading, spacing: 12) {
                 Text(item.title).font(.headline).lineLimit(2)
                 Text(isRecording ? recordingController.status : controller.status).font(.caption)
-                if item.videoID != nil { Text(recordingController.playbackTime).font(.caption).monospacedDigit() }
+                if item.recordingID != nil { Text(recordingController.playbackTime).font(.caption).monospacedDigit() }
                 if let maintenanceError { Text(maintenanceError).font(.caption) }
             }.padding(40).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .allowsHitTesting(false)
@@ -147,9 +150,13 @@ struct PlaybackView: View {
 #endif
             HStack(spacing: 24) {
 #if canImport(TVVLCKit)
-                if item.videoID != nil {
+                if item.recordingID != nil {
                     Button("10秒戻る") { recordingController.seek(seconds: -10) }.disabled(isLoading || failure != nil)
                     Button("30秒進む") { recordingController.seek(seconds: 30) }.disabled(isLoading || failure != nil)
+                    if let recordingID = item.recordingID {
+                        RecordingChapterControls(client: item.client, recordingID: recordingID,
+                                                 fileID: item.recordedFileID, controller: recordingController)
+                    }
                 }
                 Menu("画質：\(quality)") {
                     ForEach(["1080p", "720p", "540p", "360p"], id: \.self) { value in
@@ -171,14 +178,14 @@ struct PlaybackView: View {
             if isRecording { recordingController.togglePause() } else { controller.togglePause() }
         }
         .task(id: streamURL) {
-            guard let videoID = item.videoID else { return }
+            guard let recordingID = item.recordingID else { return }
             let currentSession = session
             let currentQuality = quality
             while !Task.isCancelled {
                 do {
                     try await Task.sleep(for: .seconds(4))
                     if failure != nil { continue }
-                    try await item.client.keepRecordingAlive(id: videoID, session: currentSession, quality: currentQuality)
+                    try await item.client.keepRecordingAlive(id: recordingID, session: currentSession, quality: currentQuality)
                     maintenanceError = nil
 #if DEBUG
                     print("RingonomiTVRecording: keep-alive OK quality=\(currentQuality)")

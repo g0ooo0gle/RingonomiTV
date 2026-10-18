@@ -25,6 +25,11 @@ public struct Recording: Decodable, Identifiable, Sendable {
     /// True when the source recording did not cover the complete program.
     /// Older server responses may omit this field.
     public let isPartiallyRecorded: Bool?
+
+    /// RecordedProgram ID expected by the stream and detail routes.
+    /// This is distinct from `recordedVideo.id`, which identifies the media
+    /// metadata object used for local resume identity.
+    public var playbackID: Int { id }
 }
 public struct RecordedVideo: Decodable, Sendable {
     public let id: Int
@@ -32,6 +37,55 @@ public struct RecordedVideo: Decodable, Sendable {
     /// Server lifecycle state, for example `Recording` or `Recorded`.
     /// Older server responses may omit this field.
     public let status: String?
+    /// Server-generated commercial intervals in seconds from video start.
+    /// The field is omitted or null until analysis produces usable metadata.
+    public let cmSections: [CommercialSection]?
+
+    private enum CodingKeys: String, CodingKey {
+        case id, duration, status, cmSections
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(Int.self, forKey: .id)
+        duration = try container.decode(Double.self, forKey: .duration)
+        status = try container.decodeIfPresent(String.self, forKey: .status)
+        cmSections = Self.decodeCommercialSections(from: container)
+    }
+
+    private static func decodeCommercialSections(
+        from container: KeyedDecodingContainer<CodingKeys>
+    ) -> [CommercialSection]? {
+        guard container.contains(.cmSections),
+              (try? container.decodeNil(forKey: .cmSections)) != true,
+              var nested = try? container.nestedUnkeyedContainer(forKey: .cmSections) else {
+            return nil
+        }
+
+        if let count = nested.count, count > RecordingChapterTimeline.maximumSections {
+            return nil
+        }
+
+        var sections: [CommercialSection] = []
+        var processedCount = 0
+        while !nested.isAtEnd {
+            // Some decoders cannot provide `count`; keep the same bound while
+            // consuming such a stream so an untrusted response cannot cause
+            // unbounded work or a partial chapter list.
+            guard processedCount < RecordingChapterTimeline.maximumSections else {
+                return nil
+            }
+            processedCount += 1
+            // `superDecoder()` advances the unkeyed container even when the
+            // individual value is not a valid CM object, so malformed entries
+            // cannot trap the loop or invalidate the rest of the recording.
+            guard let itemDecoder = try? nested.superDecoder() else { break }
+            if let section = try? CommercialSection(from: itemDecoder) {
+                sections.append(section)
+            }
+        }
+        return sections
+    }
 }
 public struct RecordingsResponse: Decodable, Sendable {
     public let total: Int

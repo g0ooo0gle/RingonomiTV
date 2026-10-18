@@ -239,10 +239,15 @@ final class RecordingPlaybackController: ObservableObject {
         }
     }
     func seek(seconds: Double) {
-        guard !isLoading, failure == nil else { return }
+        seek(to: safeTime() + seconds)
+    }
+    var currentSeconds: Double { isLoading ? targetSeconds : safeTime() }
+
+    func seek(to seconds: Double) {
+        guard !isLoading, failure == nil, seconds.isFinite else { return }
         let duration = player.currentItem?.duration.seconds ?? .nan
         let maximum = duration.isFinite && duration > 0 ? max(0, duration - 0.1) : Double.greatestFiniteMagnitude
-        prepareExistingPosition(min(maximum, max(0, safeTime() + seconds)))
+        prepareExistingPosition(min(maximum, max(0, seconds)))
     }
     private func prepareExistingPosition(_ seconds: Double) {
         flushPosition()

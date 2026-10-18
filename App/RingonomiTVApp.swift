@@ -42,7 +42,7 @@ struct LibraryView: View {
                     Button {
                         do {
                             let client = try RingonomiClient(address: effectiveAddress)
-                            playback = Playback(client: client, channelID: channel.displayChannelId, videoID: nil, title: channel.name, initialQuality: quality)
+                            playback = Playback(client: client, channelID: channel.displayChannelId, recordingID: nil, title: channel.name, initialQuality: quality)
                         } catch { self.error = error.localizedDescription }
                     } label: {
                         VStack(alignment: .leading) {
@@ -79,7 +79,7 @@ struct LibraryView: View {
                 do {
                     let client = try RingonomiClient(address: effectiveAddress)
                     playback = Playback(client: client, channelID: channel.displayChannelId,
-                                        videoID: nil, title: channel.name, initialQuality: quality)
+                                        recordingID: nil, title: channel.name, initialQuality: quality)
                 } catch { self.error = error.localizedDescription }
             }.tabItem { Label("番組表", systemImage: "calendar") }.tag(2)
             ReservationListView(address: effectiveAddress, store: reservations, keywords: keywords)
@@ -131,7 +131,7 @@ struct LibraryView: View {
             launchArgumentsHandled = true
             if let index = arguments.firstIndex(of: "--play-channel"), index + 1 < arguments.count,
                let channel = channels.first(where: { $0.displayChannelId == arguments[index + 1] }) {
-                playback = Playback(client: client, channelID: channel.displayChannelId, videoID: nil, title: channel.name, initialQuality: quality)
+                playback = Playback(client: client, channelID: channel.displayChannelId, recordingID: nil, title: channel.name, initialQuality: quality)
             }
 #endif
             recordings = try await client.fetch(["api", "videos"], as: RecordingsResponse.self).recordedPrograms
@@ -141,7 +141,7 @@ struct LibraryView: View {
                 openRecording(recording)
             }
             if arguments.contains("--test-recording-failure") {
-                playback = Playback(client: client, channelID: nil, videoID: -1,
+                playback = Playback(client: client, channelID: nil, recordingID: -1,
                                     title: "接続エラーの検証", initialQuality: quality)
             }
 #endif
@@ -171,11 +171,11 @@ struct LibraryView: View {
                 resumeStore.position(for: $0, duration: recording.recordedVideo.duration,
                                      status: recording.recordedVideo.status)
             }
-            playback = Playback(client: client, channelID: nil, videoID: recording.recordedVideo.id,
+            playback = Playback(client: client, channelID: nil, recordingID: recording.playbackID,
                                 title: recording.title, initialQuality: quality,
                                 resumeID: id, durationHint: recording.recordedVideo.duration,
                                 recordingStatus: recording.recordedVideo.status,
-                                savedPosition: savedPosition)
+                                savedPosition: savedPosition, recordedFileID: recording.recordedVideo.id)
         } catch { self.error = error.localizedDescription }
     }
 }
