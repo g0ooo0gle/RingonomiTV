@@ -1,7 +1,7 @@
 import SwiftUI
 @preconcurrency import AVFoundation
 
-/// HLSはAppleの再生基盤で準備し、時計を止めたまま音声・映像を先読みする。
+/// HLSの先読みと最初の映像を確認してから、ロード表示と音声ミュートを解除する。
 @MainActor
 final class RecordingPlaybackController: ObservableObject {
     let player = AVPlayer()
@@ -109,6 +109,12 @@ final class RecordingPlaybackController: ObservableObject {
                         }
                         self.prerolled = true
                         self.preparationInFlight = false
+                        if self.videoLayer?.isReadyForDisplay != true {
+                            // 一部のHLSはprerollだけでは最初の映像を出力しない。
+                            // 先読み後にミュートで描画を開始し、最初のフレームまで覆いを保つ。
+                            self.player.isMuted = true
+                            self.player.playImmediately(atRate: 1)
+                        }
                         self.revealWhenReady()
                     }
                 }
@@ -219,7 +225,7 @@ final class RecordingPlaybackController: ObservableObject {
 #if DEBUG
         if Date().timeIntervalSince(lastLog) >= 5 {
             lastLog = Date()
-            print("RingonomiTVNative: time=\(safeTime()) rate=\(player.rate) loading=\(isLoading) muted=\(player.isMuted) layerReady=\(videoLayer?.isReadyForDisplay == true)")
+            print("RingonomiTVNative: time=\(safeTime()) rate=\(player.rate) loading=\(isLoading) muted=\(player.isMuted) layerReady=\(videoLayer?.isReadyForDisplay == true) itemStatus=\(player.currentItem?.status.rawValue ?? -1) playerStatus=\(player.status.rawValue) preparing=\(preparing) prerolled=\(prerolled) inFlight=\(preparationInFlight)")
         }
 #endif
     }
