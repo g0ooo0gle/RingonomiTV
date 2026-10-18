@@ -45,13 +45,18 @@ final class EPGStationLibraryStore: ObservableObject {
         }
     }
 
-    func cancel() {
+    func cancel(clear: Bool = false) {
         let wasLoading = loading
         generation = UUID()
         request?.cancel()
         request = nil
         loading = false
-        if wasLoading { cancelled = true }
+        if clear {
+            records = []
+            total = 0
+            error = nil
+            cancelled = false
+        } else if wasLoading { cancelled = true }
     }
 }
 
@@ -65,6 +70,7 @@ struct EPGStationLibraryView: View {
     @State private var offset = 0
     @State private var inputError: String?
     @State private var selectedID: Int?
+    @State private var detailAddress = ""
     @State private var showingDetail = false
     @StateObject private var store = EPGStationLibraryStore()
     @StateObject private var resumeStore = RecordingResumeStore()
@@ -135,6 +141,7 @@ struct EPGStationLibraryView: View {
                     } else {
                         ForEach(store.records) { recording in
                             Button {
+                                detailAddress = effectiveAddress
                                 selectedID = recording.id
                                 showingDetail = true
                             } label: {
@@ -168,7 +175,7 @@ struct EPGStationLibraryView: View {
         .navigationDestination(isPresented: $showingDetail) {
             if let selectedID {
                 EPGStationRecordingDetailView(
-                    address: effectiveAddress, recordingID: selectedID, resumeStore: resumeStore
+                    address: detailAddress, recordingID: selectedID, resumeStore: resumeStore
                 )
             }
         }
@@ -181,10 +188,21 @@ struct EPGStationLibraryView: View {
                let index = arguments.firstIndex(of: "--play-epgstation-recording"),
                index + 1 < arguments.count, let id = Int(arguments[index + 1]), id > 0 {
                 handledDebugSelection = true
+                detailAddress = effectiveAddress
                 selectedID = id
                 showingDetail = true
             }
 #endif
+        }
+        .onChange(of: effectiveAddress) { _, next in
+            showingDetail = false
+            selectedID = nil
+            detailAddress = ""
+            draftAddress = next
+            inputError = nil
+            offset = 0
+            store.cancel(clear: true)
+            if !next.isEmpty { reload() }
         }
         .onDisappear { store.cancel() }
     }
@@ -195,12 +213,14 @@ struct EPGStationLibraryView: View {
             _ = try EPGStationClient(address: next)
             inputError = nil
 #if DEBUG
-            if runtimeAddress == nil { address = next }
-#else
-            address = next
+            if runtimeAddress != nil {
+                offset = 0
+                reload()
+                return
+            }
 #endif
             offset = 0
-            reload()
+            if address == next { reload() } else { address = next }
         } catch { inputError = error.localizedDescription }
     }
 
