@@ -103,6 +103,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
     private var continuousDisplay = false
 #if DEBUG
     private var lastDebugStatusDate = Date.distantPast
+    private var lastDebugPositionDate = Date.distantPast
 #endif
 
     private var audioSourceID: UUID?
@@ -421,6 +422,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         updateContinuousDisplayNeed()
 #if DEBUG
         lastDebugStatusDate = .distantPast
+        lastDebugPositionDate = .distantPast
 #endif
         gate.reset()
         resetReadinessBaseline()
@@ -616,6 +618,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         updateContinuousDisplayNeed()
 #if DEBUG
         print("RingonomiFilePosition: request target=\(target) initial=\(isInitial)")
+        lastDebugPositionDate = .distantPast
 #endif
     }
 
@@ -630,6 +633,14 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
             pendingPositionApplied = false
             return false
         }
+
+#if DEBUG
+        if Date().timeIntervalSince(lastDebugPositionDate) >= 1 {
+            lastDebugPositionDate = Date()
+            let rawSeconds = rawPlaybackSeconds ?? -1
+            print("RingonomiFilePositionPending: requested=\(requested) rawSeconds=\(rawSeconds) position=\(player.position) state=\(player.state.rawValue) seekable=\(player.isSeekable) applied=\(pendingPositionApplied)")
+        }
+#endif
 
         let startedAt = pendingPositionStartedAt ?? Date()
         pendingPositionStartedAt = startedAt
