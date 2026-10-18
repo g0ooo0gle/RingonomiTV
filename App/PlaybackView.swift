@@ -44,10 +44,14 @@ struct PlaybackView: View {
     let resumeStore: RecordingResumeStore
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var quality: String
     @State private var session = UUID().uuidString
     @State private var maintenanceError: String?
     @State private var hasStarted = false
+    @State private var visiblePanel: PlaybackPanel?
+    @State private var panelBeforeLoading: PlaybackPanel?
+    @State private var isSeeking = false
     @State private var didSetInitialPlaybackFocus = false
     @State private var lastReadyPlaybackFocus: PlaybackControlFocus?
     @FocusState private var playbackFocus: PlaybackControlFocus?
@@ -75,6 +79,7 @@ struct PlaybackView: View {
     private var audioOptions: [PlaybackAudioOption] { isRecording ? recordingController.audioOptions : controller.audioOptions }
     private var selectedAudioID: String? { isRecording ? recordingController.selectedAudioID : controller.selectedAudioID }
     private var audioSelectionError: String? { isRecording ? recordingController.audioSelectionError : controller.audioSelectionError }
+    private var surfaceIsFocusable: Bool { visiblePanel == nil && !isLoading && failure == nil }
 #endif
     var body: some View {
         Group {
@@ -95,7 +100,7 @@ struct PlaybackView: View {
         .onAppear {
             if !hasStarted, item.savedPosition == nil { beginPlayback(at: 0) }
         }
-        .onExitCommand { close() }
+        .onExitCommand { handleExitCommand() }
         .onDisappear {
             flushPosition()
             commentStore.cancel()
@@ -128,16 +133,30 @@ struct PlaybackView: View {
 
     private func close() {
         flushPosition()
+        visiblePanel = nil
+        isSeeking = false
         dismiss()
     }
 
     private var playerBody: some View {
-        ZStack(alignment: .topTrailing) {
+        ZStack {
 #if canImport(TVVLCKit)
             if isRecording {
-                NativeRecordingVideo(url: streamURL, controller: recordingController).ignoresSafeArea()
+                NativeRecordingVideo(url: streamURL, controller: recordingController)
+                    .ignoresSafeArea()
+                    .focusable(surfaceIsFocusable, interactions: .activate)
+                    .focused($playbackFocus, equals: .surface)
+                    .onMoveCommand { handleMoveCommand($0) }
+                    .onSubmit { revealBottomPanel() }
+                    .onTapGesture { revealBottomPanel() }
             } else {
-                VLCVideo(url: streamURL, controller: controller).ignoresSafeArea()
+                VLCVideo(url: streamURL, controller: controller)
+                    .ignoresSafeArea()
+                    .focusable(surfaceIsFocusable, interactions: .activate)
+                    .focused($playbackFocus, equals: .surface)
+                    .onMoveCommand { handleMoveCommand($0) }
+                    .onSubmit { revealBottomPanel() }
+                    .onTapGesture { revealBottomPanel() }
             }
             if isRecording, recordingCommentsEnabled {
                 PlaybackCommentOverlay(comments: commentStore.comments,
@@ -170,50 +189,43 @@ struct PlaybackView: View {
                     }
                     if let failure {
                         Text(failure).multilineTextAlignment(.center)
-                        Button("再試行") {
-                            if isRecording { recordingController.retry() } else { controller.retry() }
-                        }.focused($playbackFocus, equals: .retry)
+                        HStack(spacing: 24) {
+                            Button("再試行") {
+                                if isRecording { recordingController.retry() } else { controller.retry() }
+                            }.focused($playbackFocus, equals: .retry)
+                            Button("閉じる", action: close)
+                                .focused($playbackFocus, equals: .close)
+                        }
+                    } else {
+                        Button("閉じる", action: close)
+                            .focused($playbackFocus, equals: .close)
                     }
                 }.padding(60).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            VStack(alignment: .leading, spacing: 12) {
-                Text(item.title).font(.headline).lineLimit(2)
-                Text(isRecording ? recordingController.status : controller.status).font(.caption)
-                if item.recordingID != nil { Text(recordingController.playbackTime).font(.caption).monospacedDigit() }
-                if let maintenanceError { Text(maintenanceError).font(.caption) }
-                if isRecording, let notice = recordingController.commercialSkipNotice {
-                    Text(notice).font(.caption)
+            if let visiblePanel {
+                if visiblePanel == .top {
+                    topPanel
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                } else {
+                    bottomPanel
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
-                if let audioSelectionError { Text(audioSelectionError).font(.caption).foregroundStyle(.orange) }
-                if isRecording, recordingCaptionsEnabled {
-                    RecordingCaptionStatus(controller: recordingController.captions)
-                }
-                if !isRecording, liveCommentsEnabled, let status = liveCommentStore.status {
-                    Text(status).font(.caption)
-                }
-                if isRecording, recordingCommentsEnabled, let status = commentStore.status {
-                    Text(status).font(.caption)
-                }
-            }.padding(40).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .allowsHitTesting(false)
+            } else if let maintenanceError {
+                Text(maintenanceError)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .padding(24)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .allowsHitTesting(false)
+            }
 #else
             VStack(spacing: 30) {
                 Text("TS再生ライブラリが必要です")
                 Text("READMEの手順でTVVLCKitを導入してビルドしてください。")
             }.frame(maxWidth: .infinity, maxHeight: .infinity).background(.black)
 #endif
-            VStack(spacing: 24) {
-#if canImport(TVVLCKit)
-                if isRecording { recordingTransportControls }
-                viewingControls
-#else
-                Button("閉じる") { close() }
-#endif
-            }
-            .padding(40)
-            .padding(.top, item.recordingID != nil ? 190 : 0)
-            .frame(maxWidth: .infinity, maxHeight: .infinity,
-                   alignment: item.recordingID != nil ? .top : .bottom)
         }
 #if canImport(TVVLCKit)
         .task(id: LiveCommentRequestID(channel: item.channelID, enabled: liveCommentsEnabled,
@@ -229,17 +241,34 @@ struct PlaybackView: View {
             updateLiveCommentClock()
             await liveCommentStore.run(client: item.client, channelID: channel)
         }
-        .defaultFocus($playbackFocus, isRecording ? .backward : .comments)
+        .defaultFocus($playbackFocus, .surface)
         .onChange(of: isLoading, initial: true) { _, loading in
             updateLiveCommentClock()
-            if !loading, failure == nil, !didSetInitialPlaybackFocus {
+            if loading {
+                if panelBeforeLoading == nil, let visiblePanel {
+                    panelBeforeLoading = visiblePanel
+                }
+                if visiblePanel != nil {
+                    visiblePanel = nil
+                    isSeeking = false
+                }
+                playbackFocus = .close
+            } else if !loading, failure == nil, let panel = panelBeforeLoading {
+                panelBeforeLoading = nil
+                setPanel(panel)
+            } else if !loading, failure == nil, !didSetInitialPlaybackFocus {
                 didSetInitialPlaybackFocus = true
-                playbackFocus = isRecording ? .backward : .comments
+                playbackFocus = .surface
+            } else if !loading, failure == nil, visiblePanel == nil {
+                // A failed retry or a hidden-panel rebuffer must return to the
+                // video surface; a panel focus would point at a view that is
+                // no longer in the hierarchy.
+                playbackFocus = .surface
             } else if !loading, failure == nil, let previous = lastReadyPlaybackFocus {
                 // Disabled controls temporarily lose focus during seek/preroll.
                 // Return to the user's control when the ready gate opens.
                 playbackFocus = previous == .audio && audioOptions.count < 2
-                    ? (isRecording ? .backward : .comments) : previous
+                    ? fallbackFocus : previous
             }
         }
         .onChange(of: playbackFocus) { _, focus in
@@ -251,7 +280,19 @@ struct PlaybackView: View {
         .onChange(of: controller.isPaused) { _, _ in updateLiveCommentClock() }
         .onChange(of: failure) { _, failure in
             updateLiveCommentClock()
-            if failure != nil { playbackFocus = .retry }
+            if failure != nil {
+                panelBeforeLoading = nil
+                visiblePanel = nil
+                isSeeking = false
+                playbackFocus = .retry
+            }
+        }
+        .onChange(of: visiblePanel) { _, panel in
+            if let panel {
+                playbackFocus = focusForPanel(panel, preferring: lastReadyPlaybackFocus)
+            } else {
+                playbackFocus = failure == nil && !isLoading ? .surface : (failure == nil ? .close : .retry)
+            }
         }
         .onChange(of: liveCommentDelay) { _, _ in updateLiveCommentClock() }
         .task(id: recordingCaptionsEnabled) {
@@ -315,97 +356,233 @@ struct PlaybackView: View {
                                              delay: commentDelay)
     }
 
-    private var recordingTransportControls: some View {
-        HStack(spacing: 24) {
-            Button("10秒戻る") { recordingController.seek(seconds: -10) }
-                .focused($playbackFocus, equals: .backward)
-                .disabled(isLoading || failure != nil)
-            Button("30秒進む") { recordingController.seek(seconds: 30) }
-                .focused($playbackFocus, equals: .forward)
-                .disabled(isLoading || failure != nil)
-            if let recordingID = item.recordingID {
-                RecordingChapterControls(client: item.client, recordingID: recordingID,
-                                         fileID: item.recordedFileID, controller: recordingController)
-                    .focused($playbackFocus, equals: .chapters)
+    private var topPanel: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(item.title)
+                .font(.headline)
+                .lineLimit(2)
+            HStack(spacing: 16) {
+                Text(isRecording ? recordingController.status : controller.status)
+                    .font(.caption)
+                if let maintenanceError {
+                    Text(maintenanceError)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+                if isRecording, let notice = recordingController.commercialSkipNotice {
+                    Text(notice).font(.caption)
+                }
+                if let audioSelectionError {
+                    Text(audioSelectionError)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+                if isRecording, recordingCaptionsEnabled,
+                   let captionStatus = recordingController.captions.status {
+                    Text(captionStatus).font(.caption)
+                }
+                if isRecording, recordingCommentsEnabled, let status = commentStore.status {
+                    Text(status).font(.caption)
+                }
+                if !isRecording, liveCommentsEnabled, let status = liveCommentStore.status {
+                    Text(status).font(.caption)
+                }
+            }
+            PlaybackTopControls(
+                isRecording: isRecording,
+                recordingCaptionsEnabled: $recordingCaptionsEnabled,
+                recordingCommentsEnabled: $recordingCommentsEnabled,
+                liveCommentsEnabled: $liveCommentsEnabled,
+                liveCommentDelay: $liveCommentDelay,
+                commentStoreLoading: commentStore.loading,
+                commentReload: { commentReload &+= 1 },
+                liveCommentReload: { liveCommentReload &+= 1 },
+                quality: quality,
+                isLoading: isLoading,
+                failure: failure,
+                audioOptions: audioOptions,
+                selectedAudioID: selectedAudioID,
+                selectAudio: { id in
+                    if isRecording { recordingController.selectAudioTrack(id: id) }
+                    else { controller.selectAudioTrack(id: id) }
+                },
+                selectQuality: selectQuality,
+                close: close,
+                focus: $playbackFocus
+            )
+        }
+        .padding(36)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.black.opacity(0.82))
+        .onMoveCommand { direction in
+            switch direction {
+            case .down: revealBottomPanel()
+            default: break
             }
         }
-        .frame(maxWidth: .infinity)
-        .focusSection()
     }
 
-    private var viewingControls: some View {
-        HStack(spacing: 24) {
+    private var bottomPanel: some View {
+        VStack(spacing: 16) {
             if isRecording {
-                Menu(recordingCaptionsEnabled ? "字幕：表示" : "字幕：非表示") {
-                    Button(recordingCaptionsEnabled ? "字幕を非表示にする" : "字幕を表示する") {
-                        recordingCaptionsEnabled.toggle()
+                if let duration = recordingController.durationSeconds, duration > 0 {
+                    PlaybackSeekControl(
+                        position: recordingController.currentSeconds,
+                        duration: duration,
+                        isEnabled: !isLoading && failure == nil,
+                        focus: $playbackFocus,
+                        isEditing: $isSeeking,
+                        onCommit: { recordingController.seek(to: $0) },
+                        onMoveCommand: handleMoveCommand
+                    )
+                } else {
+                    Text("再生時間：\(recordingController.playbackTime)")
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                    Text("総時間を取得するまでシークできません")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                HStack(spacing: 24) {
+                    Button("10秒戻る") { recordingController.seek(seconds: -10) }
+                        .focused($playbackFocus, equals: .backward)
+                        .disabled(isLoading || failure != nil)
+                    Button("30秒進む") { recordingController.seek(seconds: 30) }
+                        .focused($playbackFocus, equals: .forward)
+                        .disabled(isLoading || failure != nil)
+                    Button(recordingController.isPaused ? "再生" : "一時停止") {
+                        recordingController.togglePause()
                     }
-                }.focused($playbackFocus, equals: .captions)
-                    .accessibilityLabel("録画の字幕を設定")
-                Menu(recordingCommentsEnabled ? "実況：表示" : "実況：非表示") {
-                    Button(recordingCommentsEnabled ? "実況を非表示にする" : "実況を表示する") {
-                        recordingCommentsEnabled.toggle()
-                    }
-                    if recordingCommentsEnabled {
-                        Button("過去ログを再取得") { commentReload += 1 }
-                            .disabled(commentStore.loading)
-                    }
-                }.focused($playbackFocus, equals: .comments)
-                    .accessibilityLabel("録画の実況を設定")
-            }
-            if !isRecording {
-                Menu(liveCommentsEnabled ? "実況：表示" : "実況：非表示") {
-                    Button(liveCommentsEnabled ? "実況を非表示にする" : "実況を表示する") {
-                        liveCommentsEnabled.toggle()
-                    }
-                    if liveCommentsEnabled {
-                        Menu("表示の遅延：\(Int(commentDelay))秒") {
-                            ForEach([0, 1, 2, 3, 5, 10], id: \.self) { value in
-                                Button(value == Int(commentDelay) ? "✓ \(value)秒" : "\(value)秒") {
-                                    liveCommentDelay = Double(value)
-                                }
-                            }
-                        }
-                        Button("実況に再接続") { liveCommentReload += 1 }
-                    }
-                }.focused($playbackFocus, equals: .comments)
-                    .accessibilityLabel("ライブの実況を設定")
-            }
-            if audioOptions.count > 1 {
-                Menu("音声") {
-                    ForEach(audioOptions) { option in
-                        Button(option.id == selectedAudioID ? "✓ \(option.name)" : option.name) {
-                            if isRecording { recordingController.selectAudioTrack(id: option.id) }
-                            else { controller.selectAudioTrack(id: option.id) }
-                        }
-                    }
-                }.focused($playbackFocus, equals: .audio)
+                    .focused($playbackFocus, equals: .playPause)
                     .disabled(isLoading || failure != nil)
-                    .accessibilityLabel("音声を選択")
-            }
-            Menu("画質：\(quality)") {
-                ForEach(["1080p", "720p", "540p", "360p"], id: \.self) { value in
-                    Button(value == quality ? "✓ \(value)" : value) {
-                        guard value != quality else { return }
-                        if isRecording { recordingController.prepareQualityChange() }
-                        else { controller.prepareQualityChange() }
-                        session = UUID().uuidString
-                        quality = value
+                    if let recordingID = item.recordingID {
+                        RecordingChapterControls(client: item.client, recordingID: recordingID,
+                                                 fileID: item.recordedFileID, controller: recordingController)
+                            .focused($playbackFocus, equals: .chapters)
                     }
                 }
-            }.focused($playbackFocus, equals: .quality)
-                .disabled(isLoading)
-            Button("閉じる") { close() }
-                .focused($playbackFocus, equals: .close)
+            } else {
+                HStack(spacing: 24) {
+                    Text(controller.status).font(.caption)
+                    Button(controller.isPaused ? "再生" : "一時停止") {
+                        controller.togglePause()
+                    }
+                    .focused($playbackFocus, equals: .playPause)
+                    .disabled(failure != nil)
+                }
+            }
         }
+        .padding(36)
         .frame(maxWidth: .infinity)
+        .background(.black.opacity(0.82))
         .focusSection()
     }
-#endif
-}
 
-private enum PlaybackControlFocus: String, Hashable {
-    case backward, forward, chapters, captions, comments, audio, quality, close, retry
+    private var fallbackFocus: PlaybackControlFocus {
+        guard let visiblePanel else { return .surface }
+        return focusForPanel(visiblePanel)
+    }
+
+    private func focusForPanel(_ panel: PlaybackPanel,
+                               preferring previous: PlaybackControlFocus? = nil) -> PlaybackControlFocus {
+        if let previous, focusBelongs(previous, to: panel) {
+            return previous
+        }
+        switch panel {
+        case .top:
+            return isRecording ? .captions : .comments
+        case .bottom:
+            if isRecording {
+                return recordingController.durationSeconds.map { _ in .seek } ?? .backward
+            }
+            return .playPause
+        }
+    }
+
+    private func focusBelongs(_ focus: PlaybackControlFocus, to panel: PlaybackPanel) -> Bool {
+        switch panel {
+        case .top:
+            switch focus {
+            case .captions, .comments, .quality, .close:
+                return true
+            case .audio:
+                return audioOptions.count > 1
+            default:
+                return false
+            }
+        case .bottom:
+            switch focus {
+            case .seek:
+                return isRecording && recordingController.durationSeconds != nil
+            case .backward, .forward, .playPause:
+                return true
+            case .chapters:
+                return isRecording
+            default:
+                return false
+            }
+        }
+    }
+
+    private func revealTopPanel() {
+        setPanel(.top)
+    }
+
+    private func revealBottomPanel() {
+        setPanel(.bottom)
+    }
+
+    private func setPanel(_ panel: PlaybackPanel) {
+        isSeeking = false
+        if reduceMotion {
+            visiblePanel = panel
+        } else {
+            withAnimation(.easeOut(duration: 0.2)) { visiblePanel = panel }
+        }
+    }
+
+    private func hidePanel() {
+        isSeeking = false
+        if reduceMotion {
+            visiblePanel = nil
+        } else {
+            withAnimation(.easeOut(duration: 0.16)) { visiblePanel = nil }
+        }
+    }
+
+    private func handleMoveCommand(_ direction: MoveCommandDirection) {
+        switch direction {
+        case .up: revealTopPanel()
+        case .down:
+            if visiblePanel == .bottom {
+                playbackFocus = isRecording ? .backward : .playPause
+            } else {
+                revealBottomPanel()
+            }
+        default: break
+        }
+    }
+
+    private func selectQuality(_ value: String) {
+        guard value != quality, !isLoading else { return }
+        if isRecording { recordingController.prepareQualityChange() }
+        else { controller.prepareQualityChange() }
+        session = UUID().uuidString
+        quality = value
+    }
+#endif
+
+    private func handleExitCommand() {
+#if canImport(TVVLCKit)
+        if visiblePanel != nil {
+            hidePanel()
+        } else {
+            close()
+        }
+#else
+        close()
+#endif
+    }
 }
 
 private struct LiveCommentRequestID: Hashable {
@@ -422,11 +599,3 @@ private struct CommentRequestID: Hashable {
     let reload: Int
 }
 
-#if canImport(TVVLCKit)
-private struct RecordingCaptionStatus: View {
-    @ObservedObject var controller: RecordingCaptionController
-    var body: some View {
-        if let status = controller.status { Text(status).font(.caption) }
-    }
-}
-#endif
