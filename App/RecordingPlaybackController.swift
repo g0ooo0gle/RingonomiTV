@@ -6,6 +6,7 @@ import RingonomiCore
 @MainActor
 final class RecordingPlaybackController: ObservableObject {
     let player = AVPlayer()
+    let captions = RecordingCaptionController()
     @Published private(set) var status = "読み込み中…"
     @Published private(set) var playbackTime = "00:00"
     @Published private(set) var isLoading = true
@@ -336,6 +337,7 @@ final class RecordingPlaybackController: ObservableObject {
         if let endToken { NotificationCenter.default.removeObserver(endToken) }
         let item = AVPlayerItem(url: url)
         item.preferredForwardBufferDuration = 3
+        captions.attach(to: item, targetSeconds: targetSeconds)
         preparing = true
         prerolled = false
         beginWaiting()
@@ -474,6 +476,7 @@ final class RecordingPlaybackController: ObservableObject {
     func prepareQualityChange() {
         flushPosition()
         if !isLoading { targetSeconds = safeTime() }
+        captions.reset(for: targetSeconds)
         resetAudioSelection(clearPreferred: false)
         generation += 1
         cancelPreparation()
@@ -518,6 +521,7 @@ final class RecordingPlaybackController: ObservableObject {
         guard !isStopped else { return }
         flushPosition()
         targetSeconds = seconds
+        captions.reset(for: seconds)
         reachedEnd = false
         generation += 1
         cancelPreparation()
@@ -541,6 +545,8 @@ final class RecordingPlaybackController: ObservableObject {
             advancedSincePreroll = true
         }
         let seconds = isLoading ? targetSeconds : safeTime()
+        captions.tick(seconds: seconds, frameSize: videoRect.size,
+                      isReady: !preparing && !isLoading && failure == nil && prerolled)
         let whole = Int(max(0, min(seconds, 100_000_000)))
         playbackTime = String(format: "%02d:%02d", whole / 60, whole % 60)
 #if DEBUG
@@ -578,6 +584,7 @@ final class RecordingPlaybackController: ObservableObject {
         generation += 1
         cancelPreparation()
         preparing = false
+        captions.stop()
         failure = message
         status = "再生できません"
         isLoading = false
@@ -600,6 +607,7 @@ final class RecordingPlaybackController: ObservableObject {
         // graph; that closure publishes RecordingResumeStore.revision.
         checkpoint(force: true, notify: false)
         isStopped = true
+        captions.stop()
         onCheckpoint = nil
         resetAudioSelection(clearPreferred: true, notifyUI: false)
         generation += 1

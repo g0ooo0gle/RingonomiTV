@@ -5,6 +5,7 @@ cd "$(dirname "$0")"
 repo_root=$PWD
 
 dependency_root="${RINGONOMITV_DEPENDENCY_ROOT:-$repo_root/.cache/dependencies}"
+export RINGONOMITV_DEPENDENCY_ROOT="$dependency_root"
 download_root="$dependency_root/downloads"
 stage_root="$dependency_root/staging"
 
@@ -179,4 +180,9 @@ mkdir -p "$download_root" "$stage_root"
 prepare_xcodegen
 prepare_tvvlckit
 
-printf '%s\n' "依存物の準備処理が完了しました。XcodeGenとTVVLCKitの配置を確認してからbuild.shを実行してください。"
+if [ ! -x "$repo_root/prepare-captions.sh" ]; then
+    die "字幕依存準備スクリプトがありません: $repo_root/prepare-captions.sh"
+fi
+"$repo_root/prepare-captions.sh"
+
+printf '%s\n' "依存物の準備処理が完了しました。XcodeGen、TVVLCKit、libaribcaptionの配置を確認してからbuild.shを実行してください。"

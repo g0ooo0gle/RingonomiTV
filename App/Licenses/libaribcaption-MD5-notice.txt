@@ -1,0 +1,29 @@
+MD5 notice for libaribcaption
+
+libaribcaption includes a modified MD5 implementation in src/base/md5.c and
+src/base/md5.h. The upstream notice is reproduced below.
+
+This is an OpenSSL-compatible implementation of the RSA Data Security, Inc.
+MD5 Message-Digest Algorithm (RFC 1321).
+
+Homepage:
+http://openwall.info/wiki/people/solar/software/public-domain-source-code/md5
+
+Author:
+Alexander Peslyak, better known as Solar Designer <solar at openwall.com>
+
+This software was written by Alexander Peslyak in 2001. No copyright is
+claimed, and the software is hereby placed in the public domain. In case this
+attempt to disclaim copyright and place the software in the public domain is
+deemed null and void, then this software is Copyright (c) 2001 Alexander
+Peslyak and it is hereby released to the general public under the following
+terms:
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted.
+
+There's ABSOLUTELY NO WARRANTY, express or implied.
+
+(This is a heavily cut-down "BSD license".)
+
+Source: https://github.com/xqq/libaribcaption/tree/37dde0f32652c32aa98bf92278944d1cfb2e7354/src/base

@@ -40,3 +40,16 @@ They do not imply endorsement or affiliation.
 - Source: https://github.com/yonaskolb/XcodeGen
 - License: MIT. This development tool is downloaded separately and is not
   included in the application or this Git repository.
+
+## libaribcaption
+
+- Source: https://github.com/xqq/libaribcaption/tree/37dde0f32652c32aa98bf92278944d1cfb2e7354
+- Archive: https://codeload.github.com/xqq/libaribcaption/tar.gz/37dde0f32652c32aa98bf92278944d1cfb2e7354
+- Version: 1.1.2 at commit `37dde0f32652c32aa98bf92278944d1cfb2e7354`.
+- License: MIT; the fixed-source notice is in
+  [libaribcaption-MIT.txt](App/Licenses/libaribcaption-MIT.txt).
+- The embedded MD5 implementation has its own upstream notice in
+  [libaribcaption-MD5-notice.txt](App/Licenses/libaribcaption-MD5-notice.txt).
+- `prepare-captions.sh` builds static tvOS device and simulator libraries with
+  CoreText and assembles the local XCFramework. The generated framework and
+  dependency sources remain outside Git.

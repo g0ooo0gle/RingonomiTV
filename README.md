@@ -23,6 +23,7 @@ MIT著作権表示は、このリポジトリの[`LICENSE`](LICENSE)に保持し
 - 1080p、720p、540p、360pの画質選択
 - 再生中の画質変更と録画のシーク
 - 再生エンジンが認識した音声トラックの選択
+- 録画のARIB字幕表示・表示切り替え
 - 録画実況の過去ログ表示と再生位置への同期
 - 録画の再生位置保存、続きから／最初からの選択
 - サーバーのCM区間情報に基づくチャプター一覧と前後移動
@@ -56,6 +57,16 @@ MIT著作権表示は、このリポジトリの[`LICENSE`](LICENSE)に保持し
 間引きます。取得に失敗しても映像は再生を続け、実況メニューから再取得できます。
 過去ログの提供状況は接続先サーバーと番組に依存します。
 
+録画のARIB字幕は、配信に含まれる字幕データをlibaribcaptionで解析・描画します。
+再生画面の「字幕」から表示・非表示を切り替えられます。放送で指定された文字色・背景・
+表示位置を映像の範囲内に反映します。字幕データがない区間では表示しません。
+シークや続き再生の直後は、次の字幕データを受信するまで表示されない場合があります。
+字幕の対応範囲は録画のHLS配信です。ライブ字幕と複数の字幕言語の選択は未実装です。
+
+再生画面の操作は2段に分けています。「操作を隠す」で番組名と操作ボタンを隠し、
+決定・方向・戻るボタンで再表示できます。操作が隠れている間も再生・一時停止ボタンを
+利用できます。操作表示中の戻るボタンで再生画面を閉じます。
+
 録画ライブラリは30件ずつ表示し、前後のページへ移動できます。番組名・シリーズ名・
 サブタイトルの部分一致でサーバー上の録画を検索し、新しい順／古い順に並べ替えます。
 番組を選ぶと再生し、隣の「詳細」から放送日時・チャンネル・ジャンル・番組説明を確認できます。
@@ -84,9 +95,9 @@ MIT著作権表示は、このリポジトリの[`LICENSE`](LICENSE)に保持し
 
 ## 準備
 
-Xcode 16.4以降、tvOS 17以降のSDK、Swift 6、macOSを使用します。XcodeGenと
-TVVLCKitはGitにバイナリを含めていません。大きな依存ファイルを別ボリュームに置く
-場合は、準備先を環境変数で指定できます。
+Xcode 16.4以降、tvOS 17以降のSDK、Swift 6、macOSを使用します。XcodeGen、
+TVVLCKit、libaribcaptionはGitにバイナリを含めていません。大きな依存ファイルを
+別ボリュームに置く場合は、準備先を環境変数で指定できます。
 
 ```sh
 RINGONOMITV_DEPENDENCY_ROOT="$PWD/.cache/dependencies" ./bootstrap.sh
@@ -98,12 +109,27 @@ RINGONOMITV_DEPENDENCY_ROOT="$PWD/.cache/dependencies" ./bootstrap.sh
 | --- | --- | --- |
 | XcodeGen 2.46.0 | [公式リリース](https://github.com/yonaskolb/XcodeGen/releases/tag/2.46.0) / [xcodegen.zip](https://github.com/yonaskolb/XcodeGen/releases/download/2.46.0/xcodegen.zip) | `4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806` |
 | TVVLCKit 3.7.0 | [VideoLAN公式アーカイブ一覧](https://downloads.videolan.org/cocoapods/prod/) / [TVVLCKit-3.7.0 archive](https://downloads.videolan.org/cocoapods/prod/TVVLCKit-3.7.0-591b8996-f9020c4d.tar.xz) | `de9afabd53b914e234adf39f1f9b7f71d6f8c19bbfc009c8388a2eb0657a16e3` |
+| libaribcaption 1.1.2 | [固定コミット](https://github.com/xqq/libaribcaption/tree/37dde0f32652c32aa98bf92278944d1cfb2e7354) / [公式アーカイブ](https://codeload.github.com/xqq/libaribcaption/tar.gz/37dde0f32652c32aa98bf92278944d1cfb2e7354) | `ace54ae69e1b38481917d36161a8960ed93f51f7fd343575fab36dfe3ea072f6` |
 
 TVVLCKitの公式URLが利用できない場合、スクリプトはXcodeGenの準備までを行い、
 TVVLCKitは手動配置するよう案内して終了します。推測したミラーや別のURLからは
 取得しません。手動配置先は`Vendor/TVVLCKit-binary/TVVLCKit.xcframework`です。
 TVVLCKitのソースとライセンスは[VideoLAN VLCKit](https://code.videolan.org/videolan/VLCKit/)
 を参照してください。
+
+字幕の描画にはlibaribcaption 1.1.2を固定コミットで使用します。`bootstrap.sh`の最後に
+`prepare-captions.sh`が呼ばれ、CMake 3.28以降とXcodeのtvOS SDKで、CoreTextを有効にした
+C++17の静的ライブラリをtvOS device arm64、Simulator arm64／x86_64向けに生成します。
+FreeTypeとFontconfigは使用しません。2つのSimulatorアーキテクチャを`lipo`でまとめ、
+`xcodebuild -create-xcframework`で`Vendor/ARIBCaption/libaribcaption.xcframework`を
+作成します。生成物、ソース、アーカイブは`RINGONOMITV_DEPENDENCY_ROOT`（既定は
+`.cache/dependencies`）とGit管理外の`Vendor`に置かれます。固定コミットと構成は
+`Vendor/ARIBCaption/libaribcaption.version`で確認できます。
+
+libaribcaptionの著作権表示とMITライセンスは
+[`App/Licenses/libaribcaption-MIT.txt`](App/Licenses/libaribcaption-MIT.txt)に、内蔵MD5
+実装の通知は[`App/Licenses/libaribcaption-MD5-notice.txt`](App/Licenses/libaribcaption-MD5-notice.txt)
+に同梱しています。
 
 準備後のSwiftパッケージテストとtvOSビルドは次のとおりです。
 

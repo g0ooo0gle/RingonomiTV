@@ -21,7 +21,12 @@ targets:
       - framework: Vendor/TVVLCKit-binary/TVVLCKit.xcframework
         embed: true
         codeSign: true
+      - framework: Vendor/ARIBCaption/libaribcaption.xcframework
+        embed: false
+        codeSign: false
       - sdk: CoreText.framework
+      - sdk: CoreGraphics.framework
+      - sdk: CoreFoundation.framework
       - sdk: AVFoundation.framework
       - sdk: AudioToolbox.framework
       - sdk: OpenGLES.framework
@@ -36,6 +41,10 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.ringonomitv.tv
         SWIFT_VERSION: '6.0'
+        SWIFT_OBJC_BRIDGING_HEADER: App/RingonomiTV-Bridging-Header.h
+        CLANG_CXX_LANGUAGE_STANDARD: c++17
+        CLANG_CXX_LIBRARY: libc++
+        GCC_ENABLE_CPP_EXCEPTIONS: YES
         TARGETED_DEVICE_FAMILY: '3'
         CODE_SIGN_STYLE: Automatic
         MARKETING_VERSION: '0.1.0'

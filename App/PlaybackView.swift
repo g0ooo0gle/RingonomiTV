@@ -48,6 +48,8 @@ struct PlaybackView: View {
     @State private var session = UUID().uuidString
     @State private var maintenanceError: String?
     @State private var hasStarted = false
+    @State private var controlsVisible = true
+    @AppStorage("recordingCaptionsEnabled") private var recordingCaptionsEnabled = true
     @AppStorage("recordingCommentsEnabled") private var recordingCommentsEnabled = false
     @State private var commentReload = 0
     @StateObject private var commentStore = RecordingCommentStore()
@@ -86,7 +88,10 @@ struct PlaybackView: View {
         .onAppear {
             if !hasStarted, item.savedPosition == nil { beginPlayback(at: 0) }
         }
-        .onExitCommand { close() }
+        .onExitCommand {
+            if hasStarted && !controlsVisible { controlsVisible = true }
+            else { close() }
+        }
         .onDisappear {
             flushPosition()
             commentStore.cancel()
@@ -137,6 +142,20 @@ struct PlaybackView: View {
                                         isVisible: !isLoading && failure == nil)
                     .ignoresSafeArea()
             }
+            if isRecording, recordingCaptionsEnabled {
+                RecordingCaptionOverlay(controller: recordingController.captions,
+                                        videoRect: recordingController.videoRect,
+                                        isVisible: !isLoading && failure == nil)
+                    .ignoresSafeArea()
+            }
+            if !controlsVisible {
+                Button { controlsVisible = true } label: {
+                    Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("再生操作を表示")
+                .onMoveCommand { _ in controlsVisible = true }
+            }
             if isLoading || failure != nil {
                 Color.black.ignoresSafeArea()
                 VStack(spacing: 24) {
@@ -152,69 +171,46 @@ struct PlaybackView: View {
                     }
                 }.padding(60).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            VStack(alignment: .leading, spacing: 12) {
-                Text(item.title).font(.headline).lineLimit(2)
-                Text(isRecording ? recordingController.status : controller.status).font(.caption)
-                if item.recordingID != nil { Text(recordingController.playbackTime).font(.caption).monospacedDigit() }
-                if let maintenanceError { Text(maintenanceError).font(.caption) }
-                if let audioSelectionError { Text(audioSelectionError).font(.caption).foregroundStyle(.orange) }
-                if isRecording, recordingCommentsEnabled, let status = commentStore.status {
-                    Text(status).font(.caption)
-                }
-            }.padding(40).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .allowsHitTesting(false)
+            if controlsVisible {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(item.title).font(.headline).lineLimit(2)
+                    Text(isRecording ? recordingController.status : controller.status).font(.caption)
+                    if item.recordingID != nil { Text(recordingController.playbackTime).font(.caption).monospacedDigit() }
+                    if let maintenanceError { Text(maintenanceError).font(.caption) }
+                    if let audioSelectionError { Text(audioSelectionError).font(.caption).foregroundStyle(.orange) }
+                    if isRecording, recordingCaptionsEnabled {
+                        RecordingCaptionStatus(controller: recordingController.captions)
+                    }
+                    if isRecording, recordingCommentsEnabled, let status = commentStore.status {
+                        Text(status).font(.caption)
+                    }
+                }.padding(40).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .allowsHitTesting(false)
+            }
 #else
             VStack(spacing: 30) {
                 Text("TS再生ライブラリが必要です")
                 Text("READMEの手順でTVVLCKitを導入してビルドしてください。")
             }.frame(maxWidth: .infinity, maxHeight: .infinity).background(.black)
 #endif
-            HStack(spacing: 24) {
+            if controlsVisible {
+                VStack(spacing: 24) {
 #if canImport(TVVLCKit)
-                if item.recordingID != nil {
-                    Button("10秒戻る") { recordingController.seek(seconds: -10) }.disabled(isLoading || failure != nil)
-                    Button("30秒進む") { recordingController.seek(seconds: 30) }.disabled(isLoading || failure != nil)
-                    if let recordingID = item.recordingID {
-                        RecordingChapterControls(client: item.client, recordingID: recordingID,
-                                                 fileID: item.recordedFileID, controller: recordingController)
-                    }
-                    Menu(recordingCommentsEnabled ? "実況：表示" : "実況：非表示") {
-                        Button(recordingCommentsEnabled ? "実況を非表示にする" : "実況を表示する") {
-                            recordingCommentsEnabled.toggle()
-                        }
-                        if recordingCommentsEnabled {
-                            Button("過去ログを再取得") { commentReload += 1 }
-                                .disabled(commentStore.loading)
-                        }
-                    }.accessibilityLabel("録画の実況を設定")
-                }
-                if audioOptions.count > 1 {
-                    Menu("音声") {
-                        ForEach(audioOptions) { option in
-                            Button(option.id == selectedAudioID ? "✓ \(option.name)" : option.name) {
-                                if isRecording { recordingController.selectAudioTrack(id: option.id) }
-                                else { controller.selectAudioTrack(id: option.id) }
-                            }
-                        }
-                    }.disabled(isLoading || failure != nil)
-                        .accessibilityLabel("音声を選択")
-                }
-                Menu("画質：\(quality)") {
-                    ForEach(["1080p", "720p", "540p", "360p"], id: \.self) { value in
-                        Button(value == quality ? "✓ \(value)" : value) {
-                            guard value != quality else { return }
-                            if isRecording { recordingController.prepareQualityChange() }
-                            else { controller.prepareQualityChange() }
-                            session = UUID().uuidString
-                            quality = value
-                        }
-                    }
-                }.disabled(isLoading)
+                    if isRecording { recordingTransportControls }
+                    viewingControls
+#else
+                    Button("閉じる") { close() }
 #endif
-                Button("閉じる") { close() }
-            }.padding(40).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                }.padding(40).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            }
         }
 #if canImport(TVVLCKit)
+        .onChange(of: failure) { _, value in
+            if value != nil { controlsVisible = true }
+        }
+        .task(id: recordingCaptionsEnabled) {
+            recordingController.captions.setEnabled(recordingCaptionsEnabled)
+        }
         .onPlayPauseCommand {
             if isRecording { recordingController.togglePause() } else { controller.togglePause() }
         }
@@ -249,6 +245,70 @@ struct PlaybackView: View {
         }
 #endif
     }
+#if canImport(TVVLCKit)
+    private var recordingTransportControls: some View {
+        HStack(spacing: 24) {
+            Button("10秒戻る") { recordingController.seek(seconds: -10) }
+                .disabled(isLoading || failure != nil)
+            Button("30秒進む") { recordingController.seek(seconds: 30) }
+                .disabled(isLoading || failure != nil)
+            if let recordingID = item.recordingID {
+                RecordingChapterControls(client: item.client, recordingID: recordingID,
+                                         fileID: item.recordedFileID, controller: recordingController)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .focusSection()
+    }
+
+    private var viewingControls: some View {
+        HStack(spacing: 24) {
+            if isRecording {
+                Menu(recordingCaptionsEnabled ? "字幕：表示" : "字幕：非表示") {
+                    Button(recordingCaptionsEnabled ? "字幕を非表示にする" : "字幕を表示する") {
+                        recordingCaptionsEnabled.toggle()
+                    }
+                }.accessibilityLabel("録画の字幕を設定")
+                Menu(recordingCommentsEnabled ? "実況：表示" : "実況：非表示") {
+                    Button(recordingCommentsEnabled ? "実況を非表示にする" : "実況を表示する") {
+                        recordingCommentsEnabled.toggle()
+                    }
+                    if recordingCommentsEnabled {
+                        Button("過去ログを再取得") { commentReload += 1 }
+                            .disabled(commentStore.loading)
+                    }
+                }.accessibilityLabel("録画の実況を設定")
+            }
+            if audioOptions.count > 1 {
+                Menu("音声") {
+                    ForEach(audioOptions) { option in
+                        Button(option.id == selectedAudioID ? "✓ \(option.name)" : option.name) {
+                            if isRecording { recordingController.selectAudioTrack(id: option.id) }
+                            else { controller.selectAudioTrack(id: option.id) }
+                        }
+                    }
+                }.disabled(isLoading || failure != nil)
+                    .accessibilityLabel("音声を選択")
+            }
+            Menu("画質：\(quality)") {
+                ForEach(["1080p", "720p", "540p", "360p"], id: \.self) { value in
+                    Button(value == quality ? "✓ \(value)" : value) {
+                        guard value != quality else { return }
+                        if isRecording { recordingController.prepareQualityChange() }
+                        else { controller.prepareQualityChange() }
+                        session = UUID().uuidString
+                        quality = value
+                    }
+                }
+            }.disabled(isLoading)
+            Button("操作を隠す") { controlsVisible = false }
+                .disabled(isLoading || failure != nil)
+            Button("閉じる") { close() }
+        }
+        .frame(maxWidth: .infinity)
+        .focusSection()
+    }
+#endif
 }
 
 private struct CommentRequestID: Hashable {
@@ -257,3 +317,12 @@ private struct CommentRequestID: Hashable {
     let enabled: Bool
     let reload: Int
 }
+
+#if canImport(TVVLCKit)
+private struct RecordingCaptionStatus: View {
+    @ObservedObject var controller: RecordingCaptionController
+    var body: some View {
+        if let status = controller.status { Text(status).font(.caption) }
+    }
+}
+#endif
