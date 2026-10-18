@@ -285,6 +285,33 @@ struct FilePlaybackView: View {
                 }
                 .focused($playbackFocus, equals: .seek)
                 .disabled(controller.isLoading || controller.failure != nil)
+                .onMoveCommand { direction in
+#if DEBUG
+                    print("RingonomiFileSeekMove: direction=\(String(describing: direction)) focus=\(String(describing: playbackFocus)) panel=\(String(describing: visiblePanel)) seeking=\(isSeeking) canSeek=\(controller.canSeek)")
+#endif
+                    guard controller.canSeek else { return }
+                    switch direction {
+                    case .left:
+                        if !isSeeking {
+                            seekDraft = controller.currentSeconds
+                            isSeeking = true
+                        }
+                        adjustSeek(-10)
+                    case .right:
+                        if !isSeeking {
+                            seekDraft = controller.currentSeconds
+                            isSeeking = true
+                        }
+                        adjustSeek(10)
+                    case .up:
+                        revealTopPanel()
+                    case .down:
+                        isSeeking = false
+                        playbackFocus = .backward
+                    default:
+                        break
+                    }
+                }
             } else if controller.durationSeconds != nil {
                 Text("このファイルはシークに対応していません")
                     .font(.caption)
@@ -295,56 +322,45 @@ struct FilePlaybackView: View {
                     .foregroundStyle(.secondary)
             }
 
-            HStack(spacing: 22) {
-                Button("1分戻る") { controller.seek(seconds: -60) }
-                    .focused($playbackFocus, equals: .backward)
-                    .disabled(!controller.canSeek)
-                Button("3分進む") { controller.seek(seconds: 180) }
-                    .focused($playbackFocus, equals: .forward)
-                    .disabled(!controller.canSeek)
-                Button(controller.isEnded ? "最初から再生" : (controller.isPaused ? "再生" : "一時停止")) {
-                    controller.togglePause()
-                }
-                .focused($playbackFocus, equals: .playPause)
-                .disabled(controller.failure != nil)
-            }
+            bottomOperationRow
         }
         .padding(36)
         .frame(maxWidth: .infinity)
         .background(.black.opacity(0.86))
         .focusSection()
+    }
+
+    private var bottomOperationRow: some View {
+        HStack(spacing: 22) {
+            Button("1分戻る") { controller.seek(seconds: -60) }
+                .focused($playbackFocus, equals: .backward)
+                .disabled(!controller.canSeek)
+            Button("3分進む") { controller.seek(seconds: 180) }
+                .focused($playbackFocus, equals: .forward)
+                .disabled(!controller.canSeek)
+            Button(controller.isEnded ? "最初から再生" : (controller.isPaused ? "再生" : "一時停止")) {
+                controller.togglePause()
+            }
+            .focused($playbackFocus, equals: .playPause)
+            .disabled(controller.failure != nil)
+        }
         .onMoveCommand { direction in
 #if DEBUG
             print("RingonomiFileBottomMove: direction=\(String(describing: direction)) focus=\(String(describing: playbackFocus)) panel=\(String(describing: visiblePanel)) seeking=\(isSeeking) canSeek=\(controller.canSeek)")
 #endif
-            guard panelIsVisible(.bottom) else { return }
-            if playbackFocus == .seek, controller.canSeek,
-               direction == .left || direction == .right {
-                if !isSeeking {
-                    seekDraft = controller.currentSeconds
-                    isSeeking = true
-                }
-                adjustSeek(direction == .left ? -10 : 10)
-                return
-            }
+            guard panelIsVisible(.bottom),
+                  playbackFocus == .backward
+                    || playbackFocus == .forward
+                    || playbackFocus == .playPause else { return }
             switch direction {
             case .up:
-                if playbackFocus == .seek {
-                    revealTopPanel()
-                } else if controller.canSeek {
+                if controller.canSeek {
                     playbackFocus = .seek
                 } else {
                     revealTopPanel()
                 }
             case .down:
-                if playbackFocus == .seek {
-                    // Moving down from the seek control enters the operation
-                    // row; it must not dismiss the whole panel.
-                    isSeeking = false
-                    playbackFocus = controller.canSeek ? .backward : .playPause
-                } else {
-                    hidePanel()
-                }
+                hidePanel()
             default: break
             }
         }
