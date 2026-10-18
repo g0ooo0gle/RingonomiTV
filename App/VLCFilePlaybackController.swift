@@ -460,6 +460,10 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
 #endif
         gate.reset()
         resetReadinessBaseline()
+        // `resetReadinessBaseline()` may still see the previous decoder
+        // before the asynchronous stop completes.  A new load must never
+        // use that old generation's counters as EOF evidence.
+        clearUnavailableStatisticsBaseline()
         resetAudioCatalog(notifyUI: true)
         player.audio?.isMuted = true
 
@@ -492,6 +496,12 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
 
         pendingLoadURL = nil
         pendingLoadGeneration = 0
+        // TVVLCKit 3.7 can treat a new VLCMedia with the same URL as the
+        // already attached media as a no-op.  Replay after EOF therefore
+        // needs an explicit nil media boundary after the native stop has
+        // completed; otherwise the pending marker is consumed but the old
+        // decoder never opens again.
+        player.media = nil
         player.media = VLCMedia(url: url)
         if let videoSurface { player.drawable = videoSurface }
         player.audio?.isMuted = true
@@ -553,7 +563,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
 
         let size = player.videoSize
         let hasVideo = player.hasVideoOut && size.width > 0 && size.height > 0
-        if let media = player.media {
+        if canReadPlaybackStatistics, let media = player.media {
             let stats = media.statistics
             let totalPictures = max(0, Int(stats.displayedPictures))
             if totalPictures < pictureBaseline || totalPictures < lastPictures {
@@ -642,7 +652,14 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
 #endif
             }
         } else {
+            // VLCMedia.statistics is not meaningful while a player is
+            // stopped/opening (and some TVVLCKit builds expose stale native
+            // memory there).  Preserve the current generation's counters so
+            // a transient video-output loss does not turn old cumulative
+            // frames into new frames when output returns.
             gate.reset()
+            endGate.reset()
+            lastFrameDate = .distantPast
         }
 
         if !isLoading, !wantsPause, Date().timeIntervalSince(lastFrameDate) > 1.5 {
@@ -812,7 +829,16 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         let actual = rawPlaybackSeconds
         let normalizedPosition = Double(player.position)
         let remaining = rawRemainingSeconds
-        let displayedPictures = player.media.map { max(0, Int($0.statistics.displayedPictures)) } ?? 0
+        let displayedPictures: Int
+        if canReadPlaybackStatistics, let media = player.media {
+            displayedPictures = max(0, Int(media.statistics.displayedPictures))
+        } else {
+            // Native EOF can drop the video output before this check runs.
+            // `lastPictures` is reset at every new generation, so it is safe
+            // evidence from this media only; zero still rejects a no-frame
+            // or opening/stopped path.
+            displayedPictures = max(0, lastPictures)
+        }
 #if DEBUG
         print("RingonomiFileEndCheck: requested=\(requested ?? -1) rawActual=\(actual ?? -1) position=\(normalizedPosition) remaining=\(remaining ?? -1) state=\(player.state.rawValue) pictures=\(displayedPictures) generationMatch=\(pendingPositionGeneration == generation) applied=\(pendingPositionApplied)")
 #endif
@@ -874,7 +900,12 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
 #if DEBUG
         let rawActual = rawPlaybackSeconds ?? -1
         let remaining = rawRemainingSeconds ?? -1
-        let displayedPictures = player.media.map { max(0, Int($0.statistics.displayedPictures)) } ?? 0
+        let displayedPictures: Int
+        if canReadPlaybackStatistics, let media = player.media {
+            displayedPictures = max(0, Int(media.statistics.displayedPictures))
+        } else {
+            displayedPictures = max(0, lastPictures)
+        }
         print("RingonomiFileEnded: time=\(currentSeconds) duration=\(durationSeconds ?? -1) rawActual=\(rawActual) position=\(player.position) remaining=\(remaining) state=\(player.state.rawValue) pictures=\(displayedPictures)")
 #endif
     }
@@ -929,6 +960,28 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
               value.isFinite else { return nil }
         let seconds = value / 1000
         return seconds.isFinite ? seconds : nil
+    }
+
+    /// `VLCMedia.statistics` is backed by native decoder state.  The media
+    /// object can remain attached while the player is stopped or opening, but
+    /// its counters are not a valid snapshot in those states.  Requiring a
+    /// live video output also prevents stale counters from an old decoder from
+    /// being used during a fresh same-URL replay.
+    private var canReadPlaybackStatistics: Bool {
+        guard player.state != .stopped,
+              player.state != .opening,
+              player.state != .error else { return false }
+        let size = player.videoSize
+        return player.hasVideoOut && size.width > 0 && size.height > 0
+    }
+
+    private func clearUnavailableStatisticsBaseline() {
+        pictureBaseline = 0
+        lastPictures = 0
+        lastFrameDate = .distantPast
+        audioBaselineDecoded = 0
+        audioBaselinePlayed = 0
+        audioNeedsFreshBuffers = true
     }
 
     private func positionTolerance(for _: Double, duration: Double?) -> Double {
@@ -994,15 +1047,13 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
     }
 
     private func resetReadinessBaseline() {
-        if let media = player.media {
+        if canReadPlaybackStatistics, let media = player.media {
             let stats = media.statistics
             audioBaselineDecoded = max(0, Int(stats.decodedAudio))
             audioBaselinePlayed = max(0, Int(stats.playedAudioBuffers))
             pictureBaseline = max(0, Int(stats.displayedPictures))
         } else {
-            audioBaselineDecoded = 0
-            audioBaselinePlayed = 0
-            pictureBaseline = 0
+            clearUnavailableStatisticsBaseline()
         }
         audioNeedsFreshBuffers = true
         lastPictures = pictureBaseline
