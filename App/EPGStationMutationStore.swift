@@ -2,7 +2,7 @@ import Foundation
 import Combine
 import RingonomiCore
 
-/// Serializes reservation writes and remembers an interrupted submission across launches.
+/// Serializes EPGStation writes and remembers an interrupted submission across launches.
 @MainActor
 final class EPGStationMutationStore: ObservableObject {
     static let shared = EPGStationMutationStore()
@@ -14,6 +14,19 @@ final class EPGStationMutationStore: ObservableObject {
         let startedAt: Date
         let reservationID: Int?
         let schedule: String?
+        let target: String?
+        let ruleID: Int?
+
+        init(address: String, title: String, action: String, startedAt: Date, reservationID: Int?, schedule: String?, target: String? = nil, ruleID: Int? = nil) {
+            self.address = address
+            self.title = title
+            self.action = action
+            self.startedAt = startedAt
+            self.reservationID = reservationID
+            self.schedule = schedule
+            self.target = target
+            self.ruleID = ruleID
+        }
     }
 
     @Published private(set) var busy = false
@@ -36,18 +49,19 @@ final class EPGStationMutationStore: ObservableObject {
     /// Preflight is read-only. Once submission begins, cancellation cannot prove it was rejected.
     func perform<Value: Sendable>(
         address: String, title: String, action: String, reservationID: Int? = nil, schedule: String? = nil,
+        target: String? = nil, ruleID: Int? = nil,
         prepare: @MainActor () async throws -> Value,
         send: @MainActor (Value) async throws -> Void
     ) async throws {
         guard !busy, pending == nil else {
-            throw ReservationUIError("前の操作結果を予約一覧で確認してから、操作を再開してください。")
+            throw ReservationUIError("前の操作結果を一覧で確認してから、操作を再開してください。")
         }
         busy = true
         defer { busy = false }
         let value = try await prepare()
         try Task.checkCancellation()
         let normalizedAddress = try EPGStationClient(address: address).baseURL.absoluteString
-        let intent = Pending(address: normalizedAddress, title: title, action: action, startedAt: Date(), reservationID: reservationID, schedule: schedule)
+        let intent = Pending(address: normalizedAddress, title: title, action: action, startedAt: Date(), reservationID: reservationID, schedule: schedule, target: target, ruleID: ruleID)
         let data = try JSONEncoder().encode(intent)
         defaults.set(data, forKey: journalKey)
         pending = intent
@@ -60,7 +74,7 @@ final class EPGStationMutationStore: ObservableObject {
             if let error = error as? EPGStationWriteError, !error.isOutcomeUnknown {
                 clearPending()
             } else {
-                let unresolved = Pending(address: intent.address, title: intent.title, action: intent.action, startedAt: Date(), reservationID: intent.reservationID, schedule: intent.schedule)
+                let unresolved = Pending(address: intent.address, title: intent.title, action: intent.action, startedAt: Date(), reservationID: intent.reservationID, schedule: intent.schedule, target: intent.target, ruleID: intent.ruleID)
                 pending = unresolved
                 if let data = try? JSONEncoder().encode(unresolved) { defaults.set(data, forKey: journalKey) }
             }
@@ -68,14 +82,14 @@ final class EPGStationMutationStore: ObservableObject {
         }
     }
 
-    func canAcknowledge(address: String, readAt: Date?) -> Bool {
+    func canAcknowledge(address: String, readAt: Date?, target: String? = nil) -> Bool {
         guard !busy, let pending, let readAt, readAt >= pending.startedAt,
               let normalized = try? EPGStationClient(address: address).baseURL.absoluteString else { return false }
-        return journalUnreadable || normalized == pending.address
+        return journalUnreadable || (normalized == pending.address && pending.target == target)
     }
 
-    func acknowledgeAfterReview(address: String, readAt: Date?) {
-        guard canAcknowledge(address: address, readAt: readAt) else { return }
+    func acknowledgeAfterReview(address: String, readAt: Date?, target: String? = nil) {
+        guard canAcknowledge(address: address, readAt: readAt, target: target) else { return }
         clearPending()
     }
 

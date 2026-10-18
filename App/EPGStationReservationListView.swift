@@ -42,6 +42,9 @@ struct EPGStationReservationListView: View {
                         .font(.caption).foregroundStyle(.secondary)
                     Text("処理された可能性があります。接続先の予約一覧を更新して確認するまで、同じ操作を送信しないでください。")
                         .foregroundStyle(.orange).focusable()
+                    if pending.target == "rule" {
+                        NavigationLink("キーワード予約の操作結果を確認") { EPGStationRuleListView() }
+                    }
                     Button("一覧を確認したので操作を再開") { acknowledgePending = true }
                         .disabled(filter != .all || store.loading || !mutation.canAcknowledge(address: effectiveAddress, readAt: store.lastReadAt))
                     if let id = pending.reservationID,
@@ -126,6 +129,7 @@ struct EPGStationReservationListView: View {
         }
         .navigationTitle("EPGStation予約")
         .toolbar {
+            NavigationLink("キーワード予約") { EPGStationRuleListView() }
             Button("予約を追加") {
                 creation = EPGStationReservationEditorConnection(address: effectiveAddress)
             }.disabled(effectiveAddress.isEmpty || mutation.busy || mutation.pending != nil)
