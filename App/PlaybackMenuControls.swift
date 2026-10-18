@@ -238,6 +238,25 @@ private struct QualityChoicesView: View {
         .focusSection()
         .defaultFocus($focusedTarget, initialFocus)
         .onAppear { focusedTarget = initialFocus }
+        .onMoveCommand(perform: moveFocus)
         .onExitCommand(perform: onClose)
+    }
+
+    private func moveFocus(_ direction: MoveCommandDirection) {
+        let step: Int
+        switch direction {
+        case .up: step = -1
+        case .down: step = 1
+        default: return
+        }
+        // The card extends beyond the control row, so use its own ordered
+        // targets rather than the row's directional focus navigation.
+        let targets = values.map(FocusTarget.option) + [.close]
+        let current = focusedTarget ?? initialFocus
+        guard let index = targets.firstIndex(of: current) else {
+            focusedTarget = initialFocus
+            return
+        }
+        focusedTarget = targets[min(targets.count - 1, max(0, index + step))]
     }
 }
