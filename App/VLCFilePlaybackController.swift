@@ -107,6 +107,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
     private var isSuspendedForBackground = false
     private var generation = 0
     private var isRetiringPlayer = false
+    private var stopRequested = false
 
     private weak var videoSurface: UIView?
     private var gate = PlaybackReadinessGate()
@@ -262,6 +263,21 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
               let duration = durationSeconds,
               let target = clamp(seconds, duration: duration) else { return }
 
+        // The rightmost seek-bar position means the end of a completed
+        // recording. Asking the TS decoder to seek into its final fraction
+        // of a second can leave its input teardown blocked. End explicitly
+        // without opening that tail; growing/unknown-duration files and
+        // media that have never produced a frame cannot take this shortcut.
+        if let completedDuration = durationHint, lastPictures > 0,
+           target >= max(0, completedDuration - 0.11) {
+            targetSeconds = target
+#if DEBUG
+            print("RingonomiFileExplicitEnd: target=\(target)")
+#endif
+            finishPlayback()
+            return
+        }
+
         if isEnded, let selection {
             // EOF may have released the VLC media during a Home transition.
             // An explicit seek is allowed to create a fresh decoder, while
@@ -344,7 +360,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         gate.reset()
         player.audio?.isMuted = true
         player.delegate = nil
-        if player.state != .stopped { player.stop() }
+        requestPlayerStop()
         player.drawable = nil
         // Keep media attached to the stopped instance. Foreground resume
         // replaces it entirely; an asynchronous nil assignment here can
@@ -411,13 +427,12 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         stopTask = nil
         player.delegate = nil
         player.audio?.isMuted = true
-        player.pause()
         player.drawable = nil
         clearAudioCatalog(notifyUI: false)
         onContinuousDisplayChanged = nil
         onProgress = nil
-        if player.state != .stopped { player.stop() }
-        clearMediaWhenStopped()
+        requestPlayerStop()
+        holdPlayerUntilStopped()
         videoSurface = nil
     }
 
@@ -514,7 +529,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
 #if DEBUG
         NSLog("RingonomiFileReload: stop-begin")
 #endif
-        if player.state != .stopped { player.stop() }
+        requestPlayerStop()
 #if DEBUG
         NSLog("RingonomiFileReload: stop-returned")
 #endif
@@ -559,6 +574,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         if let videoSurface { freshPlayer.drawable = videoSurface }
         freshPlayer.audio?.isMuted = true
         player = freshPlayer
+        stopRequested = false
         freshPlayer.media = VLCMedia(url: url)
         freshPlayer.audio?.isMuted = true
         if pendingPositionSeconds != nil, pendingPositionStartedAt == nil {
@@ -973,7 +989,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         // A paused input at TS EOF can stall native teardown even after VLC
         // reports stopped. EOF is terminal, so stop instead of pausing the
         // decoder and create a fresh instance for the next explicit action.
-        if player.state != .stopped { player.stop() }
+        requestPlayerStop()
         if let duration = durationSeconds { currentSeconds = duration }
         status = "再生終了（再生ボタンで最初から）"
         updateContinuousDisplayNeed()
@@ -1297,18 +1313,22 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
             .caseInsensitiveCompare("Disabled") == .orderedSame
     }
 
-    private func clearMediaWhenStopped() {
+    private func requestPlayerStop() {
+        guard !stopRequested, player.state != .stopped else { return }
+        stopRequested = true
+        player.stop()
+    }
+
+    /// Keep the controller alive until its native player has stopped. Media
+    /// cleanup belongs to native release, avoiding a competing async detach.
+    private func holdPlayerUntilStopped() {
         stopTask?.cancel()
-        guard player.state != .stopped else {
-            player.media = nil
-            return
-        }
+        guard player.state != .stopped else { return }
         stopTask = Task { @MainActor [weak self] in
             guard let self else { return }
             for _ in 0..<40 {
                 guard !Task.isCancelled else { return }
                 if self.player.state == .stopped {
-                    self.player.media = nil
                     self.stopTask = nil
                     return
                 }
