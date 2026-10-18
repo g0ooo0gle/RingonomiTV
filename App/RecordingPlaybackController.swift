@@ -26,6 +26,10 @@ final class RecordingPlaybackController: ObservableObject {
     // are still waiting on the main actor.  This gate keeps those callbacks
     // from touching published state after teardown.
     private var isStopped = false
+    // Background transitions keep the SwiftUI controller alive, but the
+    // AVPlayer item, observers, and preparation tasks are released until the
+    // app becomes active again.  Repeated lifecycle notifications are safe.
+    private var isSuspendedForBackground = false
     private var isChangingQuality = false
     private var wantsPause = false
     private var targetSeconds: Double = 0
@@ -329,6 +333,7 @@ final class RecordingPlaybackController: ObservableObject {
         }
     }
     func attach(_ layer: AVPlayerLayer) {
+        layerObservation?.invalidate()
         videoLayer = layer
         layer.player = player
         layer.videoGravity = .resizeAspect
@@ -336,16 +341,18 @@ final class RecordingPlaybackController: ObservableObject {
             Task { @MainActor [weak self] in self?.revealWhenReady() }
         }
     }
-    func load(_ url: URL) {
-        guard currentURL != url else { return }
+    func load(_ url: URL, preservingEndState: Bool = false) {
+        guard !isSuspendedForBackground, currentURL != url else { return }
         isStopped = false
+        isSuspendedForBackground = false
         isChangingQuality = false
         currentURL = url
         commercialMetadataUsable = commercialMetadataComplete && commercialTimeline != nil
         resetAudioSelection(clearPreferred: false)
-        reachedEnd = false
+        if !preservingEndState { reachedEnd = false }
         generation += 1
         cancelPreparation()
+        observations.forEach { $0.invalidate() }
         observations.removeAll()
         if let endToken { NotificationCenter.default.removeObserver(endToken) }
         let item = AVPlayerItem(url: url)
@@ -364,7 +371,8 @@ final class RecordingPlaybackController: ObservableObject {
         })
         endToken = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
             Task { @MainActor [weak self, weak item] in
-                guard let self, let item, !self.isStopped, !self.isChangingQuality,
+                guard let self, let item, !self.isStopped, !self.isSuspendedForBackground,
+                      !self.isChangingQuality,
                       self.player.currentItem === item else { return }
                 self.status = "再生終了（再生ボタンで最初から）"
                 self.player.pause()
@@ -382,8 +390,67 @@ final class RecordingPlaybackController: ObservableObject {
         }
         startTimer()
     }
+
+    /// Saves the last trusted position and releases the decoder while the app
+    /// is backgrounded.  The resume path creates a fresh AVPlayerItem instead
+    /// of trying to continue the item that was interrupted by Home/system UI.
+    func suspendForBackground() {
+        guard !isStopped, !isSuspendedForBackground, currentURL != nil, failure == nil else { return }
+
+        checkpoint(force: true)
+        if !preparing, !isLoading, prerolled {
+            lastTrustedPosition = safeTime()
+        }
+        if let trusted = lastTrustedPosition {
+            targetSeconds = RecordingResumePolicy.clamp(seconds: trusted, duration: durationHint) ?? max(0, trusted)
+        }
+
+        isSuspendedForBackground = true
+        generation += 1
+        resetAudioSelection(clearPreferred: false, notifyUI: false)
+        cancelPreparation()
+        timer?.cancel()
+        timer = nil
+        observations.forEach { $0.invalidate() }
+        observations.removeAll()
+        layerObservation?.invalidate()
+        layerObservation = nil
+        if let clockToken {
+            player.removeTimeObserver(clockToken)
+            self.clockToken = nil
+        }
+        if let endToken {
+            NotificationCenter.default.removeObserver(endToken)
+            self.endToken = nil
+        }
+        captions.stop()
+        player.replaceCurrentItem(with: nil)
+        isChangingQuality = false
+        preparing = false
+        prerolled = false
+        preparationInFlight = false
+        advancedSincePreroll = false
+        isLoading = true
+        waitingSince = nil
+        player.isMuted = true
+        status = "読み込み中…"
+        updateTime()
+    }
+
+    /// Rebuilds the recording item from the trusted checkpoint.  Resume is
+    /// intentionally a no-op for an error or an unstarted/resume-prompt view.
+    func resumeFromBackground() {
+        guard isSuspendedForBackground, !isStopped, failure == nil,
+              let url = currentURL else { return }
+        isSuspendedForBackground = false
+        currentURL = nil
+        if let videoLayer { attach(videoLayer) }
+        load(url, preservingEndState: reachedEnd)
+    }
+
     private func itemStatusChanged(_ expected: Int) {
-        guard !isStopped, expected == generation, let item = player.currentItem else { return }
+        guard !isStopped, !isSuspendedForBackground,
+              expected == generation, let item = player.currentItem else { return }
         switch item.status {
         case .failed: fail("録画を読み込めませんでした。接続先と配信状態を確認してください。")
         case .readyToPlay:
@@ -394,7 +461,8 @@ final class RecordingPlaybackController: ObservableObject {
         }
     }
     private func preparePosition(_ expected: Int) {
-        guard !isStopped, !isChangingQuality, expected == generation, preparing, !prerolled, !preparationInFlight,
+        guard !isStopped, !isSuspendedForBackground, !isChangingQuality,
+              expected == generation, preparing, !prerolled, !preparationInFlight,
               player.status == .readyToPlay,
               player.currentItem?.status == .readyToPlay else { return }
         preparationInFlight = true
@@ -435,7 +503,8 @@ final class RecordingPlaybackController: ObservableObject {
         }
     }
     private func revealWhenReady() {
-        guard !isStopped, !isChangingQuality, failure == nil, preparing, prerolled,
+        guard !isStopped, !isSuspendedForBackground, !isChangingQuality,
+              failure == nil, preparing, prerolled,
               player.currentItem?.status == .readyToPlay,
               videoLayer?.isReadyForDisplay == true else { return }
         preparing = false
@@ -448,7 +517,7 @@ final class RecordingPlaybackController: ObservableObject {
         if preparing { return }
         player.isMuted = wantsPause
         if wantsPause { player.pause() } else { player.play() }
-        status = wantsPause ? "一時停止" : "再生中"
+        status = reachedEnd ? "再生終了（再生ボタンで最初から）" : (wantsPause ? "一時停止" : "再生中")
         updateTime()
         checkpoint(force: true)
 #if DEBUG
@@ -456,7 +525,7 @@ final class RecordingPlaybackController: ObservableObject {
 #endif
     }
     private func playbackStateChanged() {
-        guard !isStopped, failure == nil, !preparing else { return }
+        guard !isStopped, !isSuspendedForBackground, failure == nil, !preparing else { return }
         if wantsPause {
             player.pause()
             player.isMuted = true
@@ -481,6 +550,7 @@ final class RecordingPlaybackController: ObservableObject {
         }
     }
     private func beginWaiting() {
+        guard !isSuspendedForBackground else { return }
         isLoading = true
         failure = nil
         status = "読み込み中…"
@@ -488,7 +558,7 @@ final class RecordingPlaybackController: ObservableObject {
         if waitingSince == nil { waitingSince = Date() }
     }
     func prepareQualityChange() {
-        guard !isStopped else { return }
+        guard !isStopped, !isSuspendedForBackground else { return }
         flushPosition()
         if !isLoading { targetSeconds = safeTime() }
         captions.reset(for: targetSeconds)
@@ -502,7 +572,7 @@ final class RecordingPlaybackController: ObservableObject {
         beginWaiting()
     }
     func togglePause() {
-        guard !isStopped, failure == nil else { return }
+        guard !isStopped, !isSuspendedForBackground, failure == nil else { return }
         if reachedEnd {
             reachedEnd = false
             wantsPause = false
@@ -612,14 +682,15 @@ final class RecordingPlaybackController: ObservableObject {
     var isPaused: Bool { wantsPause }
 
     func seek(to seconds: Double) {
-        guard !isStopped, !isLoading, failure == nil, seconds.isFinite else { return }
+        guard !isStopped, !isSuspendedForBackground, !isLoading,
+              failure == nil, seconds.isFinite else { return }
         let maximum = durationSeconds.map { max(0, $0 - 0.1) } ?? Double.greatestFiniteMagnitude
         commercialSkipPolicy.resetAfterManualSeek()
         clearCommercialSkipNotice()
         prepareExistingPosition(min(maximum, max(0, seconds)))
     }
     private func prepareExistingPosition(_ seconds: Double) {
-        guard !isStopped else { return }
+        guard !isStopped, !isSuspendedForBackground else { return }
         flushPosition()
         targetSeconds = seconds
         captions.reset(for: seconds)
@@ -632,7 +703,7 @@ final class RecordingPlaybackController: ObservableObject {
         preparePosition(generation)
     }
     func retry() {
-        guard let url = currentURL else { return }
+        guard !isStopped, !isSuspendedForBackground, let url = currentURL else { return }
         currentURL = nil
         load(url)
     }
@@ -641,7 +712,7 @@ final class RecordingPlaybackController: ObservableObject {
         return value.isFinite && value >= 0 ? value : targetSeconds
     }
     private func updateTime() {
-        guard !isStopped else { return }
+        guard !isStopped, !isSuspendedForBackground else { return }
         if !preparing, prerolled, safeTime() > targetSeconds + 0.25 {
             advancedSincePreroll = true
         }
@@ -662,7 +733,7 @@ final class RecordingPlaybackController: ObservableObject {
         timer = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .milliseconds(250)) } catch { break }
-                guard let self, !self.isStopped else { return }
+                guard let self, !self.isStopped, !self.isSuspendedForBackground else { return }
                 if let since = self.waitingSince, Date().timeIntervalSince(since) > 30 {
                     self.fail("読み込みがタイムアウトしました。接続を確認して再試行してください。")
                 }
@@ -678,7 +749,7 @@ final class RecordingPlaybackController: ObservableObject {
         }
     }
     private func fail(_ message: String) {
-        guard !isStopped, failure == nil else { return }
+        guard !isStopped, !isSuspendedForBackground, failure == nil else { return }
         clearCommercialSkipNotice()
         checkpoint(force: true)
         if !preparing, !isLoading { targetSeconds = safeTime() }
@@ -710,6 +781,7 @@ final class RecordingPlaybackController: ObservableObject {
         // graph; that closure publishes RecordingResumeStore.revision.
         checkpoint(force: true, notify: false)
         isStopped = true
+        isSuspendedForBackground = false
         commercialTimeline = nil
         commercialMetadataUsable = false
         commercialMetadataComplete = false
@@ -722,7 +794,9 @@ final class RecordingPlaybackController: ObservableObject {
         timer?.cancel()
         timer = nil
         cancelPreparation()
+        observations.forEach { $0.invalidate() }
         observations.removeAll()
+        layerObservation?.invalidate()
         layerObservation = nil
         if let clockToken { player.removeTimeObserver(clockToken); self.clockToken = nil }
         if let endToken { NotificationCenter.default.removeObserver(endToken); self.endToken = nil }
