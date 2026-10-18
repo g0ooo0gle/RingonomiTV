@@ -3,10 +3,17 @@ import RingonomiCore
 
 @main
 struct RingonomiTVApp: App {
+    init() {
+#if DEBUG
+        AccountKeychain.checkStorage(arguments: ProcessInfo.processInfo.arguments)
+#endif
+    }
     var body: some Scene { WindowGroup { LibraryView() } }
 }
 struct LibraryView: View {
     @AppStorage("serverAddress") private var address = ""
+    @State private var draftAddress = ""
+    @State private var loadedAddressDraft = false
     @AppStorage("quality") private var quality = "720p"
     @AppStorage("guideSubchannels") private var guideSubchannels = false
     @State private var channels: [Channel] = []
@@ -17,8 +24,11 @@ struct LibraryView: View {
     @StateObject private var reservations = ReservationStore()
     @StateObject private var keywords = KeywordReservationStore()
     @StateObject private var resumeStore = RecordingResumeStore()
+    @StateObject private var account = BackendAccountStore(storage: AccountKeychain())
+    @State private var loadGeneration = UUID()
 #if DEBUG
     @State private var launchArgumentsHandled = false
+    @State private var accountCheckHandled = false
     /// A private test server may be supplied without persisting its address in user defaults.
     private var runtimeServerAddress: String? {
         let arguments = ProcessInfo.processInfo.arguments
@@ -34,13 +44,16 @@ struct LibraryView: View {
         return address
 #endif
     }
+    private var connectionKey: ConnectionLoadKey {
+        ConnectionLoadKey(address: effectiveAddress, revision: account.revision)
+    }
     var body: some View {
         TabView(selection: $selectedTab) {
             NavigationStack {
                 List(channels) { channel in
                     Button {
                         do {
-                            let client = try RingonomiClient(address: effectiveAddress)
+                            let client = try RingonomiClient.connected(to: effectiveAddress)
                             playback = Playback(client: client, channelID: channel.displayChannelId, recordingID: nil, title: channel.name, initialQuality: quality)
                         } catch { self.error = error.localizedDescription }
                     } label: {
@@ -55,44 +68,69 @@ struct LibraryView: View {
             }.tabItem { Label("ライブ", systemImage: "tv") }.tag(0)
             RecordingLibraryView(address: effectiveAddress, resumeStore: resumeStore) { recording, client in
                 openRecording(recording, client: client)
-            }.tabItem { Label("録画", systemImage: "film") }.tag(1)
+            }.id(connectionKey).tabItem { Label("録画", systemImage: "film") }.tag(1)
             ProgramGuideView(address: effectiveAddress, reservations: reservations) { channel in
                 do {
-                    let client = try RingonomiClient(address: effectiveAddress)
+                    let client = try RingonomiClient.connected(to: effectiveAddress)
                     playback = Playback(client: client, channelID: channel.displayChannelId,
                                         recordingID: nil, title: channel.name, initialQuality: quality)
                 } catch { self.error = error.localizedDescription }
-            }.tabItem { Label("番組表", systemImage: "calendar") }.tag(2)
+            }.id(connectionKey).tabItem { Label("番組表", systemImage: "calendar") }.tag(2)
             ReservationListView(address: effectiveAddress, store: reservations, keywords: keywords)
+                .id(connectionKey)
                 .tabItem { Label("予約", systemImage: "record.circle") }.tag(3)
             Form {
-                TextField("視聴サーバーURL（ポート番号を含む）", text: $address)
+                TextField("視聴サーバーURL（ポート番号を含む）", text: $draftAddress)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
-                    .disabled(reservations.saving || keywords.saving)
+                    .disabled(reservations.saving || keywords.saving || account.isBusy)
                 Picker("画質", selection: $quality) {
                     ForEach(["1080p", "720p", "540p", "360p"], id: \.self) { Text($0) }
                 }
                 Toggle("番組表に副チャンネルを表示", isOn: $guideSubchannels)
-                Button("接続して読み込む") { Task { await refresh() } }.disabled(loading)
+                Button("接続して読み込む") { applyConnection() }
+                    .disabled(loading || account.isBusy || reservations.saving || keywords.saving)
                 Text("Apple TVのIPではなく、視聴サーバーのURLを入力してください。")
                 if loading { ProgressView() }
                 if let error { Text(error).foregroundStyle(.red) }
+                AccountSettingsView(address: effectiveAddress, account: account)
+                    .disabled(reservations.saving || keywords.saving)
             }.tabItem { Label("設定", systemImage: "gear") }.tag(4)
         }
-        .task {
+        .onAppear {
+            if !loadedAddressDraft { draftAddress = address; loadedAddressDraft = true }
+        }
+        .task(id: connectionKey) {
+            channels = []
+            playback = nil
+            reservations.invalidateConnection()
+            keywords.invalidateConnection()
             if effectiveAddress.isEmpty { selectedTab = 4 }
             else {
+                async let reservationReload: () = reservations.refresh(address: effectiveAddress)
+                async let keywordReload: () = keywords.refresh(address: effectiveAddress)
                 await refresh()
+                _ = await (reservationReload, keywordReload)
 #if DEBUG
                 if ProcessInfo.processInfo.arguments.contains("--show-recordings") { selectedTab = 1 }
                 if ProcessInfo.processInfo.arguments.contains("--show-guide") { selectedTab = 2 }
                 if ProcessInfo.processInfo.arguments.contains("--show-reservations") { selectedTab = 3 }
+                if ProcessInfo.processInfo.arguments.contains("--show-settings") { selectedTab = 4 }
+                if !accountCheckHandled, ProcessInfo.processInfo.arguments.contains("--test-account-invalid-login") {
+                    accountCheckHandled = true
+                    selectedTab = 4
+                    // A new fictional username cannot lock out an existing
+                    // account. No password or token is written to the log.
+                    await account.login(address: effectiveAddress,
+                                        username: "ringonomi-check-" + UUID().uuidString,
+                                        password: UUID().uuidString)
+                    let expectedFailure = account.error?.contains("HTTP 401") == true
+                    print("RingonomiAccountLogin: expected401=\(expectedFailure)")
+                }
 #endif
             }
         }
         .task(id: effectiveAddress) {
-            await reservations.refresh(address: effectiveAddress)
-            await keywords.refresh(address: effectiveAddress)
+            await account.restore(address: effectiveAddress)
         }
         .fullScreenCover(item: $playback) { item in PlaybackView(item: item, resumeStore: resumeStore) }
         .alert("接続エラー", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
@@ -100,13 +138,17 @@ struct LibraryView: View {
         } message: { Text(error ?? "") }
     }
     @MainActor private func refresh() async {
-        guard !loading else { return }
+        let expected = UUID()
+        let requestedAddress = effectiveAddress
+        loadGeneration = expected
         loading = true
         error = nil
-        defer { loading = false }
+        defer { if loadGeneration == expected { loading = false } }
         do {
-            let client = try RingonomiClient(address: effectiveAddress)
-            channels = try await client.channels()
+            let client = try RingonomiClient.connected(to: requestedAddress)
+            let result = try await client.channels()
+            guard !Task.isCancelled, expected == loadGeneration, requestedAddress == effectiveAddress else { return }
+            channels = result
 #if DEBUG
             // 実機検証時だけ指定チャンネルを直接開ける。通常起動には影響しない。
             let arguments = launchArgumentsHandled ? [] : ProcessInfo.processInfo.arguments
@@ -125,6 +167,22 @@ struct LibraryView: View {
                                     title: "接続エラーの検証", initialQuality: quality)
             }
 #endif
+        } catch {
+            guard !Task.isCancelled, expected == loadGeneration, requestedAddress == effectiveAddress else { return }
+            self.error = error.localizedDescription
+        }
+    }
+
+    private func applyConnection() {
+        do {
+            let next = draftAddress.trimmingCharacters(in: .whitespacesAndNewlines)
+            _ = try RingonomiClient(address: next)
+            if next == address {
+                Task {
+                    await account.restore(address: effectiveAddress)
+                    await refresh()
+                }
+            } else { address = next }
         } catch { self.error = error.localizedDescription }
     }
 
@@ -137,4 +195,9 @@ struct LibraryView: View {
                             recordingStatus: recording.recordedVideo.status,
                             savedPosition: savedPosition, recordedFileID: recording.recordedVideo.id)
     }
+}
+
+private struct ConnectionLoadKey: Hashable {
+    let address: String
+    let revision: Int
 }

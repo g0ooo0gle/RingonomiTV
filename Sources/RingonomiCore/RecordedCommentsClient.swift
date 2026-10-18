@@ -21,7 +21,7 @@ public extension RingonomiClient {
         let maximumBytes = 20 * 1024 * 1024
         var request = URLRequest(url: endpoint(["api", "videos", String(recordingID), "jikkyo"]))
         request.timeoutInterval = 25
-        let (bytes, response) = try await session.bytes(for: request)
+        let (bytes, response) = try await backendBytes(for: request, using: session)
         defer { bytes.task.cancel() }
         guard let response = response as? HTTPURLResponse else { throw ConnectionError.http(0) }
         guard (200..<300).contains(response.statusCode) else { throw ConnectionError.http(response.statusCode) }

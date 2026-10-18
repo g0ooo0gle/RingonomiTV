@@ -164,7 +164,7 @@ struct ProgramGuideView: View {
         loading = true
         defer { if expected == requestKey { loading = false } }
         do {
-            let client = try RingonomiClient(address: address)
+            let client = try RingonomiClient.connected(to: address)
             let end = day.addingTimeInterval(86400)
             let result = try await client.programGuide(start: day, end: end, type: channelType)
             guard !Task.isCancelled, expected == requestKey else { return }

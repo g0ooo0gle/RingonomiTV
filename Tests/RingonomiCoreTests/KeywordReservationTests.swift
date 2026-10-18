@@ -396,7 +396,8 @@ final class KeywordReservationTests: XCTestCase {
         } catch let error as ReservationError {
             XCTAssertEqual(error.statusCode, 403)
             XCTAssertTrue(error.localizedDescription.contains("権限"))
-            XCTAssertTrue(error.localizedDescription.contains("自動予約権限がありません"))
+            XCTAssertTrue(error.localizedDescription.contains("HTTP 403"))
+            XCTAssertFalse(error.localizedDescription.contains("自動予約権限がありません"))
         }
     }
 }

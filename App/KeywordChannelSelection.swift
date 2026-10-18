@@ -56,7 +56,7 @@ struct KeywordChannelSelection: View {
         error = nil
         defer { loading = false }
         do {
-            let response = try await RingonomiClient(address: address).fetch(["api", "channels"], as: [String: [GuideChannel]].self)
+            let response = try await RingonomiClient.connected(to: address).fetch(["api", "channels"], as: [String: [GuideChannel]].self)
             guard !Task.isCancelled else { return }
             var seen = Set<String>()
             channels = ["GR", "BS", "CS", "CATV", "SKY", "BS4K"].flatMap { response[$0] ?? [] }

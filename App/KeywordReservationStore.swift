@@ -10,6 +10,14 @@ import RingonomiCore
     private var address = ""
     private var generation = UUID()
 
+    func invalidateConnection() {
+        generation = UUID()
+        items = []
+        loading = false
+        saving = false
+        error = nil
+    }
+
     func refresh(address next: String) async {
         if address != next {
             address = next
@@ -25,7 +33,7 @@ import RingonomiCore
         error = nil
         defer { if generation == expected { loading = false } }
         do {
-            let result = try await RingonomiClient(address: next).keywordReservations()
+            let result = try await RingonomiClient.connected(to: next).keywordReservations()
             guard !Task.isCancelled, generation == expected else { return }
             items = result.reservationConditions.sorted { $0.id < $1.id }
 #if DEBUG
@@ -42,7 +50,7 @@ import RingonomiCore
             throw ReservationUIError("一覧の読み込み後にもう一度お試しください。")
         }
         let expected = generation
-        let client = try RingonomiClient(address: requested)
+        let client = try RingonomiClient.connected(to: requested)
         saving = true
         error = nil
         defer { if generation == expected { saving = false } }
@@ -89,7 +97,7 @@ import RingonomiCore
             throw ReservationUIError("一覧の読み込み後にもう一度お試しください。")
         }
         let expected = generation
-        let client = try RingonomiClient(address: requested)
+        let client = try RingonomiClient.connected(to: requested)
         saving = true
         error = nil
         defer { if generation == expected { saving = false } }

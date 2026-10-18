@@ -113,7 +113,7 @@ private extension RingonomiClient {
         request.timeoutInterval = 20
 
         do {
-            let (data, response) = try await session.data(for: request)
+            let (data, response) = try await backendData(for: request, using: session)
             try Task.checkCancellation()
             guard let response = response as? HTTPURLResponse else {
                 throw ConnectionError.http(0)

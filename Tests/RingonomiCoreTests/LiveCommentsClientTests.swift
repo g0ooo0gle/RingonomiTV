@@ -12,13 +12,17 @@ final class LiveCommentsClientTests: XCTestCase {
     func testBackendPrefixAndExplicitResponseKeys() async throws {
         let session = session()
         defer { session.invalidateAndCancel(); LiveCommentsURLProtocol.handler = nil }
-        let client = try RingonomiClient(address: "https://example.invalid/proxy/tv/")
+        let token = try BackendAccessToken(rawValue: "test-token")
+        let client = try RingonomiClient(address: "https://example.invalid/proxy/tv/", accessToken: token)
+        var authorization: String?
         LiveCommentsURLProtocol.handler = { request in
             XCTAssertEqual(request.url?.path, "/proxy/api/channels/gr011/jikkyo")
             XCTAssertEqual(request.httpMethod, "GET")
+            authorization = request.value(forHTTPHeaderField: "Authorization")
             return (200, [:], Data(#"{"watch_session_url":"wss://example.invalid/watch","comment_session_url":"wss://example.invalid/comment","is_nxjikkyo_exclusive":false}"#.utf8))
         }
         let info = try await client.liveComments(channelID: "gr011", using: session)
+        XCTAssertEqual(authorization, "Bearer test-token")
         XCTAssertEqual(info.watchSessionURL?.path, "/watch")
         XCTAssertEqual(info.commentSessionURL?.path, "/comment")
         XCTAssertFalse(info.isNXJikkyoExclusive)

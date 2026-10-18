@@ -30,6 +30,14 @@ final class RecordingLibraryTests: XCTestCase {
         return (client, URLSession(configuration: configuration))
     }
 
+    private func authenticatedClientAndSession() throws -> (RingonomiClient, URLSession) {
+        let token = try BackendAccessToken(rawValue: "test-token")
+        let client = try RingonomiClient(address: "https://example.invalid/proxy", accessToken: token)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [RecordingLibraryURLProtocol.self]
+        return (client, URLSession(configuration: configuration))
+    }
+
     private func jsonResponse(
         _ request: URLRequest,
         _ status: Int = 200,
@@ -87,6 +95,20 @@ final class RecordingLibraryTests: XCTestCase {
         ])
         XCTAssertEqual(response.total, 1)
         XCTAssertEqual(response.recordedPrograms.first?.recordedVideo.id, 42)
+    }
+
+    func testBackendAuthorizationHeaderIsAppliedToRecordingRoute() async throws {
+        let (client, session) = try authenticatedClientAndSession()
+        var captured: URLRequest?
+        RecordingLibraryURLProtocol.handler = { request in
+            captured = request
+            return self.jsonResponse(request, 200, Data(#"{"total":0,"recorded_programs":[]}"#.utf8))
+        }
+        defer { session.invalidateAndCancel(); RecordingLibraryURLProtocol.handler = nil }
+
+        _ = try await client.recordings(using: session)
+
+        XCTAssertEqual(captured?.value(forHTTPHeaderField: "Authorization"), "Bearer test-token")
     }
 
     func testEmptyKeywordUsesListRouteAndNormalizesInvalidPage() async throws {
