@@ -20,6 +20,7 @@ struct LibraryView: View {
     @State private var error: String?
     @State private var loading = false
     @State private var playback: Playback?
+    @StateObject private var playbackIdleTimer = PlaybackIdleTimer()
     @State private var selectedTab = 0
     @StateObject private var reservations = ReservationStore()
     @StateObject private var keywords = KeywordReservationStore()
@@ -132,7 +133,16 @@ struct LibraryView: View {
         .task(id: effectiveAddress) {
             await account.restore(address: effectiveAddress)
         }
-        .fullScreenCover(item: $playback) { item in PlaybackView(item: item, resumeStore: resumeStore) }
+        .fullScreenCover(item: $playback) { item in
+            PlaybackView(item: item, resumeStore: resumeStore) { needsDisplay in
+                // Ignore a late update from a player that has already closed.
+                guard playback?.id == item.id else { return }
+                playbackIdleTimer.setNeedsContinuousDisplay(needsDisplay)
+            }
+        }
+        .onChange(of: playback?.id) { _, id in
+            if id == nil { playbackIdleTimer.setNeedsContinuousDisplay(false) }
+        }
         .alert("接続エラー", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
             Button("閉じる") { error = nil }
         } message: { Text(error ?? "") }
