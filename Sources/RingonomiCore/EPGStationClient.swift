@@ -309,6 +309,95 @@ public struct EPGStationClient: @unchecked Sendable {
         return page
     }
 
+    /// Fetch one page of reservations.
+    ///
+    /// The status filter and optional rule ID are encoded as query parameters.
+    public func reservations(
+        offset: Int = 0,
+        limit: Int = EPGStationClient.defaultPageLimit,
+        filter: EPGStationReservationFilter = .all,
+        ruleID: Int? = nil
+    ) async throws -> EPGStationReservationPage {
+        guard (0...EPGStationValueRules.maximumSafeJSONInteger).contains(offset),
+              (1...Self.maximumPageLimit).contains(limit) else {
+            throw EPGStationError.invalidRequest
+        }
+        if let ruleID,
+           !EPGStationValueRules.isPositiveIdentifier(ruleID) {
+            throw EPGStationError.invalidIdentifier
+        }
+
+        var queryItems = [
+            URLQueryItem(name: "isHalfWidth", value: "true"),
+            URLQueryItem(name: "type", value: filter.rawValue),
+            URLQueryItem(name: "offset", value: String(offset)),
+            URLQueryItem(name: "limit", value: String(limit))
+        ]
+        if let ruleID {
+            queryItems.append(URLQueryItem(name: "ruleId", value: String(ruleID)))
+        }
+
+        let data = try await data(for: endpoint(["api", "reserves"], queryItems: queryItems))
+        let page: EPGStationReservationPage
+        do {
+            page = try JSONDecoder().decode(EPGStationReservationPage.self, from: data)
+        } catch let error as EPGStationError {
+            throw error
+        } catch {
+            throw EPGStationError.invalidResponse
+        }
+        guard page.reservations.count <= limit else {
+            throw EPGStationError.invalidResponse
+        }
+        return page
+    }
+
+    /// Fetch one reservation by its reservation ID.
+    public func reservation(id: Int) async throws -> EPGStationReservation {
+        guard EPGStationValueRules.isPositiveIdentifier(id) else {
+            throw EPGStationError.invalidIdentifier
+        }
+        let data = try await data(
+            for: endpoint(
+                ["api", "reserves", String(id)],
+                queryItems: [URLQueryItem(name: "isHalfWidth", value: "true")]
+            )
+        )
+        let reservation: EPGStationReservation
+        do {
+            reservation = try JSONDecoder().decode(EPGStationReservation.self, from: data)
+        } catch let error as EPGStationError {
+            throw error
+        } catch {
+            throw EPGStationError.invalidResponse
+        }
+        guard reservation.id == id else {
+            throw EPGStationError.invalidResponse
+        }
+        return reservation
+    }
+
+    /// Fetch the channel catalog used to resolve reservation channel IDs.
+    ///
+    /// Channel metadata is independent of reservation state.  Callers may
+    /// therefore keep showing reservations when this optional lookup fails.
+    public func channels() async throws -> [EPGStationChannel] {
+        let data = try await data(for: endpoint(["api", "channels"]))
+        let channels: [EPGStationChannel]
+        do {
+            channels = try JSONDecoder().decode([EPGStationChannel].self, from: data)
+        } catch let error as EPGStationError {
+            throw error
+        } catch {
+            throw EPGStationError.invalidResponse
+        }
+        var identifiers = Set<Int>(minimumCapacity: channels.count)
+        guard channels.allSatisfy({ identifiers.insert($0.id).inserted }) else {
+            throw EPGStationError.invalidResponse
+        }
+        return channels
+    }
+
     /// Fetch one recording by its recording metadata ID.
     ///
     /// This ID is deliberately not interchangeable with a video-file ID.
@@ -449,7 +538,7 @@ private struct EPGStationDurationResponse: Decodable, Sendable {
     }
 }
 
-private enum EPGStationValueRules {
+enum EPGStationValueRules {
     // JavaScript's JSON number representation is exact through 2^53 - 1.
     static let maximumSafeJSONInteger = 9_007_199_254_740_991
 
