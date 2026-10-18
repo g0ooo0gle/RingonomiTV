@@ -1,5 +1,4 @@
 import SwiftUI
-import UIKit
 import RingonomiCore
 
 @main
@@ -12,7 +11,6 @@ struct RingonomiTVApp: App {
     var body: some Scene { WindowGroup { LibraryView() } }
 }
 struct LibraryView: View {
-    @Environment(\.scenePhase) private var scenePhase
     @AppStorage("serverAddress") private var address = ""
     @State private var draftAddress = ""
     @State private var loadedAddressDraft = false
@@ -22,7 +20,7 @@ struct LibraryView: View {
     @State private var error: String?
     @State private var loading = false
     @State private var playback: Playback?
-    @State private var playbackNeedsContinuousDisplay = false
+    @StateObject private var playbackIdleTimer = PlaybackIdleTimer()
     @State private var selectedTab = 0
     @StateObject private var reservations = ReservationStore()
     @StateObject private var keywords = KeywordReservationStore()
@@ -49,9 +47,6 @@ struct LibraryView: View {
     }
     private var connectionKey: ConnectionLoadKey {
         ConnectionLoadKey(address: effectiveAddress, revision: account.revision)
-    }
-    private var preventsIdleSleep: Bool {
-        playback != nil && playbackNeedsContinuousDisplay && scenePhase == .active
     }
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -141,21 +136,12 @@ struct LibraryView: View {
         .fullScreenCover(item: $playback) { item in
             PlaybackView(item: item, resumeStore: resumeStore) { needsDisplay in
                 // Ignore a late update from a player that has already closed.
-                guard playback?.id == item.id,
-                      playbackNeedsContinuousDisplay != needsDisplay else { return }
-                playbackNeedsContinuousDisplay = needsDisplay
+                guard playback?.id == item.id else { return }
+                playbackIdleTimer.setNeedsContinuousDisplay(needsDisplay)
             }
         }
         .onChange(of: playback?.id) { _, id in
-            if id == nil { playbackNeedsContinuousDisplay = false }
-        }
-        .onChange(of: preventsIdleSleep, initial: true) { _, preventsSleep in
-            // A quality sheet can hide PlaybackView without ending playback.
-            // Own the system timer here, using the playback route and scene.
-            UIApplication.shared.isIdleTimerDisabled = preventsSleep
-#if DEBUG
-            print("RingonomiIdleTimer: disabled=\(UIApplication.shared.isIdleTimerDisabled) playback=\(playback != nil) sceneActive=\(scenePhase == .active)")
-#endif
+            if id == nil { playbackIdleTimer.setNeedsContinuousDisplay(false) }
         }
         .alert("接続エラー", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
             Button("閉じる") { error = nil }

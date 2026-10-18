@@ -162,6 +162,7 @@ struct PlaybackView: View {
     }
 
     private func close() {
+        onContinuousDisplayChanged(false)
 #if DEBUG
         print("RingonomiPlaybackClose: panel=\(visiblePanel.map { $0 == .top ? "top" : "bottom" } ?? "hidden")")
 #endif
