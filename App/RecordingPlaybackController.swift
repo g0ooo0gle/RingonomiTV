@@ -456,6 +456,9 @@ final class RecordingPlaybackController: ObservableObject {
             NotificationCenter.default.removeObserver(endToken)
             self.endToken = nil
         }
+        // Clear the last caption before releasing its renderer. stop() does
+        // not publish because it is also used during view teardown.
+        captions.tick(seconds: targetSeconds, frameSize: .zero, isReady: false)
         captions.stop()
         player.replaceCurrentItem(with: nil)
         isChangingQuality = false
