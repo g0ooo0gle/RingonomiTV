@@ -22,6 +22,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
     // actor while SwiftUI is dismantling the representable.  Teardown must
     // not publish into that invalidating graph.
     private var isStopped = false
+    private var isChangingQuality = false
     @Published private var wantsPause = false
     var isPaused: Bool { wantsPause }
     private weak var videoSurface: UIView?
@@ -84,6 +85,10 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
 
     func prepareQualityChange() {
         guard !isStopped else { return }
+        // Ignore callbacks from the old media until SwiftUI supplies the new URL.
+        isChangingQuality = true
+        monitor?.cancel()
+        monitor = nil
         isLoading = true
         waitingSince = Date()
         player.audio?.isMuted = true
@@ -92,6 +97,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
     func load(_ url: URL) {
         guard currentURL != url else { return }
         isStopped = false
+        isChangingQuality = false
         currentURL = url
         monitor?.cancel()
         resetAudioCatalog()
@@ -442,13 +448,9 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
     }
 
     private func updateStatus() {
-        guard !isStopped, currentURL != nil, failure == nil else { return }
+        guard !isStopped, !isChangingQuality, currentURL != nil, failure == nil else { return }
         if player.state == .error || player.state == .ended {
-            failure = "配信が中断されました。接続を確認して再試行してください。"
-            player.audio?.isMuted = true
-            player.pause()
-            isLoading = false
-            status = "再生できません"
+            fail("配信が中断されました。接続を確認して再試行してください。")
             return
         }
         refreshAudioTracks()
@@ -459,7 +461,6 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
             let pictures = Int(stats.displayedPictures)
             if pictures > lastPictures { lastFrameDate = Date() }
             lastPictures = pictures
-            if !isLoading, !wantsPause, Date().timeIntervalSince(lastFrameDate) > 1.5 { beginWaiting() }
             let decodedAudio = Int(stats.decodedAudio)
             let playedAudioBuffers = Int(stats.playedAudioBuffers)
             // VLC may reset decoder statistics when replacing a track.
@@ -488,17 +489,34 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
                 print("RingonomiTVLive: pictures=\(pictures) loading=\(isLoading) muted=\(player.audio?.isMuted == true)")
             }
 #endif
+        } else {
+            gate.reset()
         }
+        // Losing the video output entirely must close the gate as well as a
+        // stalled picture counter. Otherwise audio can continue over black video.
+        if !isLoading, !wantsPause, Date().timeIntervalSince(lastFrameDate) > 1.5 { beginWaiting() }
         if isLoading, Date().timeIntervalSince(waitingSince) > 30 {
-            failure = "読み込みがタイムアウトしました。接続を確認して再試行してください。"
-            player.pause()
-            player.audio?.isMuted = true
-            isLoading = false
+            fail("読み込みがタイムアウトしました。接続を確認して再試行してください。")
+            return
         }
         let size = player.videoSize
         if failure != nil { status = "再生できません" }
         else if isLoading { status = "読み込み中…" }
         else { status = "\(wantsPause ? "一時停止" : "再生中") · \(Int(size.width))×\(Int(size.height))" }
+    }
+
+    private func fail(_ message: String) {
+        guard !isStopped, failure == nil else { return }
+        monitor?.cancel()
+        monitor = nil
+        player.audio?.isMuted = true
+        player.pause()
+        failure = message
+        isLoading = false
+        status = "再生できません"
+#if DEBUG
+        print("RingonomiTVLiveError: \(message)")
+#endif
     }
 }
 struct VLCVideo: UIViewRepresentable {
