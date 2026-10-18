@@ -264,7 +264,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         lastPictures = 0
         player.audio?.isMuted = true
         player.delegate = nil
-        player.stop()
+        if player.state != .stopped { player.stop() }
         player.drawable = nil
         status = "読み込み中…"
     }
@@ -296,7 +296,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         player.delegate = nil
         clearAudioCatalog(notifyUI: false)
         player.audio?.isMuted = true
-        player.stop()
+        if player.state != .stopped { player.stop() }
         player.drawable = nil
         videoSurface = nil
     }
