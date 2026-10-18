@@ -52,7 +52,18 @@ private final class StoppedFilePlayerRetirement: @unchecked Sendable {
         self.player = player
     }
 
-    func releasePlayer() {
+    func releaseAfterCurrentTurn(onRelease: @escaping @MainActor @Sendable () -> Void) {
+        // Let the caller's stack unwind before the final native reference is
+        // released. The completion itself only reads its owner on MainActor.
+        DispatchQueue.main.async {
+            Self.queue.async {
+                self.releasePlayer()
+                Task { @MainActor in onRelease() }
+            }
+        }
+    }
+
+    private func releasePlayer() {
 #if DEBUG
         NSLog("RingonomiFileReload: release-begin")
 #endif
@@ -596,13 +607,8 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         // Start after this stack unwinds so its local references cannot make
         // the final native release fall back onto the main thread. VLC release
         // can wait for decoder callbacks that themselves need the main queue.
-        DispatchQueue.main.async { [weak self] in
-            StoppedFilePlayerRetirement.queue.async {
-                retirement.releasePlayer()
-                Task { @MainActor [weak self] in
-                    self?.isRetiringPlayer = false
-                }
-            }
+        retirement.releaseAfterCurrentTurn { [weak self] in
+            self?.isRetiringPlayer = false
         }
     }
 
