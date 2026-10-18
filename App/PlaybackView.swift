@@ -161,7 +161,6 @@ struct PlaybackView: View {
                     .focusable(surfaceIsFocusable, interactions: .activate)
                     .focused($playbackFocus, equals: .surface)
                     .onMoveCommand { handleMoveCommand($0) }
-                    .onSubmit { revealBottomPanel() }
                     .onTapGesture { revealBottomPanel() }
             } else {
                 VLCVideo(url: streamURL, controller: controller)
@@ -169,7 +168,6 @@ struct PlaybackView: View {
                     .focusable(surfaceIsFocusable, interactions: .activate)
                     .focused($playbackFocus, equals: .surface)
                     .onMoveCommand { handleMoveCommand($0) }
-                    .onSubmit { revealBottomPanel() }
                     .onTapGesture { revealBottomPanel() }
             }
             if isRecording, recordingCommentsEnabled {
@@ -432,6 +430,7 @@ struct PlaybackView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.black.opacity(0.82))
         .onMoveCommand { direction in
+            guard let playbackFocus, focusBelongs(playbackFocus, to: .top) else { return }
             switch direction {
             case .down: revealBottomPanel()
             default: break
@@ -496,21 +495,19 @@ struct PlaybackView: View {
                     .focused($playbackFocus, equals: .playPause)
                     .disabled(failure != nil)
                 }
+                .onMoveCommand { direction in
+                    switch direction {
+                    case .up: revealTopPanel()
+                    case .down: hidePanel()
+                    default: break
+                    }
+                }
             }
         }
         .padding(36)
         .frame(maxWidth: .infinity)
         .background(.black.opacity(0.82))
         .focusSection()
-        .onMoveCommand { direction in
-            switch direction {
-            case .up:
-                revealTopPanel()
-            case .down:
-                hidePanel()
-            default: break
-            }
-        }
     }
 
     private var fallbackFocus: PlaybackControlFocus {
