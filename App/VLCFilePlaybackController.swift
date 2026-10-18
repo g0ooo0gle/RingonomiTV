@@ -856,17 +856,15 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
             }
         }
 
-        // At the end of an HTTP MPEG-TS seek, VLC 3.0.17 can report ended and
-        // normalized position 1 before its cached VLCTime catches up. Accept
-        // that narrow case only with a completed-recording hint and decoded
-        // output evidence; unknown/growing files and frame-less EOF remain
-        // failures.
+        // At the end of an HTTP MPEG-TS seek, VLC 3.0.17 can report ended
+        // without emitting a final time/position event. Its cached VLCTime,
+        // normalized position, and remaining time can therefore still belong
+        // to the pre-seek position. Treat native `.ended` as authoritative
+        // only for an explicit end-position request on a completed recording
+        // with decoded output from this generation. Unknown/growing files and
+        // frame-less EOF remain failures.
         guard player.state == .ended,
               let completedDuration = validDuration(durationHint),
-              normalizedPosition >= 1,
-              let remaining,
-              remaining.isFinite,
-              abs(remaining) <= 0.05,
               displayedPictures > 0 else { return false }
         let completedTolerance = positionTolerance(for: requested, duration: completedDuration)
         return abs(completedDuration - requested) <= completedTolerance
@@ -970,6 +968,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
     private var canReadPlaybackStatistics: Bool {
         guard player.state != .stopped,
               player.state != .opening,
+              player.state != .ended,
               player.state != .error else { return false }
         let size = player.videoSize
         return player.hasVideoOut && size.width > 0 && size.height > 0
