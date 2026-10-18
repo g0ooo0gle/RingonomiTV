@@ -15,6 +15,8 @@ struct ProgramGuideView: View {
     @State private var revision = 0
     @State private var selected: GuideSelection?
     @State private var pendingPlayback: GuideChannel?
+    @State private var pendingReservation: GuideReservationSelection?
+    @State private var editingReservation: GuideReservationSelection?
     @AppStorage("guidePresentation") private var presentation = "grid"
     @AppStorage("guideSubchannels") private var includeSubchannels = false
     @State private var jumpRevision = 0
@@ -87,12 +89,25 @@ struct ProgramGuideView: View {
                 if let channel = pendingPlayback {
                     pendingPlayback = nil
                     onPlay(channel)
+                } else if let reservation = pendingReservation {
+                    pendingReservation = nil
+                    editingReservation = reservation
                 } else { returnFocusRevision += 1 }
             }) { selection in
                 GuideProgramDetail(selection: selection, address: address, reservations: reservations) {
+                    pendingReservation = nil
                     pendingPlayback = selection.channel
                     selected = nil
+                } onReserve: {
+                    pendingPlayback = nil
+                    pendingReservation = GuideReservationSelection(selection: selection,
+                        original: reservations.reservation(for: selection.program.id))
+                    selected = nil
                 }
+            }
+            .sheet(item: $editingReservation, onDismiss: { returnFocusRevision += 1 }) { item in
+                ReservationEditor(address: address, store: reservations, program: item.selection.program,
+                                  channel: item.selection.channel, original: item.original)
             }
         }
     }
@@ -170,12 +185,17 @@ private struct GuideSelection: Identifiable {
     let program: GuideProgram
     let channel: GuideChannel
 }
+private struct GuideReservationSelection: Identifiable {
+    let id = UUID()
+    let selection: GuideSelection
+    let original: Reservation?
+}
 private struct GuideProgramDetail: View {
     let selection: GuideSelection
     let address: String
     @ObservedObject var reservations: ReservationStore
-    @State private var editingReservation = false
     let onPlay: () -> Void
+    let onReserve: () -> Void
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         NavigationStack {
@@ -197,7 +217,7 @@ private struct GuideProgramDetail: View {
                         Button("このチャンネルを見る", action: onPlay)
                     }
                     if (selection.program.endDate ?? .distantPast) > Date() {
-                        Button(reservations.reservation(for: selection.program.id) == nil ? "録画予約" : "予約を変更") { editingReservation = true }
+                        Button(reservations.reservation(for: selection.program.id) == nil ? "録画予約" : "予約を変更") { onReserve() }
                             .disabled(reservations.loading || reservations.saving || reservations.error != nil)
                         if let error = reservations.error {
                             Text(error).font(.caption).foregroundStyle(.red)
@@ -207,9 +227,6 @@ private struct GuideProgramDetail: View {
                     Button("閉じる") { dismiss() }
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(60)
             }
-        }.sheet(isPresented: $editingReservation) {
-            ReservationEditor(address: address, store: reservations, program: selection.program, channel: selection.channel,
-                              original: reservations.reservation(for: selection.program.id))
         }
         .task { await reservations.refresh(address: address) }
     }
