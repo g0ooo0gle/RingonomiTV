@@ -292,11 +292,8 @@ struct EPGStationRuleFields: View {
     }
 
     private var timeSpecificationTitle: String {
-        switch options.isTimeSpecification {
-        case true: return "サーバー指定の時間単位"
-        case false: return "通常の時刻指定"
-        case nil: return "サーバー値なし"
-        }
+        guard let isTimeSpecified = options.isTimeSpecification else { return "設定なし" }
+        return isTimeSpecified ? "曜日・時刻を指定して予約" : "番組情報から予約"
     }
 
     private var canEditNormalSearch: Bool {
