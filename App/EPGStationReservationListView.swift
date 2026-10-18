@@ -257,8 +257,7 @@ private func reservationSchedule(_ item: EPGStationReservation) -> String {
         guard value.isFinite, (-62_135_596_800_000...253_402_300_799_000).contains(value) else {
             return "日時情報なし"
         }
-        return Date(timeIntervalSince1970: value / 1000)
-            .formatted(date: .abbreviated, time: .shortened)
+        return reservationDate(Date(timeIntervalSince1970: value / 1000))
     }
     return formatted(item.startAt) + " – " + formatted(item.endAt)
 }
