@@ -2,8 +2,17 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
+    branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   core:
@@ -14,16 +23,16 @@ jobs:
       RINGONOMITV_CACHE_ROOT: ${{ github.workspace }}/.cache
       RINGONOMITV_BUILD_TMPDIR: ${{ github.workspace }}/.tmp
     steps:
-      - name: Check out source
-        uses: actions/checkout@v4
+      - name: ソースを取得
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Select Xcode
-        uses: maxim-lobanov/setup-xcode@v1
+      - name: Xcodeを選択
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
         with:
           xcode-version: '16.4'
 
-      - name: Run Swift tests
+      - name: Swiftテストを実行
         run: ./test.sh
 
-      - name: Run contract smoke check
+      - name: 通信契約チェックを実行
         run: xcrun swift run --package-path . --scratch-path .build --cache-path "$RINGONOMITV_CACHE_ROOT/swiftpm" RingonomiContractCheck

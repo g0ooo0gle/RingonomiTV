@@ -4,6 +4,8 @@
 オープンソースtvOSアプリです。現時点の対応バックエンドはKonomiTVです。
 サーバーURLは初期状態では空で、アプリの設定画面から利用者が入力します。
 
+開発手順は[`CONTRIBUTING.md`](CONTRIBUTING.md)を参照してください。
+
 本アプリは、[Komorebi](https://github.com/BeerEgg2001/Komorebi)の機能と通信仕様を
 参考に、Swift／SwiftUI／tvOS向けに再実装しています。参照元Androidプロジェクトの
 MIT著作権表示は、このリポジトリの[`LICENSE`](LICENSE)に保持しています。
@@ -193,6 +195,8 @@ Swiftパッケージテストと通信契約チェックを実行します。TVV
 非公開リポジトリでは自動CIを抑止し、明示的な手動実行時だけ実行します。
 
 ## ロードマップ
+
+現在の着手状況と未完了項目は[進捗管理Issue](https://github.com/g0ooo0gle/RingonomiTV/issues/9)で追跡しています。
 
 1. 起動、バッファリング、画質変更、割り込みからの復帰を安定させる
 2. 番組表・録画予約を仕上げ、キーワード条件の編集範囲を広げる
