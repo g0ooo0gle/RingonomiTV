@@ -193,6 +193,5 @@ struct QualityChoicesView: View {
         .focusSection()
         .defaultFocus($focusedTarget, initialFocus)
         .onAppear { focusedTarget = initialFocus }
-        .onExitCommand(perform: onClose)
     }
 }

@@ -343,6 +343,7 @@ struct PlaybackView: View {
             }.frame(maxWidth: .infinity, maxHeight: .infinity).background(.black)
 #endif
         }
+        .onExitCommand { handleExitCommand() }
 #if canImport(TVVLCKit)
         .task(id: LiveCommentRequestID(channel: item.channelID, enabled: liveCommentsEnabled,
                                       active: scenePhase == .active && failure == nil, reload: liveCommentReload)) {
@@ -751,6 +752,9 @@ struct PlaybackView: View {
 #endif
 
     private func handleExitCommand() {
+#if DEBUG
+        print("RingonomiPlaybackExit: card=\(isQualityOverlayPresented) panel=\(visiblePanel.map { $0 == .top ? "top" : "bottom" } ?? "hidden") focus=\(playbackFocus?.rawValue ?? "none")")
+#endif
 #if canImport(TVVLCKit)
         if isQualityOverlayPresented {
             dismissQualityOverlay(restoreFocus: true)
