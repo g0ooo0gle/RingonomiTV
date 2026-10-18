@@ -969,8 +969,11 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         isPaused = true
         isLoading = false
         waitingSince = Date()
-        player.pause()
         player.audio?.isMuted = true
+        // A paused input at TS EOF can stall native teardown even after VLC
+        // reports stopped. EOF is terminal, so stop instead of pausing the
+        // decoder and create a fresh instance for the next explicit action.
+        if player.state != .stopped { player.stop() }
         if let duration = durationSeconds { currentSeconds = duration }
         status = "再生終了（再生ボタンで最初から）"
         updateContinuousDisplayNeed()
