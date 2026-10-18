@@ -42,6 +42,7 @@ struct Playback: Identifiable {
 struct PlaybackView: View {
     let item: Playback
     let resumeStore: RecordingResumeStore
+    let onContinuousDisplayChanged: (Bool) -> Void
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -63,9 +64,11 @@ struct PlaybackView: View {
     @StateObject private var liveCommentStore = LiveCommentStore()
     @State private var commentReload = 0
     @StateObject private var commentStore = RecordingCommentStore()
-    init(item: Playback, resumeStore: RecordingResumeStore) {
+    init(item: Playback, resumeStore: RecordingResumeStore,
+         onContinuousDisplayChanged: @escaping (Bool) -> Void) {
         self.item = item
         self.resumeStore = resumeStore
+        self.onContinuousDisplayChanged = onContinuousDisplayChanged
         _quality = State(initialValue: item.initialQuality)
     }
     private var commentDelay: Double { liveCommentDelay.isFinite ? min(10, max(0, liveCommentDelay)) : 2 }
@@ -81,6 +84,13 @@ struct PlaybackView: View {
     private var audioSelectionError: String? { isRecording ? recordingController.audioSelectionError : controller.audioSelectionError }
     private var surfaceIsFocusable: Bool { visiblePanel == nil && !isLoading && failure == nil }
 #endif
+    private var needsContinuousDisplay: Bool {
+#if canImport(TVVLCKit)
+        hasStarted && failure == nil && !(isRecording ? recordingController.isPaused : controller.isPaused)
+#else
+        false
+#endif
+    }
     var body: some View {
         Group {
             if hasStarted {
@@ -112,6 +122,9 @@ struct PlaybackView: View {
             if !hasStarted, item.savedPosition == nil { beginPlayback(at: 0) }
         }
         .onExitCommand { handleExitCommand() }
+        .onChange(of: needsContinuousDisplay, initial: true) { _, needsDisplay in
+            onContinuousDisplayChanged(needsDisplay)
+        }
         .onDisappear {
 #if DEBUG
             print("RingonomiPlaybackDismissed")
