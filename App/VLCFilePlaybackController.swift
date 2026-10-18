@@ -172,6 +172,16 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         player.audio?.isMuted = true
     }
 
+    deinit {
+        // SwiftUI releases this controller on the main thread after stop().
+        // Keep an extra native reference until that destruction has finished,
+        // then release it away from UI work just like a replaced player.
+#if DEBUG
+        if !isStopped { NSLog("RingonomiFileLifecycle: released-without-stop") }
+#endif
+        StoppedFilePlayerRetirement(player).releaseAfterCurrentTurn {}
+    }
+
     var canSeek: Bool {
         !isStopped && !isLoading && failure == nil && isSeekable && durationSeconds != nil
     }
@@ -537,13 +547,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
 
         // VLC stops asynchronously.  A pending URL is only attached after
         // the stopped state is observed, preventing same-URL reuse races.
-#if DEBUG
-        NSLog("RingonomiFileReload: stop-begin")
-#endif
         requestPlayerStop()
-#if DEBUG
-        NSLog("RingonomiFileReload: stop-returned")
-#endif
         startPendingLoadIfReady(for: generation)
     }
 
@@ -561,26 +565,14 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         // TVVLCKit 3.7 may ignore equivalent media URLs, and clearing media
         // is asynchronous. Retire the stopped instance so its cleanup cannot
         // race with opening the same file for Replay or foreground resume.
-#if DEBUG
-        NSLog("RingonomiFileReload: retire-begin")
-#endif
         let oldPlayer = player
         oldPlayer.delegate = nil
         oldPlayer.drawable = nil
-#if DEBUG
-        NSLog("RingonomiFileReload: drawable-detached")
-#endif
         oldPlayer.audio?.isMuted = true
         // Native release owns media cleanup. Scheduling an asynchronous
         // media detach immediately before release can stall VLC teardown.
 
-#if DEBUG
-        NSLog("RingonomiFileReload: create-begin")
-#endif
         let freshPlayer = VLCMediaPlayer()
-#if DEBUG
-        NSLog("RingonomiFileReload: create-returned")
-#endif
         freshPlayer.delegate = self
         if let videoSurface { freshPlayer.drawable = videoSurface }
         freshPlayer.audio?.isMuted = true
@@ -591,13 +583,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         if pendingPositionSeconds != nil, pendingPositionStartedAt == nil {
             pendingPositionStartedAt = Date()
         }
-#if DEBUG
-        NSLog("RingonomiFileReload: play-begin")
-#endif
         freshPlayer.play()
-#if DEBUG
-        NSLog("RingonomiFileReload: play-returned")
-#endif
         retireStoppedPlayer(oldPlayer)
     }
 
