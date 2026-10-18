@@ -14,7 +14,9 @@ private enum MirakurunPlaybackFocus: Hashable {
     case surface
     case playPause
     case audio
-    case close
+    case menuClose
+    case loadingClose
+    case failureClose
     case retry
 }
 
@@ -53,12 +55,17 @@ struct MirakurunPlaybackView: View {
             VLCVideo(url: item.url, controller: controller)
                 .ignoresSafeArea()
             surface
+            controlsOverlay
+                .offset(y: menuVisible ? 0 : 320)
+                .opacity(menuVisible ? 1 : 0)
+                .disabled(!menuVisible || isLoading || failure != nil)
+                .allowsHitTesting(menuVisible && !isLoading && failure == nil)
+                .accessibilityHidden(!menuVisible || isLoading || failure != nil)
+                .zIndex(1)
             if isLoading {
                 loadingOverlay
             } else if let failure {
                 failureOverlay(message: failure)
-            } else if menuVisible {
-                controlsOverlay
             }
 #else
             VStack(spacing: 24) {
@@ -98,7 +105,7 @@ struct MirakurunPlaybackView: View {
         .onChange(of: controller.isLoading, initial: true) { _, loading in
             if loading {
                 menuVisible = false
-                focus = nil
+                focus = .loadingClose
             } else if failure == nil {
                 focus = .surface
             }
@@ -130,7 +137,7 @@ struct MirakurunPlaybackView: View {
         }
 #if canImport(TVVLCKit)
         .onPlayPauseCommand {
-            guard !isLoading, failure == nil else { return }
+            guard failure == nil else { return }
             controller.togglePause()
         }
 #endif
@@ -142,7 +149,7 @@ struct MirakurunPlaybackView: View {
             .contentShape(Rectangle())
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .ignoresSafeArea()
-            .focusable(!isLoading && failure == nil, interactions: .activate)
+            .focusable(!isLoading && failure == nil && !menuVisible, interactions: .activate)
             .focusEffectDisabled()
             .focused($focus, equals: .surface)
             .allowsHitTesting(!isLoading && failure == nil && !menuVisible)
@@ -172,8 +179,15 @@ struct MirakurunPlaybackView: View {
         }
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(.black.opacity(0.72))
-        .allowsHitTesting(false)
+        .ignoresSafeArea()
+        .background(.black)
+        .focusSection()
+        .defaultFocus($focus, .loadingClose)
+        .overlay(alignment: .bottom) {
+            Button("閉じる", action: close)
+                .focused($focus, equals: .loadingClose)
+                .padding(.bottom, 48)
+        }
     }
 
     private var controlsOverlay: some View {
@@ -201,7 +215,7 @@ struct MirakurunPlaybackView: View {
                 }
 
                 Button("閉じる", action: close)
-                    .focused($focus, equals: .close)
+                    .focused($focus, equals: .menuClose)
             }
             if let audioSelectionError = controller.audioSelectionError {
                 Text(audioSelectionError)
@@ -240,7 +254,7 @@ struct MirakurunPlaybackView: View {
                 }
                 .focused($focus, equals: .retry)
                 Button("閉じる", action: close)
-                    .focused($focus, equals: .close)
+                    .focused($focus, equals: .failureClose)
             }
         }
         .padding(48)

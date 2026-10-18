@@ -75,13 +75,16 @@ struct MirakurunServiceView: View {
                     ProgressView("サービスを読み込んでいます…")
                 }
 
-                Text("MirakurunのサービスAPIを使用します。KonomiTVのアカウントや接続設定は使いません。")
+                Text("視聴したいMirakurunの接続先を入力してください。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
             Section("サービス") {
-                if store.isLoading && store.services.isEmpty {
+                if address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text("接続先を入力して、サービスを読み込んでください。")
+                        .foregroundStyle(.secondary)
+                } else if store.isLoading && store.services.isEmpty {
                     Text("サービス一覧を準備しています…")
                         .foregroundStyle(.secondary)
                 } else if let error = store.error {
@@ -135,7 +138,13 @@ struct MirakurunServiceView: View {
         }
         .fullScreenCover(item: $playback) { item in
             MirakurunPlaybackView(item: item) { needsDisplay in
+                guard playback?.id == item.id else { return }
                 playbackIdleTimer.setNeedsContinuousDisplay(needsDisplay)
+            }
+        }
+        .onChange(of: playback?.id) { _, id in
+            if id == nil {
+                playbackIdleTimer.setNeedsContinuousDisplay(false)
             }
         }
     }
