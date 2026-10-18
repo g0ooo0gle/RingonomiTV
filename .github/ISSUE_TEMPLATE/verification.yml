@@ -1,0 +1,65 @@
+name: 検証報告
+description: 実装やリリース候補の確認結果を記録します
+title: "[検証] "
+labels:
+  - 検証
+body:
+  - type: markdown
+    attributes:
+      value: |
+        公開できる情報だけを書いてください。非公開の接続先URL、トークン、個人情報、未編集のログは貼らないでください。
+
+  - type: textarea
+    id: target
+    attributes:
+      label: 検証対象
+      description: バージョン、変更、機能など、確認した対象を書いてください。
+      placeholder: 例）録画再生の画質変更、Apple TV実機
+    validations:
+      required: true
+
+  - type: textarea
+    id: procedure
+    attributes:
+      label: 確認手順
+      description: 実施した手順や条件を短く書いてください。秘密情報は伏せてください。
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期待結果
+      description: 検証で確認したい結果を書いてください。
+    validations:
+      required: true
+
+  - type: textarea
+    id: result
+    attributes:
+      label: 結果
+      description: 成功・失敗と、観測できた事実を書いてください。
+    validations:
+      required: true
+
+  - type: textarea
+    id: verified
+    attributes:
+      label: 検証済み
+      description: 単体、CI、実機など、確認できた範囲を分けて書いてください。
+      placeholder: |
+        単体:
+        CI:
+        実機:
+
+  - type: textarea
+    id: unverified
+    attributes:
+      label: 未確認・制約
+      description: 未確認の環境、再現できない条件、判断上の制約を書いてください。
+
+  - type: textarea
+    id: completion
+    attributes:
+      label: 完了条件
+      description: この検証を完了とする条件を書いてください。

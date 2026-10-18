@@ -1,0 +1,70 @@
+name: 不具合報告
+description: 再現できる不具合を短く報告します
+title: "[不具合] "
+labels:
+  - 不具合
+body:
+  - type: markdown
+    attributes:
+      value: |
+        公開できる情報だけを書いてください。非公開の接続先URL、トークン、個人情報、未編集のログは貼らないでください。
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: 概要
+      description: 何が起きたかを一文で書いてください。
+      placeholder: 例）録画再生中に画質を変更すると再生画面が閉じる
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 再現手順
+      description: 再現に必要な操作を少ない手順で書いてください。秘密情報は伏せてください。
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期待結果
+      description: 本来どう動くべきかを書いてください。
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 実際の結果
+      description: 表示された状態や安全に共有できるエラー概要を書いてください。秘密情報は削除してください。
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: 環境
+      description: アプリ版、tvOS、Apple TVモデルなど、再現に必要な範囲だけ書いてください。
+      placeholder: 例）RingonomiTV 0.x、tvOS 26.x、Apple TV 4K
+
+  - type: textarea
+    id: completion
+    attributes:
+      label: 完了条件
+      description: 修正後に確認したい条件を書いてください。
+      placeholder: 例）同じ手順で再生が継続し、再発しない
+
+  - type: textarea
+    id: verification
+    attributes:
+      label: 検証済み・未確認
+      description: 単体テスト、CI、実機で確認できたことと、まだ確認していないことを分けて書いてください。
+      placeholder: |
+        検証済み:
+        未確認:
