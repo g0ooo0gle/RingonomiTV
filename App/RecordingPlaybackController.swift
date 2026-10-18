@@ -450,9 +450,19 @@ final class RecordingPlaybackController: ObservableObject {
 #if DEBUG
         print("RingonomiRecordingLifecycle: resumed target=\(targetSeconds) paused=\(wantsPause) ended=\(reachedEnd)")
 #endif
-        currentURL = nil
         if let videoLayer { attach(videoLayer) }
-        load(url, preservingEndState: reachedEnd)
+        if reachedEnd {
+            // There are no future frames to preroll at EOF. Keep the ended
+            // controls available and create a new item only when the user
+            // chooses replay or another position.
+            resetAudioSelection(clearPreferred: false)
+            isLoading = false
+            status = "再生終了（再生ボタンで最初から）"
+            updateTime()
+            return
+        }
+        currentURL = nil
+        load(url)
     }
 
     private func itemStatusChanged(_ expected: Int) {
@@ -705,6 +715,11 @@ final class RecordingPlaybackController: ObservableObject {
         targetSeconds = seconds
         captions.reset(for: seconds)
         if !preservingEndState { reachedEnd = false }
+        if player.currentItem == nil, let url = currentURL {
+            currentURL = nil
+            load(url, preservingEndState: preservingEndState)
+            return
+        }
         generation += 1
         cancelPreparation()
         preparing = true
@@ -718,6 +733,7 @@ final class RecordingPlaybackController: ObservableObject {
         load(url)
     }
     private func safeTime() -> Double {
+        guard player.currentItem != nil else { return targetSeconds }
         let value = player.currentTime().seconds
         return value.isFinite && value >= 0 ? value : targetSeconds
     }
