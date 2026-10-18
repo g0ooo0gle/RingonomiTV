@@ -49,6 +49,9 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
     }
     private var gate = PlaybackReadinessGate()
     private var monitor: Task<Void, Never>?
+    private var stopTask: Task<Void, Never>?
+    private var stopWaitGeneration = 0
+    private var stopRequested = false
     // TVVLCKit stops the native player asynchronously. Keep a fresh URL
     // pending until the stop state is observable, otherwise assigning the
     // same URL can be treated as a no-op by libVLC.
@@ -92,6 +95,10 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
     private var pendingAudioSelection: PendingAudioSelection?
     override init() { super.init(); player.delegate = self }
 
+    deinit {
+        StoppedVLCPlayerRetirement(player, context: .live).releaseAfterCurrentTurn {}
+    }
+
     func selectAudioTrack(id: String) {
         guard !isStopped, currentURL != nil, failure == nil, !isLoading else { return }
         guard
@@ -122,6 +129,9 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
     }
     func load(_ url: URL) {
         guard !isSuspendedForBackground, currentURL != url else { return }
+        stopTask?.cancel()
+        stopTask = nil
+        stopWaitGeneration &+= 1
         isStopped = false
         isSuspendedForBackground = false
         player.delegate = self
@@ -136,7 +146,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         // Calling stop() for an already-stopped player still dispatches
         // libvlc_media_player_stop_async. Do not enqueue that extra stop just
         // before the pending loader observes .stopped and calls play().
-        if player.state != .stopped { player.stop() }
+        requestPlayerStop()
         failure = nil
         gate.reset()
         lastFrameDate = .distantPast
@@ -214,6 +224,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         // VLC callback cannot try to start the same input twice.
         pendingLoadURL = nil
         pendingLoadGeneration = 0
+        stopRequested = false
         player.media = VLCMedia(url: url)
         if let videoSurface { player.drawable = videoSurface }
         player.audio?.isMuted = true
@@ -260,8 +271,8 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         lastPictures = 0
         player.audio?.isMuted = true
         player.delegate = nil
-        if player.state != .stopped { player.stop() }
         player.drawable = nil
+        requestPlayerStop()
         status = "読み込み中…"
     }
 
@@ -280,8 +291,13 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
     }
 
     func stop() {
+        guard !isStopped else { return }
         monitor?.cancel()
         monitor = nil
+        stopTask?.cancel()
+        stopTask = nil
+        stopWaitGeneration &+= 1
+        let expectedStopWaitGeneration = stopWaitGeneration
         isStopped = true
         isSuspendedForBackground = false
         pendingLoadURL = nil
@@ -291,9 +307,10 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         player.delegate = nil
         clearAudioCatalog(notifyUI: false)
         player.audio?.isMuted = true
-        if player.state != .stopped { player.stop() }
         player.drawable = nil
+        requestPlayerStop()
         videoSurface = nil
+        holdPlayerUntilStopped(for: expectedStopWaitGeneration)
     }
     nonisolated func mediaPlayerStateChanged(_ notification: Notification) {
         Task { @MainActor [weak self] in self?.updateStatus() }
@@ -745,6 +762,36 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
             } else {
                 status = playbackStatus
             }
+        }
+    }
+
+    private func requestPlayerStop() {
+        guard !stopRequested, player.state != .stopped else { return }
+        stopRequested = true
+        player.stop()
+    }
+
+    /// Keep the controller alive until its native player has stopped. The
+    /// generation check prevents a cancelled stop wait from clearing a task
+    /// belonging to a later load on the same controller.
+    private func holdPlayerUntilStopped(for expectedGeneration: Int) {
+        stopTask?.cancel()
+        guard player.state != .stopped else { return }
+        stopTask = Task { @MainActor [self] in
+            for _ in 0..<40 {
+                guard !Task.isCancelled,
+                      self.isStopped,
+                      self.stopWaitGeneration == expectedGeneration else { return }
+                if self.player.state == .stopped {
+                    if self.stopWaitGeneration == expectedGeneration {
+                        self.stopTask = nil
+                    }
+                    return
+                }
+                do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
+            }
+            guard self.stopWaitGeneration == expectedGeneration else { return }
+            self.stopTask = nil
         }
     }
 
