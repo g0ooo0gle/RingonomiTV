@@ -113,6 +113,9 @@ struct PlaybackView: View {
         }
         .onExitCommand { handleExitCommand() }
         .onDisappear {
+#if DEBUG
+            print("RingonomiPlaybackDismissed")
+#endif
             flushPosition()
             commentStore.cancel()
             liveCommentStore.cancel()
@@ -146,6 +149,9 @@ struct PlaybackView: View {
     }
 
     private func close() {
+#if DEBUG
+        print("RingonomiPlaybackClose: panel=\(visiblePanel.map { $0 == .top ? "top" : "bottom" } ?? "hidden")")
+#endif
         flushPosition()
         visiblePanel = nil
         isSeeking = false
