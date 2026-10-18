@@ -18,6 +18,10 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
     @Published private(set) var selectedAudioID: String?
     @Published private(set) var audioSelectionError: String?
     private var currentURL: URL?
+    // A cancelled monitor/delegate callback can still be queued on the main
+    // actor while SwiftUI is dismantling the representable.  Teardown must
+    // not publish into that invalidating graph.
+    private var isStopped = false
     private var wantsPause = false
     private var gate = PlaybackReadinessGate()
     private var monitor: Task<Void, Never>?
@@ -49,7 +53,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
     override init() { super.init(); player.delegate = self }
 
     func selectAudioTrack(id: String) {
-        guard currentURL != nil, failure == nil, !isLoading else { return }
+        guard !isStopped, currentURL != nil, failure == nil, !isLoading else { return }
         guard
               pendingAudioSelection == nil,
               !audioRecoveryPending,
@@ -63,6 +67,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
     }
 
     func prepareQualityChange() {
+        guard !isStopped else { return }
         isLoading = true
         waitingSince = Date()
         player.audio?.isMuted = true
@@ -70,6 +75,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
     }
     func load(_ url: URL) {
         guard currentURL != url else { return }
+        isStopped = false
         currentURL = url
         monitor?.cancel()
         resetAudioCatalog()
@@ -92,7 +98,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         }
     }
     func togglePause() {
-        guard failure == nil else { return }
+        guard !isStopped, failure == nil else { return }
         wantsPause.toggle()
         if !isLoading {
             if wantsPause { player.pause(); player.audio?.isMuted = true }
@@ -101,15 +107,16 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         updateStatus()
     }
     func retry() {
-        guard let url = currentURL else { return }
+        guard !isStopped, let url = currentURL else { return }
         currentURL = nil
         load(url)
     }
     func stop() {
         monitor?.cancel()
         monitor = nil
+        isStopped = true
         currentURL = nil
-        clearAudioCatalog()
+        clearAudioCatalog(notifyUI: false)
         player.audio?.isMuted = true
         player.stop()
         player.drawable = nil
@@ -144,12 +151,14 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         pendingAudioSelection = nil
     }
 
-    private func clearAudioCatalog() {
+    private func clearAudioCatalog(notifyUI: Bool = true) {
         audioSourceID = nil
         audioTrackIDsByOptionID.removeAll(keepingCapacity: false)
-        audioOptions = []
-        selectedAudioID = nil
-        audioSelectionError = nil
+        if notifyUI {
+            audioOptions = []
+            selectedAudioID = nil
+            audioSelectionError = nil
+        }
         preferredAudioName = nil
         hasExplicitAudioSelection = false
         didReportMissingAudioForSource = false
@@ -185,7 +194,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
     }
 
     private func refreshAudioTracks() {
-        guard currentURL != nil, failure == nil,
+        guard !isStopped, currentURL != nil, failure == nil,
               let sourceID = audioSourceID, player.media != nil else { return }
 
         let rawIndexes = arrayValues(from: player.audioTrackIndexes)
@@ -416,7 +425,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
     }
 
     private func updateStatus() {
-        guard currentURL != nil, failure == nil else { return }
+        guard !isStopped, currentURL != nil, failure == nil else { return }
         if player.state == .error || player.state == .ended {
             failure = "配信が中断されました。接続を確認して再試行してください。"
             player.audio?.isMuted = true
