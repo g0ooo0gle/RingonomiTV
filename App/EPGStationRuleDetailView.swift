@@ -16,7 +16,7 @@ struct EPGStationRuleDetailView: View {
     @State private var pendingFocus: FocusTarget?
     @State private var focusGeneration = 0
     private enum Action: String, Identifiable { case toggle, delete; var id: String { rawValue } }
-    private enum FocusTarget: Hashable { case toggle, message, loadError }
+    private enum FocusTarget: Hashable { case toggle, feedback, loadError }
 
     private var focusTaskID: String {
         "\(store.loading)-\(submitting)-\(focusGeneration)"
@@ -28,11 +28,11 @@ struct EPGStationRuleDetailView: View {
                 ProgressView("ルールと関連する予約を読み込んでいます…")
                 Button("読み込みを中止") { store.cancel() }
             } else if let error = store.error {
-                Text(error).foregroundStyle(.red).focusable().focused($focusedTarget, equals: .loadError)
-                Button("再試行", action: reload)
+                Text(error).foregroundStyle(.red)
+                Button("再試行", action: reload).focused($focusedTarget, equals: .loadError)
             } else if store.cancelled {
                 Text("読み込みを中止しました。")
-                Button("再試行", action: reload)
+                Button("再試行", action: reload).focused($focusedTarget, equals: .loadError)
             }
             if let item = store.item {
                 Section("ルール \(item.id)") {
@@ -67,14 +67,16 @@ struct EPGStationRuleDetailView: View {
                 }
             }
             if let message {
-                Section { Text(message).foregroundStyle(.orange).focusable().focused($focusedTarget, equals: .message) }
+                Section { Text(message).foregroundStyle(.orange).focusable() }
             }
             if mutation.pending != nil, !submitting {
                 Text("前の操作結果が未確認です。一覧へ戻り、結果を確認してください。")
                     .foregroundStyle(.orange).focusable()
             }
             if submitting { ProgressView("ルールの処理結果を確認しています…") }
-            Button("一覧へ戻る") { if !submitting { dismiss() } }.disabled(submitting)
+            Button("一覧へ戻る") { if !submitting { dismiss() } }
+                .disabled(submitting)
+                .focused($focusedTarget, equals: .feedback)
         }
         .navigationTitle("EPGStationルール詳細")
         .toolbar { Button("更新", action: reload).disabled(store.loading || submitting) }
@@ -98,7 +100,11 @@ struct EPGStationRuleDetailView: View {
         .onAppear { if store.item == nil || store.cancelled { reload() } }
         .task(id: focusTaskID) {
             guard let pendingFocus, !store.loading, !submitting else { return }
-            await Task.yield()
+            do {
+                try await Task.sleep(for: .milliseconds(150))
+            } catch {
+                return
+            }
             guard !Task.isCancelled, self.pendingFocus == pendingFocus, !store.loading, !submitting else { return }
             self.pendingFocus = nil
             if store.error != nil, pendingFocus == .toggle {
@@ -141,7 +147,7 @@ struct EPGStationRuleDetailView: View {
         } catch {
             guard !Task.isCancelled else { return }
             message = error.localizedDescription
-            pendingFocus = .message
+            pendingFocus = .feedback
             focusGeneration &+= 1
         }
     }
