@@ -177,14 +177,19 @@ private struct EPGStationReservationDetailView: View {
             if store.loading {
                 ProgressView("予約の詳細を読み込んでいます…")
                 Button("読み込みを中止") { store.cancel() }
+                    .onExitCommand(perform: goBack)
             } else if let error = store.error {
                 Text(error).foregroundStyle(.red)
                 Button("再試行", action: reload)
-                Button("一覧に戻る") { dismiss() }
+                    .onExitCommand(perform: goBack)
+                Button("一覧に戻る", action: goBack)
+                    .onExitCommand(perform: goBack)
             } else if store.cancelled {
                 Text("読み込みを中止しました。")
                 Button("再試行", action: reload)
-                Button("一覧に戻る") { dismiss() }
+                    .onExitCommand(perform: goBack)
+                Button("一覧に戻る", action: goBack)
+                    .onExitCommand(perform: goBack)
             } else if let item = store.item {
                 Section {
                     VStack(alignment: .leading, spacing: 16) {
@@ -196,12 +201,17 @@ private struct EPGStationReservationDetailView: View {
                     }
                     .focusable()
                     .accessibilityElement(children: .combine)
+                    .onExitCommand(perform: goBack)
                 }
                 if let description = item.description, !description.isEmpty {
-                    Section("番組の内容") { Text(description).focusable() }
+                    Section("番組の内容") {
+                        Text(description).focusable().onExitCommand(perform: goBack)
+                    }
                 }
                 if let extended = item.extended, !extended.isEmpty {
-                    Section("詳しい情報") { Text(extended).focusable() }
+                    Section("詳しい情報") {
+                        Text(extended).focusable().onExitCommand(perform: goBack)
+                    }
                 }
                 Section("録画の設定") {
                     Text(item.allowEndLack ? "番組末尾の切れを許可" : "番組末尾の切れを許可しない")
@@ -209,7 +219,9 @@ private struct EPGStationReservationDetailView: View {
                 }
                 Section {
                     Button("詳細を更新", action: reload)
-                    Button("一覧に戻る") { dismiss() }
+                        .onExitCommand(perform: goBack)
+                    Button("一覧に戻る", action: goBack)
+                        .onExitCommand(perform: goBack)
                 }
             }
         }
@@ -217,11 +229,18 @@ private struct EPGStationReservationDetailView: View {
         .onAppear(perform: reload)
         .onChange(of: address) { _, _ in reload() }
         .onChange(of: reservationID) { _, _ in reload() }
-        .onExitCommand { dismiss() }
+        .onExitCommand(perform: goBack)
         .onDisappear { store.cancel() }
     }
 
     private func reload() { store.load(address: address, id: reservationID) }
+
+    private func goBack() {
+#if DEBUG
+        print("RingonomiEPGStationReservationDetail: back")
+#endif
+        dismiss()
+    }
 }
 
 private struct EPGStationReservationStatus: View {
