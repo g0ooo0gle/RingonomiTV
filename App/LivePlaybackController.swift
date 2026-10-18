@@ -156,6 +156,9 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
     func suspendForBackground() {
         guard !isStopped, !isSuspendedForBackground, currentURL != nil, failure == nil else { return }
         isSuspendedForBackground = true
+#if DEBUG
+        print("RingonomiLiveLifecycle: suspended paused=\(wantsPause)")
+#endif
         monitor?.cancel()
         monitor = nil
         isLoading = true
@@ -177,6 +180,9 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         guard isSuspendedForBackground, !isStopped, failure == nil,
               let url = currentURL else { return }
         isSuspendedForBackground = false
+#if DEBUG
+        print("RingonomiLiveLifecycle: resumed paused=\(wantsPause)")
+#endif
         currentURL = nil
         load(url)
     }

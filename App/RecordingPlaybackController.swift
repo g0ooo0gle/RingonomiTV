@@ -406,6 +406,9 @@ final class RecordingPlaybackController: ObservableObject {
         }
 
         isSuspendedForBackground = true
+#if DEBUG
+        print("RingonomiRecordingLifecycle: suspended target=\(targetSeconds) paused=\(wantsPause) ended=\(reachedEnd)")
+#endif
         generation += 1
         resetAudioSelection(clearPreferred: false, notifyUI: false)
         cancelPreparation()
@@ -443,6 +446,9 @@ final class RecordingPlaybackController: ObservableObject {
         guard isSuspendedForBackground, !isStopped, failure == nil,
               let url = currentURL else { return }
         isSuspendedForBackground = false
+#if DEBUG
+        print("RingonomiRecordingLifecycle: resumed target=\(targetSeconds) paused=\(wantsPause) ended=\(reachedEnd)")
+#endif
         currentURL = nil
         if let videoLayer { attach(videoLayer) }
         load(url, preservingEndState: reachedEnd)

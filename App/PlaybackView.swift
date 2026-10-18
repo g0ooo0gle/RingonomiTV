@@ -153,6 +153,11 @@ struct PlaybackView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase != .active {
                 flushPosition()
+#if canImport(UIKit)
+                // Ignore a delayed scene update after the app has already
+                // become active. UIKit notifications are the primary source.
+                guard UIApplication.shared.applicationState != .active else { return }
+#endif
                 suspendPlaybackForBackground()
             } else {
                 resumePlaybackFromBackground()
