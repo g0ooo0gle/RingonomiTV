@@ -54,6 +54,7 @@ struct PlaybackView: View {
     @State private var maintenanceError: String?
     @State private var hasStarted = false
     @State private var visiblePanel: PlaybackPanel?
+    @State private var isQualityOverlayPresented = false
     @State private var panelBeforeLoading: PlaybackPanel?
     @State private var isSeeking = false
     @State private var didSetInitialPlaybackFocus = false
@@ -76,6 +77,7 @@ struct PlaybackView: View {
     }
     private var commentDelay: Double { liveCommentDelay.isFinite ? min(10, max(0, liveCommentDelay)) : 2 }
     private var streamURL: URL { item.url(quality: quality, session: session) }
+    private var qualityValues: [String] { ["1080p", "720p", "540p", "360p"] }
 #if canImport(TVVLCKit)
     @StateObject private var controller = PlaybackController()
     @StateObject private var recordingController = RecordingPlaybackController()
@@ -189,6 +191,7 @@ struct PlaybackView: View {
     }
 
     private func suspendPlaybackForBackground() {
+        isQualityOverlayPresented = false
         guard hasStarted else { return }
 #if canImport(TVVLCKit)
         if isRecording {
@@ -220,6 +223,7 @@ struct PlaybackView: View {
 #endif
         flushPosition()
         visiblePanel = nil
+        isQualityOverlayPresented = false
         isSeeking = false
         dismiss()
     }
@@ -309,6 +313,21 @@ struct PlaybackView: View {
                 .allowsHitTesting(panelIsVisible(.bottom))
                 .accessibilityHidden(!panelIsVisible(.bottom))
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            if isQualityOverlayPresented {
+                QualityChoicesView(
+                    currentQuality: quality,
+                    values: qualityValues,
+                    onSelect: finishQualitySelection,
+                    onClose: { dismissQualityOverlay(restoreFocus: true) }
+                )
+                // Give the card the full player bounds so tvOS can calculate
+                // its focus candidates from the actual screen-sized surface.
+                .padding(.top, 64)
+                .padding(.trailing, 64)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .transition(.opacity)
+                .zIndex(2)
+            }
             if visiblePanel == nil, let maintenanceError {
                 Text(maintenanceError)
                     .font(.caption)
@@ -342,6 +361,7 @@ struct PlaybackView: View {
         .onChange(of: isLoading, initial: true) { _, loading in
             updateLiveCommentClock()
             if loading {
+                isQualityOverlayPresented = false
                 if panelBeforeLoading == nil, let visiblePanel {
                     panelBeforeLoading = visiblePanel
                 }
@@ -378,6 +398,7 @@ struct PlaybackView: View {
         .onChange(of: failure) { _, failure in
             updateLiveCommentClock()
             if failure != nil {
+                isQualityOverlayPresented = false
                 panelBeforeLoading = nil
                 visiblePanel = nil
                 isSeeking = false
@@ -507,16 +528,20 @@ struct PlaybackView: View {
                     if isRecording { recordingController.selectAudioTrack(id: id) }
                     else { controller.selectAudioTrack(id: id) }
                 },
-                selectQuality: selectQuality,
                 close: close,
-                focus: $playbackFocus
+                focus: $playbackFocus,
+                isQualityOverlayPresented: $isQualityOverlayPresented
             )
         }
         .padding(36)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.black.opacity(0.82))
+        .disabled(isQualityOverlayPresented)
+        .allowsHitTesting(!isQualityOverlayPresented)
+        .accessibilityHidden(isQualityOverlayPresented)
         .onMoveCommand { direction in
-            guard panelIsVisible(.top), let playbackFocus,
+            guard !isQualityOverlayPresented,
+                  panelIsVisible(.top), let playbackFocus,
                   focusBelongs(playbackFocus, to: .top) else { return }
             switch direction {
             case .down: revealBottomPanel()
@@ -699,11 +724,37 @@ struct PlaybackView: View {
         session = UUID().uuidString
         quality = value
     }
+
+    private func dismissQualityOverlay(restoreFocus: Bool) {
+        guard isQualityOverlayPresented else { return }
+        isQualityOverlayPresented = false
+#if DEBUG
+        print("RingonomiQualityOverlay: dismissed active=\(panelIsVisible(.top))")
+#endif
+        if restoreFocus, panelIsVisible(.top) {
+            playbackFocus = .quality
+        }
+    }
+
+    private func finishQualitySelection(_ value: String) {
+        guard panelIsVisible(.top) else {
+            isQualityOverlayPresented = false
+            return
+        }
+        isQualityOverlayPresented = false
+        playbackFocus = .quality
+#if DEBUG
+        print("RingonomiQualityOverlay: selected value=\(value)")
+#endif
+        selectQuality(value)
+    }
 #endif
 
     private func handleExitCommand() {
 #if canImport(TVVLCKit)
-        if visiblePanel != nil {
+        if isQualityOverlayPresented {
+            dismissQualityOverlay(restoreFocus: true)
+        } else if visiblePanel != nil {
             hidePanel()
         } else {
             close()

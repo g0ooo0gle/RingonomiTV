@@ -42,12 +42,9 @@ struct PlaybackTopControls: View {
     let audioOptions: [PlaybackAudioOption]
     let selectedAudioID: String?
     let selectAudio: (String) -> Void
-    let selectQuality: (String) -> Void
     let close: () -> Void
     @FocusState.Binding var focus: PlaybackControlFocus?
-    @State private var isQualityOverlayPresented = false
-
-    private let qualityValues = ["1080p", "720p", "540p", "360p"]
+    @Binding var isQualityOverlayPresented: Bool
 
     var body: some View {
         HStack(spacing: 24) {
@@ -121,67 +118,25 @@ struct PlaybackTopControls: View {
                 .focused($focus, equals: .panelClose)
         }
         .frame(maxWidth: .infinity)
-        // Keep this card in the current playback view hierarchy.  An overlay
-        // does not replace the native video view or change the panel's layout
-        // size, unlike a presentation sheet.
+        // Keep the top controls in the current playback view hierarchy while
+        // the quality card is hosted by the full-screen player ZStack.
         .disabled(isQualityOverlayPresented)
         .allowsHitTesting(!isQualityOverlayPresented)
         .accessibilityHidden(isQualityOverlayPresented)
-        .overlay(alignment: .topTrailing) {
-            if isQualityOverlayPresented {
-                QualityChoicesView(
-                    currentQuality: quality,
-                    values: qualityValues,
-                    onSelect: finishQualitySelection,
-                    onClose: { dismissQualityOverlay(restoreFocus: true) }
-                )
-                // The controls above are disabled while the card is open, but
-                // the card itself must remain interactive and focusable.
-                .disabled(false)
-                .padding(.top, 20)
-                .padding(.trailing, 20)
-                .transition(.opacity)
-                .zIndex(1)
-            }
-        }
         .focusSection()
         .onChange(of: isActive) { _, active in
             // Loading and failure states remove the top panel's active focus.
             // Close the card without trying to focus a disabled quality button.
-            if !active { dismissQualityOverlay(restoreFocus: false) }
+            if !active { isQualityOverlayPresented = false }
         }
     }
 
     private var safeDelay: Double {
         liveCommentDelay.isFinite ? min(10, max(0, liveCommentDelay)) : 2
     }
-
-    private func dismissQualityOverlay(restoreFocus: Bool) {
-        guard isQualityOverlayPresented else { return }
-        isQualityOverlayPresented = false
-#if DEBUG
-        print("RingonomiQualityOverlay: dismissed active=\(isActive)")
-#endif
-        if restoreFocus, isActive {
-            focus = .quality
-        }
-    }
-
-    private func finishQualitySelection(_ value: String) {
-        guard isActive else {
-            dismissQualityOverlay(restoreFocus: false)
-            return
-        }
-        isQualityOverlayPresented = false
-        focus = .quality
-#if DEBUG
-        print("RingonomiQualityOverlay: selected value=\(value)")
-#endif
-        selectQuality(value)
-    }
 }
 
-private struct QualityChoicesView: View {
+struct QualityChoicesView: View {
     private enum FocusTarget: Hashable {
         case option(String)
         case close
