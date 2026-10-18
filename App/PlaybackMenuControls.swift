@@ -45,7 +45,7 @@ struct PlaybackTopControls: View {
     let selectQuality: (String) -> Void
     let close: () -> Void
     @FocusState.Binding var focus: PlaybackControlFocus?
-    @State private var isQualitySheetPresented = false
+    @State private var isQualityOverlayPresented = false
 
     private let qualityValues = ["1080p", "720p", "540p", "360p"]
 
@@ -105,36 +105,79 @@ struct PlaybackTopControls: View {
             }
 
             Button("画質：\(quality)") {
-                isQualitySheetPresented = true
+                // Clear the parent focus before adding the child focus section.
+                // This prevents the top panel's Down handler from receiving a
+                // command while the quality card is taking over the remote.
+                focus = nil
+                isQualityOverlayPresented = true
+#if DEBUG
+                print("RingonomiQualityOverlay: opened current=\(quality)")
+#endif
             }
             .focused($focus, equals: .quality)
             .disabled(isLoading)
-            .sheet(isPresented: $isQualitySheetPresented) {
-                QualityChoicesView(
-                    currentQuality: quality,
-                    values: qualityValues,
-                    onSelect: { value in
-                        isQualitySheetPresented = false
-                        selectQuality(value)
-                    },
-                    onClose: {
-                        isQualitySheetPresented = false
-                    }
-                )
-            }
 
             Button("閉じる", action: close)
                 .focused($focus, equals: .panelClose)
         }
         .frame(maxWidth: .infinity)
+        // Keep this card in the current playback view hierarchy.  An overlay
+        // does not replace the native video view or change the panel's layout
+        // size, unlike a presentation sheet.
+        .disabled(isQualityOverlayPresented)
+        .allowsHitTesting(!isQualityOverlayPresented)
+        .accessibilityHidden(isQualityOverlayPresented)
+        .overlay(alignment: .topTrailing) {
+            if isQualityOverlayPresented {
+                QualityChoicesView(
+                    currentQuality: quality,
+                    values: qualityValues,
+                    onSelect: finishQualitySelection,
+                    onClose: { dismissQualityOverlay(restoreFocus: true) }
+                )
+                // The controls above are disabled while the card is open, but
+                // the card itself must remain interactive and focusable.
+                .disabled(false)
+                .padding(.top, 20)
+                .padding(.trailing, 20)
+                .transition(.opacity)
+                .zIndex(1)
+            }
+        }
         .focusSection()
         .onChange(of: isActive) { _, active in
-            if !active { isQualitySheetPresented = false }
+            // Loading and failure states remove the top panel's active focus.
+            // Close the card without trying to focus a disabled quality button.
+            if !active { dismissQualityOverlay(restoreFocus: false) }
         }
     }
 
     private var safeDelay: Double {
         liveCommentDelay.isFinite ? min(10, max(0, liveCommentDelay)) : 2
+    }
+
+    private func dismissQualityOverlay(restoreFocus: Bool) {
+        guard isQualityOverlayPresented else { return }
+        isQualityOverlayPresented = false
+#if DEBUG
+        print("RingonomiQualityOverlay: dismissed active=\(isActive)")
+#endif
+        if restoreFocus, isActive {
+            focus = .quality
+        }
+    }
+
+    private func finishQualitySelection(_ value: String) {
+        guard isActive else {
+            dismissQualityOverlay(restoreFocus: false)
+            return
+        }
+        isQualityOverlayPresented = false
+        focus = .quality
+#if DEBUG
+        print("RingonomiQualityOverlay: selected value=\(value)")
+#endif
+        selectQuality(value)
     }
 }
 
@@ -161,7 +204,7 @@ private struct QualityChoicesView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: 14) {
             Text("画質を選択")
                 .font(.title2)
             ForEach(values, id: \.self) { value in
@@ -185,11 +228,35 @@ private struct QualityChoicesView: View {
             Button("戻る", action: onClose)
                 .focused($focusedTarget, equals: .close)
         }
-        .padding(64)
-        .frame(minWidth: 720, maxWidth: 960)
-        .background(.black)
+        .padding(40)
+        .frame(width: 680)
+        .background(.black.opacity(0.96), in: RoundedRectangle(cornerRadius: 24))
+        .overlay {
+            RoundedRectangle(cornerRadius: 24)
+                .stroke(.white.opacity(0.2), lineWidth: 1)
+        }
         .focusSection()
         .defaultFocus($focusedTarget, initialFocus)
+        .onAppear { focusedTarget = initialFocus }
+        .onMoveCommand(perform: moveFocus)
         .onExitCommand(perform: onClose)
+    }
+
+    private func moveFocus(_ direction: MoveCommandDirection) {
+        let step: Int
+        switch direction {
+        case .up: step = -1
+        case .down: step = 1
+        default: return
+        }
+        // The card extends beyond the control row, so use its own ordered
+        // targets rather than the row's directional focus navigation.
+        let targets = values.map(FocusTarget.option) + [.close]
+        let current = focusedTarget ?? initialFocus
+        guard let index = targets.firstIndex(of: current) else {
+            focusedTarget = initialFocus
+            return
+        }
+        focusedTarget = targets[min(targets.count - 1, max(0, index + step))]
     }
 }
