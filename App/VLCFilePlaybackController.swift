@@ -844,7 +844,8 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
 #endif
         guard pendingPositionGeneration == generation,
               pendingPositionApplied,
-              let requested else { return false }
+              let requested,
+              displayedPictures > 0 else { return false }
 
         if let duration = validDuration(durationSeconds ?? durationHint) {
             let tolerance = positionTolerance(for: requested, duration: duration)
