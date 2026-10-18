@@ -10,13 +10,14 @@ struct EPGStationRuleDetailView: View {
     @State private var editor: EPGStationRuleEditorConnection?
     @State private var confirmation: Action?
     @State private var message: String?
+    @State private var showingFailure = false
     @State private var submitting = false
     @State private var operation: Task<Void, Never>?
     @FocusState private var focusedTarget: FocusTarget?
     @State private var pendingFocus: FocusTarget?
     @State private var focusGeneration = 0
     private enum Action: String, Identifiable { case toggle, delete; var id: String { rawValue } }
-    private enum FocusTarget: Hashable { case toggle, feedback, loadError }
+    private enum FocusTarget: Hashable { case toggle, loadError }
 
     private var focusTaskID: String {
         "\(store.loading)-\(submitting)-\(focusGeneration)"
@@ -74,9 +75,7 @@ struct EPGStationRuleDetailView: View {
                     .foregroundStyle(.orange).focusable()
             }
             if submitting { ProgressView("ルールの処理結果を確認しています…") }
-            Button("一覧へ戻る") { if !submitting { dismiss() } }
-                .disabled(submitting)
-                .focused($focusedTarget, equals: .feedback)
+            Button("一覧へ戻る") { if !submitting { dismiss() } }.disabled(submitting)
         }
         .navigationTitle("EPGStationルール詳細")
         .toolbar { Button("更新", action: reload).disabled(store.loading || submitting) }
@@ -97,6 +96,11 @@ struct EPGStationRuleDetailView: View {
                  ? "関連する録画予約が取り消されます。録画済みの動画ファイルは削除されません。"
                  : "関連する録画予約が追加・変更・取り消される場合があります。処理には時間がかかることがあります。")
         }
+        .alert("操作結果を確認してください", isPresented: $showingFailure) {
+            Button("閉じる", role: .cancel) {}
+        } message: {
+            Text(message ?? "操作結果を確認できませんでした。詳細画面を確認してください。")
+        }
         .onAppear { if store.item == nil || store.cancelled { reload() } }
         .task(id: focusTaskID) {
             guard let pendingFocus, !store.loading, !submitting else { return }
@@ -114,7 +118,7 @@ struct EPGStationRuleDetailView: View {
             }
         }
         .onDisappear {
-            guard !submitting else { return }
+            guard !submitting, !showingFailure, confirmation == nil, editor == nil else { return }
             pendingFocus = nil
             store.cancel()
             operation?.cancel()
@@ -127,6 +131,7 @@ struct EPGStationRuleDetailView: View {
         guard !submitting else { return }
         submitting = true
         message = nil
+        showingFailure = false
         operation = Task { await apply(action, item: item) }
     }
     private func apply(_ action: Action, item: EPGStationRule) async {
@@ -147,8 +152,7 @@ struct EPGStationRuleDetailView: View {
         } catch {
             guard !Task.isCancelled else { return }
             message = error.localizedDescription
-            pendingFocus = .feedback
-            focusGeneration &+= 1
+            showingFailure = true
         }
     }
 }
