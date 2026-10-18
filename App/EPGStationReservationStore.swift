@@ -10,6 +10,7 @@ final class EPGStationReservationStore: ObservableObject {
     @Published private(set) var loading = false
     @Published private(set) var cancelled = false
     @Published private(set) var error: String?
+    @Published private(set) var lastReadAt: Date?
     private var request: Task<Void, Never>?
     private var channelRequest: Task<Void, Never>?
     private var generation = UUID()
@@ -47,6 +48,7 @@ final class EPGStationReservationStore: ObservableObject {
                 guard let self, generation == expected else { return }
                 items = page.reservations
                 total = page.total
+                lastReadAt = Date()
                 loading = false
 #if DEBUG
                 print("RingonomiEPGStationReservations: count=\(items.count) total=\(total) offset=\(offset)")
@@ -76,6 +78,7 @@ final class EPGStationReservationStore: ObservableObject {
             total = 0
             channelNames = [:]
             error = nil
+            lastReadAt = nil
             cancelled = false
         } else if wasLoading {
             cancelled = true
