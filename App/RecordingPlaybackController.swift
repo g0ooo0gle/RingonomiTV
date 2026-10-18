@@ -11,6 +11,16 @@ final class RecordingPlaybackController: ObservableObject {
     @Published private(set) var playbackTime = "00:00"
     @Published private(set) var isLoading = true
     @Published private(set) var failure: String?
+    @Published private(set) var commercialSkipNotice: String?
+    @Published private(set) var canUndoCommercialSkip = false
+    private var commercialTimeline: RecordingChapterTimeline?
+    private var commercialMetadataUsable = false
+    private var commercialMetadataComplete = false
+    private var automaticCommercialSkipEnabled = false
+    private var commercialSkipPolicy = CommercialSkipPolicy()
+    private var lastCommercialSkip: (from: Double, to: Double)?
+    private var commercialNoticeUntil = 0.0
+    private var commercialUndoUntil = 0.0
     private var currentURL: URL?
     // SwiftUI may dismantle the representable while queued KVO/asset tasks
     // are still waiting on the main actor.  This gate keeps those callbacks
@@ -329,6 +339,7 @@ final class RecordingPlaybackController: ObservableObject {
         guard currentURL != url else { return }
         isStopped = false
         currentURL = url
+        commercialMetadataUsable = commercialMetadataComplete && commercialTimeline != nil
         resetAudioSelection(clearPreferred: false)
         reachedEnd = false
         generation += 1
@@ -485,10 +496,12 @@ final class RecordingPlaybackController: ObservableObject {
         beginWaiting()
     }
     func togglePause() {
-        guard failure == nil else { return }
+        guard !isStopped, failure == nil else { return }
         if reachedEnd {
             reachedEnd = false
             wantsPause = false
+            commercialSkipPolicy.resetAfterManualSeek()
+            clearCommercialSkipNotice()
             prepareExistingPosition(0)
             return
         }
@@ -504,6 +517,78 @@ final class RecordingPlaybackController: ObservableObject {
             prepareExistingPosition(safeTime())
         }
     }
+    func configureCommercialTimeline(_ timeline: RecordingChapterTimeline?, isComplete: Bool) {
+        guard !isStopped else { return }
+        commercialTimeline = timeline
+        commercialMetadataComplete = isComplete
+        commercialMetadataUsable = isComplete && timeline != nil
+        commercialSkipPolicy.reset()
+        clearCommercialSkipNotice()
+    }
+
+    func setAutomaticCommercialSkip(_ enabled: Bool) {
+        guard !isStopped, enabled != automaticCommercialSkipEnabled else { return }
+        automaticCommercialSkipEnabled = enabled
+        commercialSkipPolicy.reset()
+    }
+
+    func undoCommercialSkip() {
+        guard !isStopped, !isLoading, failure == nil, canUndoCommercialSkip,
+              ProcessInfo.processInfo.systemUptime < commercialUndoUntil,
+              commercialMetadataUsable, let lastCommercialSkip, let commercialTimeline else { return }
+        let duration = player.currentItem?.duration.seconds ?? .nan
+        guard duration.isFinite, duration > 0, lastCommercialSkip.from < duration - 0.1 else { return }
+        commercialSkipPolicy.suppressCurrentInterval(in: commercialTimeline, at: lastCommercialSkip.from)
+        clearCommercialSkipNotice()
+        prepareExistingPosition(lastCommercialSkip.from)
+#if DEBUG
+        print("RingonomiCommercialSkip: undo target=\(lastCommercialSkip.from)")
+#endif
+    }
+
+    private func updateAutomaticCommercialSkip() {
+        let now = ProcessInfo.processInfo.systemUptime
+        if canUndoCommercialSkip && now >= commercialUndoUntil {
+            lastCommercialSkip = nil
+            canUndoCommercialSkip = false
+        }
+        if commercialSkipNotice != nil && now >= commercialNoticeUntil { commercialSkipNotice = nil }
+        guard automaticCommercialSkipEnabled, commercialMetadataUsable, let timeline = commercialTimeline,
+              !timeline.commercialSections.isEmpty, timeline.hasChapterBoundaries,
+              !isLoading, !preparing, prerolled, failure == nil, !wantsPause, !reachedEnd,
+              player.timeControlStatus == .playing, player.rate > 0,
+              videoLayer?.isReadyForDisplay == true else { return }
+        let duration = player.currentItem?.duration.seconds ?? .nan
+        guard duration.isFinite, duration > 0 else { return }
+        guard abs(duration - timeline.duration) <= 2 else {
+            commercialMetadataUsable = false
+            commercialSkipNotice = "録画時間とCM情報が一致しないため、自動スキップを停止しました。"
+            commercialNoticeUntil = now + 8
+            return
+        }
+        let from = safeTime()
+        guard let target = commercialSkipPolicy.automaticSeekTarget(
+            timeline: timeline, at: from, enabled: automaticCommercialSkipEnabled, isPlayingReady: true
+        ), target <= duration - CommercialSkipPolicy.minimumTailMargin else { return }
+        lastCommercialSkip = (from: from, to: target)
+        canUndoCommercialSkip = true
+        commercialUndoUntil = now + 30
+        commercialSkipNotice = "CMをスキップしました。チャプターから元の位置に戻せます。"
+        commercialNoticeUntil = now + 6
+        prepareExistingPosition(target)
+#if DEBUG
+        print("RingonomiCommercialSkip: automatic from=\(from) target=\(target)")
+#endif
+    }
+
+    private func clearCommercialSkipNotice() {
+        lastCommercialSkip = nil
+        canUndoCommercialSkip = false
+        commercialSkipNotice = nil
+        commercialNoticeUntil = 0
+        commercialUndoUntil = 0
+    }
+
     func seek(seconds: Double) {
         seek(to: safeTime() + seconds)
     }
@@ -512,9 +597,11 @@ final class RecordingPlaybackController: ObservableObject {
     var isPaused: Bool { wantsPause }
 
     func seek(to seconds: Double) {
-        guard !isLoading, failure == nil, seconds.isFinite else { return }
+        guard !isStopped, !isLoading, failure == nil, seconds.isFinite else { return }
         let duration = player.currentItem?.duration.seconds ?? .nan
         let maximum = duration.isFinite && duration > 0 ? max(0, duration - 0.1) : Double.greatestFiniteMagnitude
+        commercialSkipPolicy.resetAfterManualSeek()
+        clearCommercialSkipNotice()
         prepareExistingPosition(min(maximum, max(0, seconds)))
     }
     private func prepareExistingPosition(_ seconds: Double) {
@@ -572,11 +659,13 @@ final class RecordingPlaybackController: ObservableObject {
                 self.revealWhenReady()
                 self.updateTime()
                 self.checkpoint()
+                self.updateAutomaticCommercialSkip()
             }
         }
     }
     private func fail(_ message: String) {
         guard !isStopped, failure == nil else { return }
+        clearCommercialSkipNotice()
         checkpoint(force: true)
         if !preparing, !isLoading { targetSeconds = safeTime() }
         timer?.cancel()
@@ -607,6 +696,11 @@ final class RecordingPlaybackController: ObservableObject {
         // graph; that closure publishes RecordingResumeStore.revision.
         checkpoint(force: true, notify: false)
         isStopped = true
+        commercialTimeline = nil
+        commercialMetadataUsable = false
+        commercialMetadataComplete = false
+        commercialSkipPolicy.reset()
+        lastCommercialSkip = nil
         captions.stop()
         onCheckpoint = nil
         resetAudioSelection(clearPreferred: true, notifyUI: false)

@@ -48,6 +48,9 @@ struct PlaybackView: View {
     @State private var session = UUID().uuidString
     @State private var maintenanceError: String?
     @State private var hasStarted = false
+    @State private var didSetInitialPlaybackFocus = false
+    @State private var lastReadyPlaybackFocus: PlaybackControlFocus?
+    @FocusState private var playbackFocus: PlaybackControlFocus?
     @AppStorage("recordingCaptionsEnabled") private var recordingCaptionsEnabled = true
     @AppStorage("recordingCommentsEnabled") private var recordingCommentsEnabled = false
     @AppStorage("liveCommentsEnabled") private var liveCommentsEnabled = false
@@ -169,7 +172,7 @@ struct PlaybackView: View {
                         Text(failure).multilineTextAlignment(.center)
                         Button("再試行") {
                             if isRecording { recordingController.retry() } else { controller.retry() }
-                        }
+                        }.focused($playbackFocus, equals: .retry)
                     }
                 }.padding(60).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -178,6 +181,9 @@ struct PlaybackView: View {
                 Text(isRecording ? recordingController.status : controller.status).font(.caption)
                 if item.recordingID != nil { Text(recordingController.playbackTime).font(.caption).monospacedDigit() }
                 if let maintenanceError { Text(maintenanceError).font(.caption) }
+                if isRecording, let notice = recordingController.commercialSkipNotice {
+                    Text(notice).font(.caption)
+                }
                 if let audioSelectionError { Text(audioSelectionError).font(.caption).foregroundStyle(.orange) }
                 if isRecording, recordingCaptionsEnabled {
                     RecordingCaptionStatus(controller: recordingController.captions)
@@ -223,14 +229,38 @@ struct PlaybackView: View {
             updateLiveCommentClock()
             await liveCommentStore.run(client: item.client, channelID: channel)
         }
-        .onChange(of: isLoading) { _, _ in updateLiveCommentClock() }
+        .defaultFocus($playbackFocus, isRecording ? .backward : .comments)
+        .onChange(of: isLoading, initial: true) { _, loading in
+            updateLiveCommentClock()
+            if !loading, failure == nil, !didSetInitialPlaybackFocus {
+                didSetInitialPlaybackFocus = true
+                playbackFocus = isRecording ? .backward : .comments
+            } else if !loading, failure == nil, let previous = lastReadyPlaybackFocus {
+                // Disabled controls temporarily lose focus during seek/preroll.
+                // Return to the user's control when the ready gate opens.
+                playbackFocus = previous == .audio && audioOptions.count < 2
+                    ? (isRecording ? .backward : .comments) : previous
+            }
+        }
+        .onChange(of: playbackFocus) { _, focus in
+            if !isLoading, failure == nil, let focus, focus != .retry { lastReadyPlaybackFocus = focus }
+#if DEBUG
+            print("RingonomiPlaybackFocus: \(focus?.rawValue ?? "none")")
+#endif
+        }
         .onChange(of: controller.isPaused) { _, _ in updateLiveCommentClock() }
-        .onChange(of: failure) { _, _ in updateLiveCommentClock() }
+        .onChange(of: failure) { _, failure in
+            updateLiveCommentClock()
+            if failure != nil { playbackFocus = .retry }
+        }
         .onChange(of: liveCommentDelay) { _, _ in updateLiveCommentClock() }
         .task(id: recordingCaptionsEnabled) {
             recordingController.captions.setEnabled(recordingCaptionsEnabled)
         }
         .onPlayPauseCommand {
+#if DEBUG
+            print("RingonomiPlaybackCommand: playPause")
+#endif
             if isRecording { recordingController.togglePause() } else { controller.togglePause() }
         }
         .task(id: CommentRequestID(server: item.client.baseURL, recordingID: item.recordingID,
@@ -273,12 +303,15 @@ struct PlaybackView: View {
     private var recordingTransportControls: some View {
         HStack(spacing: 24) {
             Button("10秒戻る") { recordingController.seek(seconds: -10) }
+                .focused($playbackFocus, equals: .backward)
                 .disabled(isLoading || failure != nil)
             Button("30秒進む") { recordingController.seek(seconds: 30) }
+                .focused($playbackFocus, equals: .forward)
                 .disabled(isLoading || failure != nil)
             if let recordingID = item.recordingID {
                 RecordingChapterControls(client: item.client, recordingID: recordingID,
                                          fileID: item.recordedFileID, controller: recordingController)
+                    .focused($playbackFocus, equals: .chapters)
             }
         }
         .frame(maxWidth: .infinity)
@@ -292,7 +325,8 @@ struct PlaybackView: View {
                     Button(recordingCaptionsEnabled ? "字幕を非表示にする" : "字幕を表示する") {
                         recordingCaptionsEnabled.toggle()
                     }
-                }.accessibilityLabel("録画の字幕を設定")
+                }.focused($playbackFocus, equals: .captions)
+                    .accessibilityLabel("録画の字幕を設定")
                 Menu(recordingCommentsEnabled ? "実況：表示" : "実況：非表示") {
                     Button(recordingCommentsEnabled ? "実況を非表示にする" : "実況を表示する") {
                         recordingCommentsEnabled.toggle()
@@ -301,7 +335,8 @@ struct PlaybackView: View {
                         Button("過去ログを再取得") { commentReload += 1 }
                             .disabled(commentStore.loading)
                     }
-                }.accessibilityLabel("録画の実況を設定")
+                }.focused($playbackFocus, equals: .comments)
+                    .accessibilityLabel("録画の実況を設定")
             }
             if !isRecording {
                 Menu(liveCommentsEnabled ? "実況：表示" : "実況：非表示") {
@@ -318,7 +353,8 @@ struct PlaybackView: View {
                         }
                         Button("実況に再接続") { liveCommentReload += 1 }
                     }
-                }.accessibilityLabel("ライブの実況を設定")
+                }.focused($playbackFocus, equals: .comments)
+                    .accessibilityLabel("ライブの実況を設定")
             }
             if audioOptions.count > 1 {
                 Menu("音声") {
@@ -328,7 +364,8 @@ struct PlaybackView: View {
                             else { controller.selectAudioTrack(id: option.id) }
                         }
                     }
-                }.disabled(isLoading || failure != nil)
+                }.focused($playbackFocus, equals: .audio)
+                    .disabled(isLoading || failure != nil)
                     .accessibilityLabel("音声を選択")
             }
             Menu("画質：\(quality)") {
@@ -341,13 +378,19 @@ struct PlaybackView: View {
                         quality = value
                     }
                 }
-            }.disabled(isLoading)
+            }.focused($playbackFocus, equals: .quality)
+                .disabled(isLoading)
             Button("閉じる") { close() }
+                .focused($playbackFocus, equals: .close)
         }
         .frame(maxWidth: .infinity)
         .focusSection()
     }
 #endif
+}
+
+private enum PlaybackControlFocus: String, Hashable {
+    case backward, forward, chapters, captions, comments, audio, quality, close, retry
 }
 
 private struct LiveCommentRequestID: Hashable {
