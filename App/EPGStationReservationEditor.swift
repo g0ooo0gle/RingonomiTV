@@ -12,14 +12,15 @@ struct EPGStationReservationEditor: View {
     @State private var channelID: Int?
     @State private var program: EPGStationScheduleProgram?
     @State private var name = ""
-    @State private var start = Date().addingTimeInterval(3600)
-    @State private var end = Date().addingTimeInterval(5400)
+    @State private var start = Date(timeIntervalSince1970: (Date().timeIntervalSince1970 / 60).rounded(.down) * 60 + 3600)
+    @State private var end = Date(timeIntervalSince1970: (Date().timeIntervalSince1970 / 60).rounded(.down) * 60 + 5400)
     @State private var directory = ""
     @State private var allowEndLack = false
     @State private var programDay = epgStationCalendar.startOfDay(for: Date())
     @State private var message: String?
     @State private var confirm = false
     @State private var submitting = false
+    @State private var prepared = false
     @State private var submitTask: Task<Void, Never>?
 
     private enum CreationMode: String, CaseIterable {
@@ -74,6 +75,8 @@ struct EPGStationReservationEditor: View {
                 Button("戻って修正", role: .cancel) {}
             } message: { Text(confirmationText) }
             .onAppear {
+                guard !prepared else { return }
+                prepared = true
                 if let original { allowEndLack = original.allowEndLack }
                 else { store.load(address: address) }
             }
