@@ -36,6 +36,7 @@ struct PlaybackTopControls: View {
     let commentReload: () -> Void
     let liveCommentReload: () -> Void
     let quality: String
+    let isActive: Bool
     let isLoading: Bool
     let failure: String?
     let audioOptions: [PlaybackAudioOption]
@@ -127,6 +128,9 @@ struct PlaybackTopControls: View {
         }
         .frame(maxWidth: .infinity)
         .focusSection()
+        .onChange(of: isActive) { _, active in
+            if !active { isQualitySheetPresented = false }
+        }
     }
 
     private var safeDelay: Double {

@@ -224,18 +224,18 @@ struct PlaybackView: View {
             // remote surface. Removing a focused panel during a transition can
             // leave tvOS updating focus against a disappearing view hierarchy.
             topPanel
-                .offset(y: visiblePanel == .top || reduceMotion ? 0 : -320)
-                .opacity(visiblePanel == .top ? 1 : 0)
-                .disabled(visiblePanel != .top || isLoading || failure != nil)
-                .allowsHitTesting(visiblePanel == .top)
-                .accessibilityHidden(visiblePanel != .top)
+                .offset(y: panelIsVisible(.top) || reduceMotion ? 0 : -320)
+                .opacity(panelIsVisible(.top) ? 1 : 0)
+                .disabled(!panelIsVisible(.top))
+                .allowsHitTesting(panelIsVisible(.top))
+                .accessibilityHidden(!panelIsVisible(.top))
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             bottomPanel
-                .offset(y: visiblePanel == .bottom || reduceMotion ? 0 : 320)
-                .opacity(visiblePanel == .bottom ? 1 : 0)
-                .disabled(visiblePanel != .bottom || isLoading || failure != nil)
-                .allowsHitTesting(visiblePanel == .bottom)
-                .accessibilityHidden(visiblePanel != .bottom)
+                .offset(y: panelIsVisible(.bottom) || reduceMotion ? 0 : 320)
+                .opacity(panelIsVisible(.bottom) ? 1 : 0)
+                .disabled(!panelIsVisible(.bottom))
+                .allowsHitTesting(panelIsVisible(.bottom))
+                .accessibilityHidden(!panelIsVisible(.bottom))
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
             if visiblePanel == nil, let maintenanceError {
                 Text(maintenanceError)
@@ -426,6 +426,7 @@ struct PlaybackView: View {
                 commentReload: { commentReload &+= 1 },
                 liveCommentReload: { liveCommentReload &+= 1 },
                 quality: quality,
+                isActive: panelIsVisible(.top),
                 isLoading: isLoading,
                 failure: failure,
                 audioOptions: audioOptions,
@@ -443,7 +444,8 @@ struct PlaybackView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.black.opacity(0.82))
         .onMoveCommand { direction in
-            guard let playbackFocus, focusBelongs(playbackFocus, to: .top) else { return }
+            guard panelIsVisible(.top), let playbackFocus,
+                  focusBelongs(playbackFocus, to: .top) else { return }
             switch direction {
             case .down: revealBottomPanel()
             default: break
@@ -491,6 +493,8 @@ struct PlaybackView: View {
                     }
                 }
                 .onMoveCommand { direction in
+                    guard panelIsVisible(.bottom), let focus = playbackFocus,
+                          focusBelongs(focus, to: .bottom) else { return }
                     switch direction {
                     case .up:
                         if recordingController.durationSeconds != nil { playbackFocus = .seek }
@@ -509,6 +513,8 @@ struct PlaybackView: View {
                     .disabled(failure != nil)
                 }
                 .onMoveCommand { direction in
+                    guard panelIsVisible(.bottom), let focus = playbackFocus,
+                          focusBelongs(focus, to: .bottom) else { return }
                     switch direction {
                     case .up: revealTopPanel()
                     case .down: hidePanel()
@@ -526,6 +532,10 @@ struct PlaybackView: View {
     private var fallbackFocus: PlaybackControlFocus {
         guard let visiblePanel else { return .surface }
         return focusForPanel(visiblePanel)
+    }
+
+    private func panelIsVisible(_ panel: PlaybackPanel) -> Bool {
+        visiblePanel == panel && !isLoading && failure == nil
     }
 
     private func focusForPanel(_ panel: PlaybackPanel,
@@ -588,10 +598,12 @@ struct PlaybackView: View {
 
     private func hidePanel() {
         isSeeking = false
-        if reduceMotion {
+        // Complete the focus handoff without keeping the old controls in an
+        // animated removal/update transaction.
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
             visiblePanel = nil
-        } else {
-            withAnimation(.easeOut(duration: 0.16)) { visiblePanel = nil }
         }
     }
 
