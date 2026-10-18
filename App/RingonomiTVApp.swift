@@ -103,6 +103,14 @@ struct LibraryView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                    Section("EPGStation") {
+                        NavigationLink("EPGStationの録画") {
+                            EPGStationLibraryView()
+                        }
+                        Text("EPGStationの録画一覧から、保存済みの動画を再生します。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     AccountSettingsView(address: effectiveAddress, account: account)
                         .disabled(reservations.saving || keywords.saving)
                 }
@@ -111,6 +119,8 @@ struct LibraryView: View {
                     switch destination {
                     case .mirakurun:
                         MirakurunServiceView()
+                    case .epgstation:
+                        EPGStationLibraryView()
                     }
                 }
             }
@@ -123,6 +133,10 @@ struct LibraryView: View {
             if arguments.contains("--show-mirakurun") || arguments.contains("--play-mirakurun-service") {
                 selectedTab = 4
                 settingsPath = [.mirakurun]
+            }
+            if arguments.contains("--show-epgstation") || arguments.contains("--play-epgstation-recording") {
+                selectedTab = 4
+                settingsPath = [.epgstation]
             }
 #endif
         }
@@ -160,6 +174,10 @@ struct LibraryView: View {
             if arguments.contains("--show-mirakurun") || arguments.contains("--play-mirakurun-service") {
                 selectedTab = 4
                 settingsPath = [.mirakurun]
+            }
+            if arguments.contains("--show-epgstation") || arguments.contains("--play-epgstation-recording") {
+                selectedTab = 4
+                settingsPath = [.epgstation]
             }
 #endif
         }
@@ -250,4 +268,5 @@ private struct ConnectionLoadKey: Hashable {
 
 private enum SettingsDestination: Hashable {
     case mirakurun
+    case epgstation
 }
