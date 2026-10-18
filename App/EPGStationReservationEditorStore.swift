@@ -80,4 +80,3 @@ final class EPGStationReservationEditorStore: ObservableObject {
         loadingPrograms = false
     }
 }
-
