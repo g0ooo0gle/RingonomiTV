@@ -1,5 +1,8 @@
 import SwiftUI
 import RingonomiCore
+#if canImport(UIKit)
+import UIKit
+#endif
 
 struct Playback: Identifiable {
     let id = UUID()
@@ -122,6 +125,20 @@ struct PlaybackView: View {
             if !hasStarted, item.savedPosition == nil { beginPlayback(at: 0) }
         }
         .onExitCommand { handleExitCommand() }
+#if canImport(UIKit)
+        // UIApplication notifications are the primary lifecycle boundary on
+        // tvOS.  scenePhase remains a fallback because it can lag during a
+        // Home transition on some Apple TV releases.
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
+            suspendPlaybackForBackground()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
+            suspendPlaybackForBackground()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+            resumePlaybackFromBackground()
+        }
+#endif
         .onChange(of: needsContinuousDisplay, initial: true) { _, needsDisplay in
             onContinuousDisplayChanged(needsDisplay)
         }
@@ -134,7 +151,17 @@ struct PlaybackView: View {
             liveCommentStore.cancel()
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase != .active { flushPosition() }
+            if phase != .active {
+                flushPosition()
+#if canImport(UIKit)
+                // Ignore a delayed scene update after the app has already
+                // become active. UIKit notifications are the primary source.
+                guard UIApplication.shared.applicationState != .active else { return }
+#endif
+                suspendPlaybackForBackground()
+            } else {
+                resumePlaybackFromBackground()
+            }
         }
     }
 
@@ -158,6 +185,31 @@ struct PlaybackView: View {
     private func flushPosition() {
 #if canImport(TVVLCKit)
         if item.recordingID != nil { recordingController.flushPosition() }
+#endif
+    }
+
+    private func suspendPlaybackForBackground() {
+        guard hasStarted else { return }
+#if canImport(TVVLCKit)
+        if isRecording {
+            recordingController.suspendForBackground()
+        } else {
+            controller.suspendForBackground()
+        }
+#endif
+    }
+
+    private func resumePlaybackFromBackground() {
+#if canImport(UIKit)
+        guard UIApplication.shared.applicationState == .active else { return }
+#endif
+        guard hasStarted else { return }
+#if canImport(TVVLCKit)
+        if isRecording {
+            recordingController.resumeFromBackground()
+        } else {
+            controller.resumeFromBackground()
+        }
 #endif
     }
 
