@@ -11,8 +11,7 @@ struct EPGStationReservationListView: View {
     @State private var selectedID: Int?
     @State private var detailAddress: String?
     @State private var showingDetail = false
-    @State private var showingCreate = false
-    @State private var createAddress = ""
+    @State private var creation: EPGStationReservationEditorConnection?
     @State private var acknowledgePending = false
     @ObservedObject private var mutation = EPGStationMutationStore.shared
     @StateObject private var store = EPGStationReservationStore()
@@ -128,14 +127,13 @@ struct EPGStationReservationListView: View {
         .navigationTitle("EPGStation予約")
         .toolbar {
             Button("予約を追加") {
-                createAddress = effectiveAddress
-                showingCreate = true
+                creation = EPGStationReservationEditorConnection(address: effectiveAddress)
             }.disabled(effectiveAddress.isEmpty || mutation.busy || mutation.pending != nil)
             Button("更新", action: reload)
                 .disabled(effectiveAddress.isEmpty || store.loading)
         }
-        .sheet(isPresented: $showingCreate, onDismiss: reload) {
-            EPGStationReservationEditor(address: createAddress, original: nil) { offset = 0; reload() }
+        .sheet(item: $creation, onDismiss: reload) { destination in
+            EPGStationReservationEditor(address: destination.address, original: nil) { offset = 0; reload() }
         }
         .confirmationDialog("前の操作結果を確認しましたか？", isPresented: $acknowledgePending, titleVisibility: .visible) {
             Button("確認済み・操作を再開") { mutation.acknowledgeAfterReview(address: effectiveAddress, readAt: store.lastReadAt) }
@@ -169,7 +167,7 @@ struct EPGStationReservationListView: View {
 #endif
         }
         .onChange(of: effectiveAddress) { _, next in
-            showingCreate = false
+            creation = nil
             showingDetail = false
             selectedID = nil
             detailAddress = nil
@@ -210,6 +208,11 @@ struct EPGStationReservationListView: View {
         guard !effectiveAddress.isEmpty else { return }
         store.load(address: effectiveAddress, offset: offset, filter: filter)
     }
+}
+
+private struct EPGStationReservationEditorConnection: Identifiable {
+    let id = UUID()
+    let address: String
 }
 
 private struct EPGStationReservationDetailView: View {
