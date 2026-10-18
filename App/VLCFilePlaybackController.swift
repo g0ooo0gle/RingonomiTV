@@ -41,39 +41,6 @@ struct FilePlaybackSelection: Identifiable, Equatable {
 
 #if canImport(TVVLCKit)
 
-/// Owns a stopped player after its delegate and drawable have been detached.
-/// Ownership moves once from the main queue to the retirement queue; no other
-/// code accesses the instance while native decoder resources are released.
-private final class StoppedFilePlayerRetirement: @unchecked Sendable {
-    static let queue = DispatchQueue(label: "app.ringonomitv.file-player-retirement", qos: .utility)
-    private var player: VLCMediaPlayer?
-
-    init(_ player: VLCMediaPlayer) {
-        self.player = player
-    }
-
-    func releaseAfterCurrentTurn(onRelease: @escaping @MainActor @Sendable () -> Void) {
-        // Let the caller's stack unwind before the final native reference is
-        // released. The completion itself only reads its owner on MainActor.
-        DispatchQueue.main.async {
-            Self.queue.async {
-                self.releasePlayer()
-                Task { @MainActor in onRelease() }
-            }
-        }
-    }
-
-    private func releasePlayer() {
-#if DEBUG
-        NSLog("RingonomiFileReload: release-begin")
-#endif
-        player = nil
-#if DEBUG
-        NSLog("RingonomiFileReload: release-returned")
-#endif
-    }
-}
-
 /// VLC-backed playback for a single HTTP/file media resource.
 ///
 /// This controller intentionally does not share the live controller.  A file
@@ -179,7 +146,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
 #if DEBUG
         if !isStopped { NSLog("RingonomiFileLifecycle: released-without-stop") }
 #endif
-        StoppedFilePlayerRetirement(player).releaseAfterCurrentTurn {}
+        StoppedVLCPlayerRetirement(player, context: .file).releaseAfterCurrentTurn {}
     }
 
     var canSeek: Bool {
@@ -589,7 +556,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
 
     private func retireStoppedPlayer(_ oldPlayer: VLCMediaPlayer) {
         isRetiringPlayer = true
-        let retirement = StoppedFilePlayerRetirement(oldPlayer)
+        let retirement = StoppedVLCPlayerRetirement(oldPlayer, context: .file)
         // Start after this stack unwinds so its local references cannot make
         // the final native release fall back onto the main thread. VLC release
         // can wait for decoder callbacks that themselves need the main queue.
@@ -1316,8 +1283,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
     private func holdPlayerUntilStopped() {
         stopTask?.cancel()
         guard player.state != .stopped else { return }
-        stopTask = Task { @MainActor [weak self] in
-            guard let self else { return }
+        stopTask = Task { @MainActor [self] in
             for _ in 0..<40 {
                 guard !Task.isCancelled else { return }
                 if self.player.state == .stopped {
