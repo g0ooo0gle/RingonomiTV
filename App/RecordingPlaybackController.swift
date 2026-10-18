@@ -97,6 +97,7 @@ final class RecordingPlaybackController: ObservableObject {
         let previousOption = item.currentMediaSelection.selectedMediaOption(in: group)
         let shouldRemainPaused = forcedPause ?? (wantsPause || player.timeControlStatus == .paused)
         let capturedSeconds = safeTime()
+        let wasAtEnd = reachedEnd
 
         let isAlreadySelected = isSameAudioOption(previousOption, option)
         if isAlreadySelected {
@@ -122,7 +123,7 @@ final class RecordingPlaybackController: ObservableObject {
             selectedAudioID = previousID
             audioSelectionError = "音声を切り替えられませんでした。"
             wantsPause = shouldRemainPaused
-            prepareExistingPosition(capturedSeconds)
+            prepareExistingPosition(capturedSeconds, preservingEndState: wasAtEnd)
             return
         }
 
@@ -130,7 +131,7 @@ final class RecordingPlaybackController: ObservableObject {
         preferredAudioKey = audioOptions.first(where: { $0.id == id })?.preferenceKey
         audioSelectionError = nil
         wantsPause = shouldRemainPaused
-        prepareExistingPosition(capturedSeconds)
+        prepareExistingPosition(capturedSeconds, preservingEndState: wasAtEnd)
 #if DEBUG
         print("RingonomiTVAudio: selectedID=\(id)")
 #endif
@@ -372,8 +373,8 @@ final class RecordingPlaybackController: ObservableObject {
         endToken = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
             Task { @MainActor [weak self, weak item] in
                 guard let self, let item, !self.isStopped, !self.isSuspendedForBackground,
-                      !self.isChangingQuality,
-                      self.player.currentItem === item else { return }
+                      !self.isChangingQuality, !self.preparing,
+                      self.generation == expected, self.player.currentItem === item else { return }
                 self.status = "再生終了（再生ボタンで最初から）"
                 self.player.pause()
                 self.wantsPause = true
@@ -402,7 +403,7 @@ final class RecordingPlaybackController: ObservableObject {
             lastTrustedPosition = safeTime()
         }
         if let trusted = lastTrustedPosition {
-            targetSeconds = RecordingResumePolicy.clamp(seconds: trusted, duration: durationHint) ?? max(0, trusted)
+            targetSeconds = RecordingResumePolicy.clamp(seconds: trusted, duration: lastTrustedDuration ?? durationSeconds) ?? max(0, trusted)
         }
 
         isSuspendedForBackground = true
@@ -473,6 +474,9 @@ final class RecordingPlaybackController: ObservableObject {
               player.currentItem?.status == .readyToPlay else { return }
         preparationInFlight = true
         player.pause()
+        // The new HLS item may have a different duration from the catalog.
+        // Clamp again after it becomes ready so EOF is never a seek target.
+        targetSeconds = RecordingResumePolicy.clamp(seconds: targetSeconds, duration: durationSeconds) ?? 0
         let target = CMTime(seconds: targetSeconds, preferredTimescale: 600)
         guard target.isValid, target.isNumeric else {
             fail("再生位置を読み込めませんでした。最初から再生し直してください。")
@@ -695,12 +699,12 @@ final class RecordingPlaybackController: ObservableObject {
         clearCommercialSkipNotice()
         prepareExistingPosition(min(maximum, max(0, seconds)))
     }
-    private func prepareExistingPosition(_ seconds: Double) {
+    private func prepareExistingPosition(_ seconds: Double, preservingEndState: Bool = false) {
         guard !isStopped, !isSuspendedForBackground else { return }
         flushPosition()
         targetSeconds = seconds
         captions.reset(for: seconds)
-        reachedEnd = false
+        if !preservingEndState { reachedEnd = false }
         generation += 1
         cancelPreparation()
         preparing = true
