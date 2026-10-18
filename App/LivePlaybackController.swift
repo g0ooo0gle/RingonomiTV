@@ -26,12 +26,9 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
     // and its polling task must be released until the app is foregrounded
     // again.  This flag also makes repeated lifecycle notifications safe.
     private var isSuspendedForBackground = false
-    // A paused live connection can be kept alive by VLC for a short period,
-    // but reusing it indefinitely eventually resumes into a terminal state.
-    // This is an application policy for deciding when to create fresh media,
-    // not a claim about the stream protocol's timeout.
-    private static let longPauseReconnectInterval: TimeInterval = 30
-    private var pauseStartedAt: Date?
+    // A prepared live connection can become unusable while it is paused.
+    // Resume always creates fresh media; an in-progress initial/quality/retry
+    // load continues without starting a duplicate load.
     private var isChangingQuality = false
     @Published private var wantsPause = false
     var isPaused: Bool { wantsPause }
@@ -125,7 +122,6 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         player.delegate = self
         isChangingQuality = false
         currentURL = url
-        pauseStartedAt = wantsPause ? Date() : nil
         loadGeneration &+= 1
         let expectedLoadGeneration = loadGeneration
         pendingLoadURL = url
@@ -162,15 +158,13 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
     func togglePause() {
         guard !isStopped, !isSuspendedForBackground, failure == nil else { return }
         if wantsPause {
-            let shouldReconnect = shouldReconnectAfterPause
+            let shouldReload = shouldReloadAfterPause
             wantsPause = false
-            pauseStartedAt = nil
-            if shouldReconnect {
-                // A long-lived or already-terminal connection cannot be
-                // resumed reliably.  Reuse the existing quality URL, but
-                // create a new VLC media so the normal readiness gate applies.
+            if shouldReload {
+                // Reuse the quality URL, but create fresh VLC media so the
+                // normal readiness gate applies before playback is revealed.
 #if DEBUG
-                print("RingonomiLivePause: reconnecting after pause")
+                print("RingonomiLivePause: reconnecting with fresh media")
 #endif
                 retry()
             } else if !isLoading {
@@ -179,7 +173,6 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
             }
         } else {
             wantsPause = true
-            pauseStartedAt = Date()
             if !isLoading {
                 player.pause()
                 player.audio?.isMuted = true
@@ -234,13 +227,11 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         }
     }
 
-    private var shouldReconnectAfterPause: Bool {
-        // An initial load failure should still be shown to the user.  This
-        // policy only applies after a ready stream has actually been paused.
-        guard !isLoading, !isChangingQuality, currentURL != nil else { return false }
-        if isTerminalPlaybackState { return true }
-        guard let pauseStartedAt else { return false }
-        return Date().timeIntervalSince(pauseStartedAt) >= Self.longPauseReconnectInterval
+    private var shouldReloadAfterPause: Bool {
+        // A prepared stream is always rebuilt on resume.  During initial,
+        // quality-change, or retry preparation, just clear the pause intent
+        // and let the existing pending load finish.
+        !isLoading && !isChangingQuality && currentURL != nil
     }
 
     /// Releases the live decoder while the application is in the background.
@@ -292,7 +283,6 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         pendingLoadGeneration = 0
         loadGeneration &+= 1
         currentURL = nil
-        pauseStartedAt = nil
         player.delegate = nil
         clearAudioCatalog(notifyUI: false)
         player.audio?.isMuted = true
