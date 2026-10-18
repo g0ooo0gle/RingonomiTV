@@ -19,6 +19,9 @@ public struct Recording: Decodable, Identifiable, Sendable {
     public let description: String
     public let recordedVideo: RecordedVideo
     public let isFree: Bool
+    /// Program start time, used to distinguish reused recorded-video IDs.
+    /// Older server responses may omit this field.
+    public let startTime: String?
     /// True when the source recording did not cover the complete program.
     /// Older server responses may omit this field.
     public let isPartiallyRecorded: Bool?
