@@ -48,7 +48,6 @@ struct PlaybackView: View {
     @State private var session = UUID().uuidString
     @State private var maintenanceError: String?
     @State private var hasStarted = false
-    @State private var controlsVisible = true
     @AppStorage("recordingCaptionsEnabled") private var recordingCaptionsEnabled = true
     @AppStorage("recordingCommentsEnabled") private var recordingCommentsEnabled = false
     @State private var commentReload = 0
@@ -88,10 +87,7 @@ struct PlaybackView: View {
         .onAppear {
             if !hasStarted, item.savedPosition == nil { beginPlayback(at: 0) }
         }
-        .onExitCommand {
-            if hasStarted && !controlsVisible { controlsVisible = true }
-            else { close() }
-        }
+        .onExitCommand { close() }
         .onDisappear {
             flushPosition()
             commentStore.cancel()
@@ -148,14 +144,6 @@ struct PlaybackView: View {
                                         isVisible: !isLoading && failure == nil)
                     .ignoresSafeArea()
             }
-            if !controlsVisible {
-                Button { controlsVisible = true } label: {
-                    Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("再生操作を表示")
-                .onMoveCommand { _ in controlsVisible = true }
-            }
             if isLoading || failure != nil {
                 Color.black.ignoresSafeArea()
                 VStack(spacing: 24) {
@@ -171,43 +159,40 @@ struct PlaybackView: View {
                     }
                 }.padding(60).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            if controlsVisible {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text(item.title).font(.headline).lineLimit(2)
-                    Text(isRecording ? recordingController.status : controller.status).font(.caption)
-                    if item.recordingID != nil { Text(recordingController.playbackTime).font(.caption).monospacedDigit() }
-                    if let maintenanceError { Text(maintenanceError).font(.caption) }
-                    if let audioSelectionError { Text(audioSelectionError).font(.caption).foregroundStyle(.orange) }
-                    if isRecording, recordingCaptionsEnabled {
-                        RecordingCaptionStatus(controller: recordingController.captions)
-                    }
-                    if isRecording, recordingCommentsEnabled, let status = commentStore.status {
-                        Text(status).font(.caption)
-                    }
-                }.padding(40).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    .allowsHitTesting(false)
-            }
+            VStack(alignment: .leading, spacing: 12) {
+                Text(item.title).font(.headline).lineLimit(2)
+                Text(isRecording ? recordingController.status : controller.status).font(.caption)
+                if item.recordingID != nil { Text(recordingController.playbackTime).font(.caption).monospacedDigit() }
+                if let maintenanceError { Text(maintenanceError).font(.caption) }
+                if let audioSelectionError { Text(audioSelectionError).font(.caption).foregroundStyle(.orange) }
+                if isRecording, recordingCaptionsEnabled {
+                    RecordingCaptionStatus(controller: recordingController.captions)
+                }
+                if isRecording, recordingCommentsEnabled, let status = commentStore.status {
+                    Text(status).font(.caption)
+                }
+            }.padding(40).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .allowsHitTesting(false)
 #else
             VStack(spacing: 30) {
                 Text("TS再生ライブラリが必要です")
                 Text("READMEの手順でTVVLCKitを導入してビルドしてください。")
             }.frame(maxWidth: .infinity, maxHeight: .infinity).background(.black)
 #endif
-            if controlsVisible {
-                VStack(spacing: 24) {
+            VStack(spacing: 24) {
 #if canImport(TVVLCKit)
-                    if isRecording { recordingTransportControls }
-                    viewingControls
+                if isRecording { recordingTransportControls }
+                viewingControls
 #else
-                    Button("閉じる") { close() }
+                Button("閉じる") { close() }
 #endif
-                }.padding(40).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
             }
+            .padding(40)
+            .padding(.top, item.recordingID != nil ? 190 : 0)
+            .frame(maxWidth: .infinity, maxHeight: .infinity,
+                   alignment: item.recordingID != nil ? .top : .bottom)
         }
 #if canImport(TVVLCKit)
-        .onChange(of: failure) { _, value in
-            if value != nil { controlsVisible = true }
-        }
         .task(id: recordingCaptionsEnabled) {
             recordingController.captions.setEnabled(recordingCaptionsEnabled)
         }
@@ -301,8 +286,6 @@ struct PlaybackView: View {
                     }
                 }
             }.disabled(isLoading)
-            Button("操作を隠す") { controlsVisible = false }
-                .disabled(isLoading || failure != nil)
             Button("閉じる") { close() }
         }
         .frame(maxWidth: .infinity)
