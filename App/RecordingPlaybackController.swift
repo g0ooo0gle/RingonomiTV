@@ -599,13 +599,21 @@ final class RecordingPlaybackController: ObservableObject {
         seek(to: safeTime() + seconds)
     }
     var currentSeconds: Double { isLoading ? targetSeconds : safeTime() }
+    /// The best known duration for the current recording.  During initial
+    /// loading AVPlayer may not know the HLS duration yet, so the catalog hint
+    /// is used only when it is finite and positive.
+    var durationSeconds: Double? {
+        let playerDuration = player.currentItem?.duration.seconds ?? .nan
+        if playerDuration.isFinite, playerDuration > 0 { return playerDuration }
+        if let durationHint, durationHint.isFinite, durationHint > 0 { return durationHint }
+        return nil
+    }
     var videoRect: CGRect { videoLayer?.videoRect ?? .zero }
     var isPaused: Bool { wantsPause }
 
     func seek(to seconds: Double) {
         guard !isStopped, !isLoading, failure == nil, seconds.isFinite else { return }
-        let duration = player.currentItem?.duration.seconds ?? .nan
-        let maximum = duration.isFinite && duration > 0 ? max(0, duration - 0.1) : Double.greatestFiniteMagnitude
+        let maximum = durationSeconds.map { max(0, $0 - 0.1) } ?? Double.greatestFiniteMagnitude
         commercialSkipPolicy.resetAfterManualSeek()
         clearCommercialSkipNotice()
         prepareExistingPosition(min(maximum, max(0, seconds)))
