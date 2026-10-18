@@ -288,6 +288,9 @@ struct PlaybackView: View {
             }
         }
         .onChange(of: visiblePanel) { _, panel in
+#if DEBUG
+            print("RingonomiPlaybackPanel: \(panel.map { $0 == .top ? "top" : "bottom" } ?? "hidden")")
+#endif
             if let panel {
                 playbackFocus = focusForPanel(panel, preferring: lastReadyPlaybackFocus)
             } else {
@@ -439,7 +442,7 @@ struct PlaybackView: View {
                     Text("再生時間：\(recordingController.playbackTime)")
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
-                    Text("総時間を取得するまでシークできません")
+                    Text("シークバーは総時間を取得すると表示されます")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -476,6 +479,19 @@ struct PlaybackView: View {
         .frame(maxWidth: .infinity)
         .background(.black.opacity(0.82))
         .focusSection()
+        .onMoveCommand { direction in
+            switch direction {
+            case .up:
+                if isRecording, recordingController.durationSeconds != nil, playbackFocus != .seek {
+                    playbackFocus = .seek
+                } else {
+                    revealTopPanel()
+                }
+            case .down:
+                hidePanel()
+            default: break
+            }
+        }
     }
 
     private var fallbackFocus: PlaybackControlFocus {
@@ -598,4 +614,3 @@ private struct CommentRequestID: Hashable {
     let enabled: Bool
     let reload: Int
 }
-

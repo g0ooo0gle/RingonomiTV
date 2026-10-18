@@ -44,7 +44,7 @@ struct PlaybackSeekControl: View {
                 }
                 ProgressView(value: shownPosition, total: duration)
                     .tint(isEditing ? .white : .secondary)
-                Text(isEditing ? "左右で位置を選び、選択で移動" : "選択でシーク")
+                Text(isEditing ? "決定で移動・戻るで取り消し" : "左右で移動先を選択")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -89,11 +89,17 @@ struct PlaybackSeekControl: View {
         let basePosition = isEditing ? draftPosition : position
         draftPosition = Self.clamp(basePosition + seconds, duration: duration)
         isEditing = true
+#if DEBUG
+        print("RingonomiSeekPreview: target=\(draftPosition)")
+#endif
     }
 
     private func commit() {
         guard isEnabled, isEditing else { return }
         isEditing = false
+#if DEBUG
+        print("RingonomiSeekCommit: target=\(draftPosition)")
+#endif
         onCommit(Self.clamp(draftPosition, duration: duration))
     }
 
