@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 @testable import RingonomiCore
 
@@ -145,4 +146,47 @@ final class ProgramGuideTests: XCTestCase {
         XCTAssertTrue(url.absoluteString.contains("NID1%26SID2"))
         XCTAssertNotNil(components.queryItems?.first(where: { $0.name == "start_time" })?.value)
     }
+
+    func testBackendAuthorizationHeaderIsAppliedToProgramGuideRoute() async throws {
+        let token = try BackendAccessToken(rawValue: "test-token")
+        let client = try RingonomiClient(address: "https://example.invalid/proxy", accessToken: token)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ProgramGuideURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        var captured: URLRequest?
+        ProgramGuideURLProtocol.handler = { request in
+            captured = request
+            return (HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "application/json"]
+            )!, Data("{}".utf8))
+        }
+        defer { session.invalidateAndCancel(); ProgramGuideURLProtocol.handler = nil }
+
+        _ = try await client.programGuide(using: session)
+
+        XCTAssertEqual(captured?.value(forHTTPHeaderField: "Authorization"), "Bearer test-token")
+    }
+}
+
+private final class ProgramGuideURLProtocol: URLProtocol, @unchecked Sendable {
+    nonisolated(unsafe) static var handler: ((URLRequest) -> (HTTPURLResponse, Data))?
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let handler = Self.handler else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        let result = handler(request)
+        client?.urlProtocol(self, didReceive: result.0, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: result.1)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }

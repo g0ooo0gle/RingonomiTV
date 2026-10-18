@@ -30,6 +30,14 @@ final class ReservationTests: XCTestCase {
         return (client, URLSession(configuration: configuration))
     }
 
+    private func authenticatedClientAndSession() throws -> (RingonomiClient, URLSession) {
+        let token = try BackendAccessToken(rawValue: "test-token")
+        let client = try RingonomiClient(address: "https://example.invalid/proxy", accessToken: token)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ReservationURLProtocol.self]
+        return (client, URLSession(configuration: configuration))
+    }
+
     private func jsonResponse(_ request: URLRequest, _ status: Int = 200, _ body: Data = Data()) -> (HTTPURLResponse, Data) {
         (HTTPURLResponse(
             url: request.url!,
@@ -232,7 +240,21 @@ final class ReservationTests: XCTestCase {
         XCTAssertEqual(putObject.keys.sorted(), ["record_settings"])
     }
 
-    func testHTTPErrorUsesJapaneseStatusMessageAndServerDetail() async throws {
+    func testBackendAuthorizationHeaderIsAppliedToReservationRoute() async throws {
+        let (client, session) = try authenticatedClientAndSession()
+        var captured: URLRequest?
+        ReservationURLProtocol.handler = { request in
+            captured = request
+            return self.jsonResponse(request, 200, Data(#"{"total":0,"reservations":[]}"#.utf8))
+        }
+        defer { session.invalidateAndCancel(); ReservationURLProtocol.handler = nil }
+
+        _ = try await client.reservations(using: session)
+
+        XCTAssertEqual(captured?.value(forHTTPHeaderField: "Authorization"), "Bearer test-token")
+    }
+
+    func testHTTPErrorUsesStableStatusMessageWithoutServerDetail() async throws {
         let (client, session) = try clientAndSession()
         ReservationURLProtocol.handler = { request in
             self.jsonResponse(request, 403, Data("{\"detail\":\"録画権限がありません\"}".utf8))
@@ -245,7 +267,8 @@ final class ReservationTests: XCTestCase {
         } catch let error as ReservationError {
             XCTAssertEqual(error.statusCode, 403)
             XCTAssertTrue(error.localizedDescription.contains("権限"))
-            XCTAssertTrue(error.localizedDescription.contains("録画権限がありません"))
+            XCTAssertTrue(error.localizedDescription.contains("HTTP 403"))
+            XCTAssertFalse(error.localizedDescription.contains("録画権限がありません"))
         }
     }
 

@@ -229,25 +229,45 @@ public struct RecordingsResponse: Decodable, Sendable {
         recordedPrograms = programs
     }
 }
-public enum ConnectionError: Error, LocalizedError {
-    case invalidAddress, http(Int)
+public enum ConnectionError: Error, LocalizedError, Equatable, Sendable {
+    case invalidAddress
+    case http(Int)
+    case invalidToken
+    case invalidResponse
+    case redirectRejected
+    case tokenScopeViolation
+    case insecureAuthentication
+    case notAuthenticated
+    case authenticationAlreadyConfigured
+    case invalidCredentials
+
     public var errorDescription: String? {
         switch self {
         case .invalidAddress: return "http:// または https:// で始まるサーバーURLを入力してください。"
-        case .http(let code): return "サーバーがHTTP \(code)を返しました。"
+        case .http(let code):
+            switch code {
+            case 401: return "認証できませんでした（HTTP 401）。設定でアカウント情報を確認し、もう一度ログインしてください。"
+            case 403: return "この操作を行う権限がありません（HTTP 403）。"
+            default: return "サーバーがHTTP \(code)を返しました。"
+            }
+        case .invalidToken: return "サーバーから無効な認証トークンが返されました。"
+        case .invalidResponse: return "サーバーから正しい応答を受け取れませんでした。"
+        case .redirectRejected: return "安全のため、許可されていないリダイレクトを拒否しました。"
+        case .tokenScopeViolation: return "認証トークンをこのURLには送信できません。"
+        case .insecureAuthentication: return "アカウント認証にはHTTPS接続が必要です。"
+        case .notAuthenticated: return "先にサーバーへログインしてください。"
+        case .authenticationAlreadyConfigured: return "この接続には既に認証情報が設定されています。"
+        case .invalidCredentials: return "ユーザー名とパスワードを確認してください。"
         }
     }
 }
 public struct RingonomiClient: Sendable {
     public let baseURL: URL
-    public init(address: String) throws {
-        guard let url = URL(string: address.trimmingCharacters(in: .whitespacesAndNewlines)),
-              ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
-              url.host != nil, url.user == nil, url.password == nil,
-              url.query == nil, url.fragment == nil else { throw ConnectionError.invalidAddress }
-        // ブラウザーの視聴画面URLを貼り付けてもAPIルートへ接続する。
-        // リバースプロキシのサブパスは保持し、末尾のtvだけを取り除く。
-        baseURL = url.lastPathComponent == "tv" ? url.deletingLastPathComponent() : url
+    public let accessToken: BackendAccessToken?
+
+    public init(address: String, accessToken: BackendAccessToken? = nil) throws {
+        baseURL = try BackendURLRules.normalize(address)
+        self.accessToken = accessToken
     }
     public func endpoint(_ components: [String]) -> URL {
         components.reduce(baseURL) { $0.appendingPathComponent($1) }
@@ -265,20 +285,27 @@ public struct RingonomiClient: Sendable {
         components.queryItems = [URLQueryItem(name: "session_id", value: session)]
         return components.url!
     }
-    public func keepRecordingAlive(id: Int, session: String, quality: String) async throws {
+    public func keepRecordingAlive(
+        id: Int,
+        session: String,
+        quality: String,
+        using urlSession: URLSession = .shared
+    ) async throws {
         var request = URLRequest(url: recordingKeepAliveURL(id: id, session: session, quality: quality))
         request.httpMethod = "PUT"
         request.timeoutInterval = 8
-        let (_, response) = try await URLSession.shared.data(for: request)
-        guard let response = response as? HTTPURLResponse else { throw ConnectionError.http(0) }
-        guard (200..<300).contains(response.statusCode) else { throw ConnectionError.http(response.statusCode) }
+        let (_, response) = try await backendData(for: request, using: urlSession)
+        try Self.validateSuccessResponse(response)
     }
-    public func fetch<T: Decodable & Sendable>(_ path: [String], as: T.Type) async throws -> T {
+    public func fetch<T: Decodable & Sendable>(
+        _ path: [String],
+        as: T.Type,
+        using urlSession: URLSession = .shared
+    ) async throws -> T {
         var request = URLRequest(url: endpoint(path))
         request.timeoutInterval = 20
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let response = response as? HTTPURLResponse else { throw ConnectionError.http(0) }
-        guard (200..<300).contains(response.statusCode) else { throw ConnectionError.http(response.statusCode) }
+        let (data, response) = try await backendData(for: request, using: urlSession)
+        try Self.validateSuccessResponse(response)
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         return try decoder.decode(T.self, from: data)

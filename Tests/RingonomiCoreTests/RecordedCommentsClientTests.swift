@@ -12,13 +12,17 @@ final class RecordedCommentsClientTests: XCTestCase {
     func testUsesRecordedProgramIDAndDecodesFileRelativeTime() async throws {
         let session = session()
         defer { session.invalidateAndCancel(); RecordedCommentsURLProtocol.handler = nil }
-        let client = try RingonomiClient(address: "https://example.invalid/proxy/")
+        let token = try BackendAccessToken(rawValue: "test-token")
+        let client = try RingonomiClient(address: "https://example.invalid/proxy/", accessToken: token)
+        var authorization: String?
         RecordedCommentsURLProtocol.handler = { request in
             XCTAssertEqual(request.url?.path, "/proxy/api/videos/7/jikkyo")
             XCTAssertEqual(request.httpMethod, "GET")
+            authorization = request.value(forHTTPHeaderField: "Authorization")
             return (200, [:], Data(##"{"is_success":true,"comments":[{"time":12.345678,"type":"right","size":"medium","color":"#FFEAEA","author":"example","text":"実況"}],"detail":"ok"}"##.utf8))
         }
         let response = try await client.recordedComments(recordingID: 7, using: session)
+        XCTAssertEqual(authorization, "Bearer test-token")
         XCTAssertTrue(response.isSuccess)
         XCTAssertEqual(response.comments.count, 1)
         XCTAssertEqual(response.comments.first?.time ?? 0, 12.345678, accuracy: 0.000001)

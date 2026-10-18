@@ -23,7 +23,7 @@ public extension RingonomiClient {
         let limit = LiveCommentProtocol.maximumFrameBytes
         var request = URLRequest(url: endpoint(["api", "channels", channelID, "jikkyo"]))
         request.timeoutInterval = 20
-        let (bytes, response) = try await session.bytes(for: request)
+        let (bytes, response) = try await backendBytes(for: request, using: session)
         defer { bytes.task.cancel() }
         guard let http = response as? HTTPURLResponse else { throw ConnectionError.http(0) }
         guard (200..<300).contains(http.statusCode) else { throw ConnectionError.http(http.statusCode) }
