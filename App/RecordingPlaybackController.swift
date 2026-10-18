@@ -377,6 +377,9 @@ final class RecordingPlaybackController: ObservableObject {
             waitingSince = nil
             status = "再生終了（再生ボタンで最初から）"
             updateTime()
+#if DEBUG
+            print("RingonomiRecordingEnded: deferred target=\(targetSeconds) loading=\(isLoading) paused=\(wantsPause) hasItem=\(player.currentItem != nil)")
+#endif
             return
         }
         let item = AVPlayerItem(url: url)
@@ -405,6 +408,9 @@ final class RecordingPlaybackController: ObservableObject {
                 self.waitingSince = nil
                 self.reachedEnd = true
                 self.checkpoint(force: true)
+#if DEBUG
+                print("RingonomiRecordingEnded: reached time=\(self.safeTime())")
+#endif
             }
         }
         if clockToken == nil {
@@ -482,6 +488,9 @@ final class RecordingPlaybackController: ObservableObject {
             isLoading = false
             status = "再生終了（再生ボタンで最初から）"
             updateTime()
+#if DEBUG
+            print("RingonomiRecordingEnded: deferred target=\(targetSeconds) loading=\(isLoading) paused=\(wantsPause) hasItem=\(player.currentItem != nil)")
+#endif
             return
         }
         currentURL = nil
