@@ -178,9 +178,13 @@ public struct MirakurunService: Decodable, Equatable, Sendable, Identifiable {
         channel: MirakurunChannel? = nil,
         transportStreamID: Int? = nil
     ) throws {
+        // Mirakurun uses -1 for a service without an assigned logo.  Keep
+        // that sentinel out of the public model; other negative values are
+        // still invalid identifiers.
+        let normalizedLogoID: Int? = logoID == -1 ? nil : logoID
         guard id >= 0 && id <= MirakurunServiceKey.maximumServiceItemID,
               Self.isValidName(name),
-              logoID.map({ $0 >= 0 }) ?? true,
+              normalizedLogoID.map({ $0 >= 0 }) ?? true,
               remoteControlKeyID.map({ $0 >= 0 }) ?? true,
               transportStreamID.map({ MirakurunServiceKey.maximumIdentifier >= $0 && $0 >= 0 }) ?? true else {
             throw MirakurunError.invalidIdentifier
@@ -198,7 +202,7 @@ public struct MirakurunService: Decodable, Equatable, Sendable, Identifiable {
         self.networkID = networkID
         self.name = name
         self.type = type
-        self.logoID = logoID
+        self.logoID = normalizedLogoID
         self.hasLogoData = hasLogoData
         self.remoteControlKeyID = remoteControlKeyID
         self.epgReady = epgReady

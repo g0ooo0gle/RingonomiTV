@@ -163,6 +163,27 @@ final class MirakurunClientTests: XCTestCase {
         XCTAssertThrowsError(try JSONDecoder().decode([MirakurunService].self, from: missingID))
     }
 
+    func testServiceNormalizesMirakurunUnassignedLogoID() throws {
+        let payload = Data(
+            #"[{"id":100002,"serviceId":2,"networkId":1,"name":"サービス","type":1,"logoId":-1,"hasLogoData":false}]"#.utf8
+        )
+
+        let service = try XCTUnwrap(JSONDecoder().decode([MirakurunService].self, from: payload).first)
+        XCTAssertNil(service.logoID)
+        XCTAssertEqual(service.hasLogoData, false)
+        XCTAssertEqual(service.key.serviceItemID, 100_002)
+    }
+
+    func testServiceRejectsOtherNegativeLogoIDs() throws {
+        let payload = Data(
+            #"[{"id":100002,"serviceId":2,"networkId":1,"name":"サービス","type":1,"logoId":-2}]"#.utf8
+        )
+
+        XCTAssertThrowsError(try JSONDecoder().decode([MirakurunService].self, from: payload)) { error in
+            XCTAssertEqual(error as? MirakurunError, .invalidIdentifier)
+        }
+    }
+
     func testOfficialServiceMayHaveAnEmptyNameButNotControlCharacters() throws {
         let emptyName = Data(#"[{"id":100002,"serviceId":2,"networkId":1,"name":"","type":1}]"#.utf8)
         let service = try XCTUnwrap(JSONDecoder().decode([MirakurunService].self, from: emptyName).first)
