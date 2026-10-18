@@ -1,0 +1,61 @@
+name: 機能・改善
+description: 新しい機能や使い勝手の改善を提案します
+title: "[機能・改善] "
+labels:
+  - 機能・改善
+body:
+  - type: markdown
+    attributes:
+      value: |
+        公開できる情報だけを書いてください。非公開の接続先URL、トークン、個人情報、未編集のログは貼らないでください。
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: 提案概要
+      description: 何を改善したいかを一文で書いてください。
+      placeholder: 例）番組表から録画予約の内容を確認できるようにする
+    validations:
+      required: true
+
+  - type: textarea
+    id: background
+    attributes:
+      label: 背景・利用場面
+      description: どのような場面で必要になるかを書いてください。
+    validations:
+      required: true
+
+  - type: textarea
+    id: desired
+    attributes:
+      label: 希望する動作
+      description: 利用者から見た期待結果を具体的に書いてください。
+    validations:
+      required: true
+
+  - type: textarea
+    id: completion
+    attributes:
+      label: 完了条件
+      description: 実装後に満たすべき条件を書いてください。
+      placeholder: |
+        -
+        -
+    validations:
+      required: true
+
+  - type: textarea
+    id: constraints
+    attributes:
+      label: 制約・補足
+      description: 対応機種、既存仕様、互換性など、判断に必要な条件を書いてください。秘密情報は伏せてください。
+
+  - type: textarea
+    id: verification
+    attributes:
+      label: 検証済み・未確認
+      description: 既に確認できたことと、まだ確認していないことを分けて書いてください。
+      placeholder: |
+        検証済み:
+        未確認:
