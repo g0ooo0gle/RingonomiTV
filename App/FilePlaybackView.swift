@@ -126,8 +126,18 @@ struct FilePlaybackView: View {
                 .focusEffectDisabled(true)
                 .focused($playbackFocus, equals: .surface)
                 .allowsHitTesting(surfaceIsFocusable)
-                .onMoveCommand { handleSurfaceMove($0) }
-                .onTapGesture { revealBottomPanel() }
+                .onMoveCommand {
+#if DEBUG
+                    print("RingonomiFileSurfaceMove: direction=\(String(describing: $0)) focus=\(String(describing: playbackFocus)) panel=\(String(describing: visiblePanel)) loading=\(controller.isLoading) failure=\(controller.failure != nil)")
+#endif
+                    handleSurfaceMove($0)
+                }
+                .onTapGesture {
+#if DEBUG
+                    print("RingonomiFileSurfaceSelect: focus=\(String(describing: playbackFocus)) panel=\(String(describing: visiblePanel)) focusable=\(surfaceIsFocusable) loading=\(controller.isLoading) failure=\(controller.failure != nil)")
+#endif
+                    revealBottomPanel()
+                }
                 .accessibilityLabel("再生メニュー")
                 .accessibilityHidden(!surfaceIsFocusable)
 
@@ -152,7 +162,12 @@ struct FilePlaybackView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         }
         .defaultFocus($playbackFocus, .surface)
-        .onExitCommand { handleExitCommand() }
+        .onExitCommand {
+#if DEBUG
+            print("RingonomiFileExit: focus=\(String(describing: playbackFocus)) panel=\(String(describing: visiblePanel)) loading=\(controller.isLoading) failure=\(controller.failure != nil)")
+#endif
+            handleExitCommand()
+        }
         .onPlayPauseCommand { controller.togglePause() }
         .onChange(of: controller.isLoading, initial: true) { _, loading in
             if loading {
@@ -173,8 +188,16 @@ struct FilePlaybackView: View {
             }
         }
         .onChange(of: visiblePanel) { _, panel in
+#if DEBUG
+            print("RingonomiFilePanel: panel=\(String(describing: panel)) focus=\(String(describing: playbackFocus)) loading=\(controller.isLoading) failure=\(controller.failure != nil)")
+#endif
             guard let panel, !controller.isLoading, controller.failure == nil else { return }
             playbackFocus = focusForPanel(panel)
+        }
+        .onChange(of: playbackFocus) { _, focus in
+#if DEBUG
+            print("RingonomiFileFocus: focus=\(String(describing: focus)) panel=\(String(describing: visiblePanel)) loading=\(controller.isLoading) failure=\(controller.failure != nil)")
+#endif
         }
         .onChange(of: controller.durationSeconds) { _, duration in
             guard isSeeking, let duration, duration.isFinite, duration > 0 else { return }
@@ -240,6 +263,9 @@ struct FilePlaybackView: View {
         .background(.black.opacity(0.86))
         .focusSection()
         .onMoveCommand { direction in
+#if DEBUG
+            print("RingonomiFileTopMove: direction=\(String(describing: direction)) focus=\(String(describing: playbackFocus)) panel=\(String(describing: visiblePanel))")
+#endif
             guard panelIsVisible(.top) else { return }
             if direction == .down { revealBottomPanel() }
         }
@@ -288,6 +314,9 @@ struct FilePlaybackView: View {
         .background(.black.opacity(0.86))
         .focusSection()
         .onMoveCommand { direction in
+#if DEBUG
+            print("RingonomiFileBottomMove: direction=\(String(describing: direction)) focus=\(String(describing: playbackFocus)) panel=\(String(describing: visiblePanel)) seeking=\(isSeeking) canSeek=\(controller.canSeek)")
+#endif
             guard panelIsVisible(.bottom) else { return }
             if playbackFocus == .seek, controller.canSeek,
                direction == .left || direction == .right {

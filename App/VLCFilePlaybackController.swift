@@ -273,15 +273,38 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         // the decoder is released.
         guard !isStopped, !isSuspendedForBackground, currentURL != nil,
               failure == nil else { return }
+        refreshDurationAndSeekability()
         if player.state == .error {
             fail("録画を再生できませんでした。接続先とファイル状態を確認してください。")
             return
         }
+        var preservingTrustedPosition = false
         if player.state == .ended, !isEnded {
-            finishPlayback()
+            if pendingPositionSeconds != nil {
+                if canFinishAtEndWithPendingPosition() {
+                    clearPendingPositionRequest()
+                    finishPlayback()
+                } else {
+                    // A stale ended callback can arrive while a seek is still
+                    // pending. Do not turn that callback into an EOF bookmark;
+                    // return from Home using the last position that passed the
+                    // readiness gate.
+                    preservingTrustedPosition = true
+                    targetSeconds = lastTrustedSeconds ?? targetSeconds
+#if DEBUG
+                    print("RingonomiFileLifecycle: endedDuringPendingSeek preservedTrusted=\(lastTrustedSeconds ?? -1)")
+#endif
+                }
+            } else {
+                finishPlayback()
+            }
         }
-        if !isLoading, !isEnded { targetSeconds = safeCurrentSeconds }
-        if !isLoading, failure == nil { reportProgress(force: true) }
+        if preservingTrustedPosition {
+            targetSeconds = lastTrustedSeconds ?? targetSeconds
+        } else if !isLoading, !isEnded {
+            targetSeconds = safeCurrentSeconds
+        }
+        if !preservingTrustedPosition, !isLoading, failure == nil { reportProgress(force: true) }
         isSuspendedForBackground = true
         generation &+= 1
         pendingLoadURL = nil
@@ -486,6 +509,10 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
             }
         }
 
+        // Refresh duration before handling `.ended`; the pending-position EOF
+        // check must use the media's actual finite duration when available.
+        refreshDurationAndSeekability()
+
         switch player.state {
         case .error:
             if pendingPositionSeconds != nil {
@@ -496,7 +523,12 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
             return
         case .ended:
             if pendingPositionSeconds != nil {
-                failPositionRequest()
+                if canFinishAtEndWithPendingPosition() {
+                    clearPendingPositionRequest()
+                    finishPlayback()
+                } else {
+                    failPositionRequest()
+                }
             } else {
                 finishPlayback()
             }
@@ -510,7 +542,6 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
             break
         }
 
-        refreshDurationAndSeekability()
         if processPositionRequest() { return }
         refreshAudioTracks()
 
@@ -689,11 +720,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         let tolerance = positionTolerance(for: requested, duration: effectiveDuration)
         if let actual = rawPlaybackSeconds, abs(actual - requested) <= tolerance {
             targetSeconds = requested
-            pendingPositionSeconds = nil
-            pendingPositionStartedAt = nil
-            pendingPositionApplied = false
-            pendingPositionAppliedAt = nil
-            pendingPositionFallbackApplied = false
+            clearPendingPositionRequest()
             resetReadinessBaseline()
 #if DEBUG
             print("RingonomiFilePosition: ack target=\(requested) actual=\(actual)")
@@ -729,12 +756,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
 
     private func failPositionRequest() {
         let wasInitial = pendingPositionIsInitial
-        pendingPositionSeconds = nil
-        pendingPositionStartedAt = nil
-        pendingPositionApplied = false
-        pendingPositionAppliedAt = nil
-        pendingPositionFallbackApplied = false
-        pendingPositionIsInitial = false
+        clearPendingPositionRequest()
         retryFromBeginningAfterPositionFailure = true
         let message = wasInitial
             ? "指定位置から再生できませんでした。再試行すると先頭から開始します。"
@@ -743,6 +765,27 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         print("RingonomiFilePosition: failed initial=\(wasInitial)")
 #endif
         fail(message)
+    }
+
+    private func clearPendingPositionRequest() {
+        pendingPositionSeconds = nil
+        pendingPositionStartedAt = nil
+        pendingPositionApplied = false
+        pendingPositionAppliedAt = nil
+        pendingPositionFallbackApplied = false
+        pendingPositionIsInitial = false
+    }
+
+    private func canFinishAtEndWithPendingPosition() -> Bool {
+        guard pendingPositionGeneration == generation,
+              pendingPositionApplied,
+              let requested = pendingPositionSeconds,
+              let duration = validDuration(durationSeconds ?? durationHint),
+              let actual = rawPlaybackSeconds else { return false }
+        let tolerance = positionTolerance(for: requested, duration: duration)
+        return abs(duration - requested) <= tolerance
+            && abs(duration - actual) <= tolerance
+            && abs(actual - requested) <= tolerance
     }
 
     private func refreshDurationAndSeekability() {
