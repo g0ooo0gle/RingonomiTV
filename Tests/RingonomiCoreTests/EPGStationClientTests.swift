@@ -205,6 +205,61 @@ final class EPGStationClientTests: XCTestCase {
         return Data("{\"reserves\":\(reservations),\"total\":\(total)}".utf8)
     }
 
+    private func editableReservationObjectJSON() -> String {
+        """
+        {
+          "id": 21,
+          "channelId": 2,
+          "programId": 31,
+          "startAt": 1700000000000,
+          "endAt": 1700003600000,
+          "name": "予約番組",
+          "description": "予約詳細",
+          "extended": "拡張",
+          "tags": [5, 9],
+          "parentDirectoryName": "録画",
+          "directory": "番組",
+          "recordedFormat": "ts",
+          "encodeMode1": "H.264",
+          "encodeParentDirectoryName1": "変換",
+          "encodeDirectory1": "番組",
+          "encodeMode2": "H.265",
+          "encodeParentDirectoryName2": "変換2",
+          "encodeDirectory2": "番組2",
+          "encodeMode3": null,
+          "encodeParentDirectoryName3": null,
+          "encodeDirectory3": null,
+          "isSkip": false,
+          "isConflict": false,
+          "isOverlap": false,
+          "allowEndLack": true,
+          "isTimeSpecified": false,
+          "isDeleteOriginalAfterEncode": true
+        }
+        """
+    }
+
+    private func jsonBody(_ request: URLRequest) throws -> [String: Any] {
+        let body: Data
+        if let httpBody = request.httpBody {
+            body = httpBody
+        } else {
+            let stream = try XCTUnwrap(request.httpBodyStream)
+            stream.open()
+            defer { stream.close() }
+            var streamedBody = Data()
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            while stream.hasBytesAvailable {
+                let count = stream.read(&buffer, maxLength: buffer.count)
+                if count <= 0 { break }
+                streamedBody.append(buffer, count: count)
+            }
+            body = streamedBody
+        }
+        let value = try JSONSerialization.jsonObject(with: body)
+        return try XCTUnwrap(value as? [String: Any])
+    }
+
     func testRecordingsBuildExpectedQueryAndDecodeUnknownFileType() async throws {
         let recorder = EPGStationRequestRecorder()
         EPGStationURLProtocol.handler = { request in
@@ -779,5 +834,396 @@ final class EPGStationClientTests: XCTestCase {
         task.cancel()
         let wasCancelled = await task.value
         XCTAssertTrue(wasCancelled)
+    }
+
+    func testReservationActionsEncodeProgramAndTimeSpecifiedRequests() async throws {
+        let recorder = EPGStationRequestRecorder()
+        EPGStationURLProtocol.handler = { request in
+            recorder.append(request)
+            switch (request.httpMethod, request.url?.path) {
+            case ("POST", "/proxy/api/reserves"):
+                let requestCount = recorder.all.count
+                let responseID = requestCount == 1 ? 301 : 302
+                return EPGStationURLProtocol.Stub(
+                    status: 201,
+                    body: Data("{\"reserveId\":\(responseID)}".utf8)
+                )
+            default:
+                return EPGStationURLProtocol.Stub(status: 500, body: Data())
+            }
+        }
+        defer { EPGStationURLProtocol.handler = nil }
+
+        let client = try client(
+            additionalHeaders: [
+                "Authorization": "must-be-removed",
+                "Cookie": "must-be-removed"
+            ]
+        )
+        let options = EPGStationReservationEditOptions(
+            allowEndLack: true,
+            tags: [5, 9],
+            saveOption: EPGStationReservationSaveOption(
+                parentDirectoryName: "録画",
+                directory: "番組",
+                recordedFormat: "ts"
+            ),
+            encodeOption: EPGStationReservationEncodeOption(
+                mode1: "H.264",
+                encodeParentDirectoryName1: "変換",
+                directory1: "番組",
+                isDeleteOriginalAfterEncode: true
+            )
+        )
+
+        let programReservationID = try await client.createReservation(
+            programID: 31,
+            options: options
+        )
+        XCTAssertEqual(programReservationID, 301)
+        let programRequest = try XCTUnwrap(recorder.all.first)
+        XCTAssertEqual(programRequest.httpMethod, "POST")
+        XCTAssertEqual(programRequest.url?.path, "/proxy/api/reserves")
+        XCTAssertNil(programRequest.value(forHTTPHeaderField: "Authorization"))
+        XCTAssertNil(programRequest.value(forHTTPHeaderField: "Cookie"))
+        XCTAssertEqual(programRequest.value(forHTTPHeaderField: "Content-Type"), "application/json")
+        let programBody = try jsonBody(programRequest)
+        XCTAssertEqual(programBody["programId"] as? Int, 31)
+        XCTAssertNil(programBody["timeSpecifiedOption"])
+        XCTAssertEqual(programBody["allowEndLack"] as? Bool, true)
+        XCTAssertEqual(programBody["tags"] as? [Int], [5, 9])
+        let saveOption = try XCTUnwrap(programBody["saveOption"] as? [String: Any])
+        XCTAssertEqual(saveOption["parentDirectoryName"] as? String, "録画")
+        XCTAssertEqual(saveOption["directory"] as? String, "番組")
+        XCTAssertEqual(saveOption["recordedFormat"] as? String, "ts")
+        let encodeOption = try XCTUnwrap(programBody["encodeOption"] as? [String: Any])
+        XCTAssertEqual(encodeOption["mode1"] as? String, "H.264")
+        XCTAssertEqual(encodeOption["encodeParentDirectoryName1"] as? String, "変換")
+        XCTAssertEqual(encodeOption["directory1"] as? String, "番組")
+        XCTAssertEqual(encodeOption["isDeleteOriginalAfterEncode"] as? Bool, true)
+
+        let timeReservationID = try await client.createTimeSpecifiedReservation(
+            name: "時間指定",
+            channelID: 2,
+            startAt: 1_700_000_000_000,
+            endAt: 1_700_003_600_000,
+            options: options
+        )
+        XCTAssertEqual(timeReservationID, 302)
+        let timeRequest = try XCTUnwrap(recorder.all.dropFirst().first)
+        let timeBody = try jsonBody(timeRequest)
+        XCTAssertNil(timeBody["programId"])
+        let timeOption = try XCTUnwrap(timeBody["timeSpecifiedOption"] as? [String: Any])
+        XCTAssertEqual(timeOption["name"] as? String, "時間指定")
+        XCTAssertEqual(timeOption["channelId"] as? Int, 2)
+        XCTAssertEqual(timeOption["startAt"] as? Int, 1_700_000_000_000)
+        XCTAssertEqual(timeOption["endAt"] as? Int, 1_700_003_600_000)
+    }
+
+    func testUpdatePreservesAllLatestSaveEncodeAndTagValues() async throws {
+        let recorder = EPGStationRequestRecorder()
+        EPGStationURLProtocol.handler = { request in
+            recorder.append(request)
+            return EPGStationURLProtocol.Stub(
+                body: Data(#"{"code":201,"message":"ok"}"#.utf8)
+            )
+        }
+        defer { EPGStationURLProtocol.handler = nil }
+
+        let client = try client()
+        let reservation = try JSONDecoder().decode(
+            EPGStationReservation.self,
+            from: Data(editableReservationObjectJSON().utf8)
+        )
+        let options = EPGStationReservationEditOptions(
+            preserving: reservation,
+            allowEndLack: false
+        )
+        try await client.updateReservation(id: reservation.id, options: options)
+
+        let request = try XCTUnwrap(recorder.all.first)
+        XCTAssertEqual(request.httpMethod, "PUT")
+        XCTAssertEqual(request.url?.path, "/proxy/api/reserves/21")
+        let body = try jsonBody(request)
+        XCTAssertEqual(body["allowEndLack"] as? Bool, false)
+        XCTAssertEqual(body["tags"] as? [Int], [5, 9])
+
+        let saveOption = try XCTUnwrap(body["saveOption"] as? [String: Any])
+        XCTAssertEqual(saveOption["parentDirectoryName"] as? String, "録画")
+        XCTAssertEqual(saveOption["directory"] as? String, "番組")
+        XCTAssertEqual(saveOption["recordedFormat"] as? String, "ts")
+
+        let encodeOption = try XCTUnwrap(body["encodeOption"] as? [String: Any])
+        XCTAssertEqual(encodeOption["mode1"] as? String, "H.264")
+        XCTAssertEqual(encodeOption["encodeParentDirectoryName1"] as? String, "変換")
+        XCTAssertEqual(encodeOption["directory1"] as? String, "番組")
+        XCTAssertEqual(encodeOption["mode2"] as? String, "H.265")
+        XCTAssertEqual(encodeOption["encodeParentDirectoryName2"] as? String, "変換2")
+        XCTAssertEqual(encodeOption["directory2"] as? String, "番組2")
+        XCTAssertTrue(encodeOption["isDeleteOriginalAfterEncode"] as? Bool == true)
+        XCTAssertTrue(encodeOption.keys.contains("mode3"))
+        XCTAssertTrue(encodeOption.keys.contains("encodeParentDirectoryName3"))
+        XCTAssertTrue(encodeOption.keys.contains("directory3"))
+    }
+
+    func testDeleteReservationSendsNoBodyAndAcceptsServerSuccessBodies() async throws {
+        let recorder = EPGStationRequestRecorder()
+        EPGStationURLProtocol.handler = { request in
+            recorder.append(request)
+            return EPGStationURLProtocol.Stub(body: Data())
+        }
+        defer { EPGStationURLProtocol.handler = nil }
+
+        let client = try client()
+        try await client.deleteReservation(id: 21)
+        let request = try XCTUnwrap(recorder.all.first)
+        XCTAssertEqual(request.httpMethod, "DELETE")
+        XCTAssertEqual(request.url?.path, "/proxy/api/reserves/21")
+        XCTAssertNil(request.httpBody)
+        XCTAssertNil(request.value(forHTTPHeaderField: "Content-Type"))
+
+        EPGStationURLProtocol.handler = { request in
+            recorder.append(request)
+            return EPGStationURLProtocol.Stub(body: Data(#"{"message":"ok"}"#.utf8))
+        }
+        try await client.deleteReservation(id: 21)
+        XCTAssertEqual(recorder.all.count, 2)
+    }
+
+    func testReservationWriteFailuresNeverSuggestAnAutomaticRetry() async throws {
+        let client = try client()
+        defer { EPGStationURLProtocol.handler = nil }
+        let options = EPGStationReservationEditOptions()
+
+        EPGStationURLProtocol.handler = { _ in
+            EPGStationURLProtocol.Stub(status: 409, body: Data())
+        }
+        do {
+            try await client.updateReservation(id: 21, options: options)
+            XCTFail("conflict must fail")
+        } catch let error as EPGStationWriteError {
+            XCTAssertEqual(error, .httpStatus(409))
+            XCTAssertFalse(error.isOutcomeUnknown)
+        }
+
+        EPGStationURLProtocol.handler = { _ in
+            EPGStationURLProtocol.Stub(status: 503, body: Data())
+        }
+        do {
+            _ = try await client.createReservation(programID: 31)
+            XCTFail("server failure must be indeterminate")
+        } catch let error as EPGStationWriteError {
+            XCTAssertEqual(error, .outcomeUnknown)
+            XCTAssertTrue(error.isOutcomeUnknown)
+        }
+
+        EPGStationURLProtocol.handler = { _ in
+            EPGStationURLProtocol.Stub(
+                status: 201,
+                body: Data(#"{"reserveId":0}"#.utf8)
+            )
+        }
+        do {
+            _ = try await client.createReservation(programID: 31)
+            XCTFail("an invalid success response must be indeterminate")
+        } catch let error as EPGStationWriteError {
+            XCTAssertEqual(error, .outcomeUnknown)
+        }
+
+        EPGStationURLProtocol.handler = { _ in
+            EPGStationURLProtocol.Stub(
+                status: 201,
+                body: Data(#"{"unexpected":true}"#.utf8)
+            )
+        }
+        do {
+            _ = try await client.createReservation(programID: 31)
+            XCTFail("a malformed success response must be indeterminate")
+        } catch let error as EPGStationWriteError {
+            XCTAssertEqual(error, .outcomeUnknown)
+        }
+
+        do {
+            _ = try await client.createReservation(programID: 0)
+            XCTFail("invalid IDs must fail before sending a request")
+        } catch let error as EPGStationWriteError {
+            XCTAssertEqual(error, .invalidRequest)
+            XCTAssertFalse(error.isOutcomeUnknown)
+        }
+    }
+
+    func testConfigAndChannelScheduleUseReadOnlyQueries() async throws {
+        let recorder = EPGStationRequestRecorder()
+        EPGStationURLProtocol.handler = { request in
+            recorder.append(request)
+            switch request.url?.path {
+            case "/proxy/api/config":
+                return EPGStationURLProtocol.Stub(
+                    body: Data(#"{"recorded":["録画"],"encode":["H.264"],"future":true}"#.utf8)
+                )
+            case "/proxy/api/schedules/2":
+                let body = """
+                [
+                  {
+                    "channel": {
+                      "id": 2,
+                      "serviceId": 101,
+                      "networkId": 1,
+                      "name": "地デジ1",
+                      "remoteControlKeyId": 1,
+                      "hasLogoData": false,
+                      "channelType": "GR",
+                      "type": 1
+                    },
+                    "programs": [
+                      {
+                        "id": 501,
+                        "channelId": 2,
+                        "startAt": 1700000000000,
+                        "endAt": 1700003600000,
+                        "isFree": true,
+                        "name": "番組",
+                        "description": "説明\\n続き",
+                        "extended": "拡張"
+                      }
+                    ]
+                  }
+                ]
+                """
+                return EPGStationURLProtocol.Stub(body: Data(body.utf8))
+            default:
+                return EPGStationURLProtocol.Stub(status: 404, body: Data())
+            }
+        }
+        defer { EPGStationURLProtocol.handler = nil }
+
+        let client = try client()
+        let config = try await client.config()
+        XCTAssertEqual(config.recordedDirectories, ["録画"])
+        XCTAssertEqual(config.encodeModes, ["H.264"])
+
+        let schedules = try await client.channelSchedule(
+            channelID: 2,
+            startAt: 1_700_000_000_000,
+            days: 2,
+            isHalfWidth: false,
+            needsRawExtended: true,
+            isFree: false
+        )
+        let schedule = try XCTUnwrap(schedules.first)
+        XCTAssertEqual(schedule.channel.id, 2)
+        XCTAssertEqual(schedule.channel.name, "地デジ1")
+        let program = try XCTUnwrap(schedule.programs.first)
+        XCTAssertEqual(program.id, 501)
+        XCTAssertEqual(program.channelID, 2)
+        XCTAssertTrue(program.isFree)
+        XCTAssertEqual(program.description, "説明\n続き")
+
+        let scheduleRequest = try XCTUnwrap(recorder.all.last)
+        XCTAssertEqual(scheduleRequest.httpMethod, "GET")
+        XCTAssertEqual(scheduleRequest.url?.path, "/proxy/api/schedules/2")
+        let queryItems = try XCTUnwrap(
+            URLComponents(url: try XCTUnwrap(scheduleRequest.url), resolvingAgainstBaseURL: false)?.queryItems
+        )
+        let query = Dictionary(uniqueKeysWithValues: queryItems.compactMap { item in
+            item.value.map { (item.name, $0) }
+        })
+        XCTAssertEqual(query["startAt"], "1700000000000")
+        XCTAssertEqual(query["days"], "2")
+        XCTAssertEqual(query["isHalfWidth"], "false")
+        XCTAssertEqual(query["needsRawExtended"], "true")
+        XCTAssertEqual(query["isFree"], "false")
+
+        EPGStationURLProtocol.handler = { _ in
+            let body = """
+            [
+              {
+                "channel": {
+                  "id": 3,
+                  "serviceId": 102,
+                  "networkId": 1,
+                  "name": "別チャンネル",
+                  "hasLogoData": false,
+                  "channelType": "GR"
+                },
+                "programs": []
+              }
+            ]
+            """
+            return EPGStationURLProtocol.Stub(body: Data(body.utf8))
+        }
+        do {
+            _ = try await client.channelSchedule(
+                channelID: 2,
+                startAt: 1_700_000_000_000
+            )
+            XCTFail("a schedule for another channel must fail")
+        } catch let error as EPGStationError {
+            XCTAssertEqual(error, .invalidResponse)
+        }
+
+        EPGStationURLProtocol.handler = { _ in
+            let body = """
+            [
+              {
+                "channel": {
+                  "id": 2,
+                  "serviceId": 101,
+                  "networkId": 1,
+                  "name": "地デジ1",
+                  "hasLogoData": false,
+                  "channelType": "GR"
+                },
+                "programs": [
+                  {
+                    "id": 501,
+                    "channelId": 2,
+                    "startAt": 1700000000000,
+                    "endAt": 1700003600000,
+                    "isFree": true,
+                    "name": "番組1"
+                  }
+                ]
+              },
+              {
+                "channel": {
+                  "id": 2,
+                  "serviceId": 101,
+                  "networkId": 1,
+                  "name": "地デジ1",
+                  "hasLogoData": false,
+                  "channelType": "GR"
+                },
+                "programs": [
+                  {
+                    "id": 501,
+                    "channelId": 2,
+                    "startAt": 1700003600000,
+                    "endAt": 1700007200000,
+                    "isFree": true,
+                    "name": "番組2"
+                  }
+                ]
+              }
+            ]
+            """
+            return EPGStationURLProtocol.Stub(body: Data(body.utf8))
+        }
+        do {
+            _ = try await client.channelSchedule(
+                channelID: 2,
+                startAt: 1_700_000_000_000
+            )
+            XCTFail("duplicate program IDs across schedules must fail")
+        } catch let error as EPGStationError {
+            XCTAssertEqual(error, .invalidResponse)
+        }
+
+        do {
+            _ = try await client.channelSchedule(channelID: 2, startAt: 1_700_000_000_000, days: 0)
+            XCTFail("zero schedule days must fail before sending a request")
+        } catch let error as EPGStationError {
+            XCTAssertEqual(error, .invalidRequest)
+        }
     }
 }

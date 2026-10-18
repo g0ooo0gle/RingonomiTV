@@ -11,6 +11,10 @@ struct EPGStationReservationListView: View {
     @State private var selectedID: Int?
     @State private var detailAddress: String?
     @State private var showingDetail = false
+    @State private var showingCreate = false
+    @State private var createAddress = ""
+    @State private var acknowledgePending = false
+    @ObservedObject private var mutation = EPGStationMutationStore.shared
     @StateObject private var store = EPGStationReservationStore()
 #if DEBUG
     @State private var handledDebugSelection = false
@@ -31,6 +35,26 @@ struct EPGStationReservationListView: View {
 
     var body: some View {
         List {
+            if let pending = mutation.pending {
+                Section("前の操作結果を確認してください") {
+                    Text(pending.title + " · " + pending.action)
+                    if let schedule = pending.schedule { Text(schedule).font(.caption) }
+                    Text(mutation.journalUnreadable ? "以前使用した接続先の予約一覧を確認してください。" : pending.address)
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text("処理された可能性があります。接続先の予約一覧を更新して確認するまで、同じ操作を送信しないでください。")
+                        .foregroundStyle(.orange).focusable()
+                    Button("一覧を確認したので操作を再開") { acknowledgePending = true }
+                        .disabled(filter != .all || store.loading || !mutation.canAcknowledge(address: effectiveAddress, readAt: store.lastReadAt))
+                    if let id = pending.reservationID,
+                       (try? EPGStationClient(address: effectiveAddress).baseURL.absoluteString) == pending.address {
+                        Button("対象の予約を確認") {
+                            selectedID = id
+                            detailAddress = effectiveAddress
+                            showingDetail = true
+                        }
+                    }
+                }
+            }
             Section("EPGStation接続") {
                 TextField("EPGStation URL（例：http://ホスト:8888）", text: $draftAddress)
                     .textInputAutocapitalization(.never)
@@ -103,8 +127,21 @@ struct EPGStationReservationListView: View {
         }
         .navigationTitle("EPGStation予約")
         .toolbar {
+            Button("予約を追加") {
+                createAddress = effectiveAddress
+                showingCreate = true
+            }.disabled(effectiveAddress.isEmpty || mutation.busy || mutation.pending != nil)
             Button("更新", action: reload)
                 .disabled(effectiveAddress.isEmpty || store.loading)
+        }
+        .sheet(isPresented: $showingCreate, onDismiss: reload) {
+            EPGStationReservationEditor(address: createAddress, original: nil) { offset = 0; reload() }
+        }
+        .confirmationDialog("前の操作結果を確認しましたか？", isPresented: $acknowledgePending, titleVisibility: .visible) {
+            Button("確認済み・操作を再開") { mutation.acknowledgeAfterReview(address: effectiveAddress, readAt: store.lastReadAt) }
+            Button("まだ確認していない", role: .cancel) {}
+        } message: {
+            Text("結果が分からないまま追加し直すと、同じ録画予約が重複する場合があります。")
         }
         .navigationDestination(isPresented: $showingDetail) {
             if let selectedID {
@@ -116,6 +153,8 @@ struct EPGStationReservationListView: View {
                 preparedDraft = true
                 draftAddress = effectiveAddress
                 if !effectiveAddress.isEmpty { reload() }
+            } else if !effectiveAddress.isEmpty, store.cancelled || mutation.pending != nil {
+                reload()
             }
 #if DEBUG
             let arguments = ProcessInfo.processInfo.arguments
@@ -130,6 +169,7 @@ struct EPGStationReservationListView: View {
 #endif
         }
         .onChange(of: effectiveAddress) { _, next in
+            showingCreate = false
             showingDetail = false
             selectedID = nil
             detailAddress = nil
@@ -142,6 +182,12 @@ struct EPGStationReservationListView: View {
             if wasShowing, !isShowing {
                 if detailAddress == effectiveAddress, !effectiveAddress.isEmpty { reload() }
                 detailAddress = nil
+            }
+        }
+        .onChange(of: mutation.busy) { wasBusy, isBusy in
+            if wasBusy, !isBusy, mutation.pending != nil {
+                offset = 0
+                if filter != .all { filter = .all } else { reload() }
             }
         }
         .onDisappear { store.cancel() }
@@ -171,6 +217,12 @@ private struct EPGStationReservationDetailView: View {
     let reservationID: Int
     @Environment(\.dismiss) private var dismiss
     @StateObject private var store = EPGStationReservationDetailStore()
+    @ObservedObject private var mutation = EPGStationMutationStore.shared
+    @State private var editing = false
+    @State private var confirmCancel = false
+    @State private var confirmedAfterStart = false
+    @State private var mutationMessage: String?
+    @State private var cancelTask: Task<Void, Never>?
 
     var body: some View {
         List {
@@ -223,23 +275,93 @@ private struct EPGStationReservationDetailView: View {
                     Button("一覧に戻る", action: goBack)
                         .onExitCommand(perform: goBack)
                 }
+                Section("予約の操作") {
+                    if item.ruleID == nil {
+                        Button("録画設定を変更") { editing = true }
+                            .onExitCommand(perform: goBack)
+                    } else {
+                        Text("ルール予約の設定は、予約元のルールで変更してください。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Button(item.ruleID == nil ? "予約を取り消す" : "この回の予約を除外", role: .destructive) {
+                        confirmedAfterStart = Date().timeIntervalSince1970 * 1000 >= item.startAt
+                        confirmCancel = true
+                    }.onExitCommand(perform: goBack)
+                }.disabled(mutation.busy || mutation.pending != nil)
             }
+            if mutation.busy { ProgressView("予約の処理結果を確認しています…") }
+            if let mutationMessage { Text(mutationMessage).foregroundStyle(.orange).focusable() }
         }
         .navigationTitle("EPGStation予約の詳細")
         .onAppear(perform: reload)
         .onChange(of: address) { _, _ in reload() }
         .onChange(of: reservationID) { _, _ in reload() }
         .onExitCommand(perform: goBack)
-        .onDisappear { store.cancel() }
+        .sheet(isPresented: $editing, onDismiss: reload) {
+            if let item = store.item {
+                EPGStationReservationEditor(address: address, original: item) { reload() }
+            }
+        }
+        .confirmationDialog("この予約を取り消しますか？", isPresented: $confirmCancel, titleVisibility: .visible) {
+            Button(confirmedAfterStart ? "録画への影響を確認して取り消す" : "予約を取り消す", role: .destructive) {
+                cancelTask = Task { await cancelReservation() }
+            }
+            Button("戻る", role: .cancel) {}
+        } message: {
+            if let item = store.item {
+                Text(item.name + (item.ruleID == nil ? "\n手動予約を取り消します。" : "\nこの回を除外します。ルールは残ります。") + (confirmedAfterStart ? "\n録画開始時刻を過ぎています。進行中の録画が停止する場合があります。" : ""))
+            }
+        }
+        .onDisappear { store.cancel(); cancelTask?.cancel() }
     }
 
     private func reload() { store.load(address: address, id: reservationID) }
 
     private func goBack() {
+        guard !mutation.busy else { return }
 #if DEBUG
         print("RingonomiEPGStationReservationDetail: back")
 #endif
         dismiss()
+    }
+
+    @MainActor private func cancelReservation() async {
+        guard let original = store.item else { return }
+        mutationMessage = nil
+        do {
+            let client = try EPGStationClient(address: address)
+            var removed = false
+            try await mutation.perform(address: address, title: original.name, action: "取消", reservationID: original.id, schedule: epgStationSchedule(start: original.startAt, end: original.endAt), prepare: {
+                let latest = try await client.reservation(id: original.id)
+                try epgStationRequireSameReservation(original, latest)
+                guard latest.isSkip == original.isSkip, latest.isOverlap == original.isOverlap else {
+                    throw ReservationUIError("予約の状態が変わりました。詳細を更新してから確認してください。")
+                }
+                guard confirmedAfterStart || Date().timeIntervalSince1970 * 1000 < latest.startAt else {
+                    throw ReservationUIError("録画開始時刻になりました。詳細を更新して取消の影響を確認してください。")
+                }
+                return latest
+            }, send: { latest in
+                try await client.deleteReservation(id: latest.id)
+                do {
+                    let updated = try await client.reservation(id: latest.id)
+                    guard latest.ruleID != nil, !updated.isConflict,
+                          (latest.isOverlap ? updated.isOverlap : updated.isSkip) else {
+                        throw EPGStationWriteError.outcomeUnknown
+                    }
+                } catch EPGStationError.httpStatus(404) {
+                    // A manual reservation (or event-relay reservation) was removed.
+                    removed = true
+                } catch { throw EPGStationWriteError.outcomeUnknown }
+            })
+            mutationMessage = "予約サーバーが取消を受け付けました。進行中の録画停止には時間がかかる場合があります。"
+#if DEBUG
+            print("RingonomiEPGStationMutation: cancelled")
+#endif
+            if removed { dismiss() } else { reload() }
+        } catch {
+            mutationMessage = mutation.pending == nil ? error.localizedDescription : "取消の結果を確認できませんでした。再送せず一覧を更新して確認してください。"
+        }
     }
 }
 

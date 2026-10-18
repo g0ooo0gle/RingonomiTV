@@ -15,7 +15,6 @@ public enum EPGStationError: Error, LocalizedError, Equatable, Sendable {
     case httpStatus(Int)
     case redirectRejected
     case transport
-
     public var errorDescription: String? {
         switch self {
         case .invalidAddress:
@@ -135,7 +134,9 @@ public struct EPGStationRecording: Codable, Equatable, Hashable, Sendable, Ident
               EPGStationValueRules.isPositiveIdentifier(channelID),
               startAt.isFinite,
               endAt.isFinite,
+              startAt >= 0,
               endAt >= startAt,
+              endAt <= Double(EPGStationValueRules.maximumSafeJSONInteger),
               EPGStationValueRules.isSafeText(name, maximumBytes: 16 * 1024),
               description.map({ EPGStationValueRules.isSafeHumanText($0, maximumBytes: 64 * 1024) }) ?? true,
               extended.map({ EPGStationValueRules.isSafeHumanText($0, maximumBytes: 64 * 1024) }) ?? true else {
@@ -231,7 +232,10 @@ public struct EPGStationClient: @unchecked Sendable {
     public static let maximumPageLimit = 200
 
     public let baseURL: URL
-    private let session: URLSession
+    // Shared by the reservation action extension while remaining outside the
+    // public API.  The session is still constructed as an isolated,
+    // credential-free session in the initializer above.
+    let session: URLSession
 
     public init(
         address: String,
@@ -444,7 +448,7 @@ public struct EPGStationClient: @unchecked Sendable {
         }
     }
 
-    private func endpoint(
+    func endpoint(
         _ components: [String],
         queryItems: [URLQueryItem] = []
     ) -> URL {
@@ -456,14 +460,22 @@ public struct EPGStationClient: @unchecked Sendable {
         return urlComponents.url!
     }
 
-    private func data(for requestURL: URL) async throws -> Data {
+    func data(
+        for requestURL: URL,
+        method: String = "GET",
+        body: Data? = nil
+    ) async throws -> Data {
         var request = URLRequest(url: requestURL)
-        request.httpMethod = "GET"
+        request.httpMethod = method
+        request.httpBody = body
         request.timeoutInterval = 20
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.httpShouldHandleCookies = false
         request.setValue(nil, forHTTPHeaderField: "Authorization")
         request.setValue(nil, forHTTPHeaderField: "Cookie")
+        if body != nil {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
 
         let delegate = EPGStationRedirectDelegate()
         do {
