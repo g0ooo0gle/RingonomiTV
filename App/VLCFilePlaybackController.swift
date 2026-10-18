@@ -486,7 +486,13 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
 
         // VLC stops asynchronously.  A pending URL is only attached after
         // the stopped state is observed, preventing same-URL reuse races.
+#if DEBUG
+        NSLog("RingonomiFileReload: stop-begin")
+#endif
         if player.state != .stopped { player.stop() }
+#if DEBUG
+        NSLog("RingonomiFileReload: stop-returned")
+#endif
         startPendingLoadIfReady(for: generation)
     }
 
@@ -503,13 +509,25 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         // TVVLCKit 3.7 may ignore equivalent media URLs, and clearing media
         // is asynchronous. Retire the stopped instance so its cleanup cannot
         // race with opening the same file for Replay or foreground resume.
+#if DEBUG
+        NSLog("RingonomiFileReload: retire-begin")
+#endif
         let oldPlayer = player
         oldPlayer.delegate = nil
         oldPlayer.drawable = nil
+#if DEBUG
+        NSLog("RingonomiFileReload: drawable-detached")
+#endif
         oldPlayer.audio?.isMuted = true
         oldPlayer.media = nil
 
+#if DEBUG
+        NSLog("RingonomiFileReload: create-begin")
+#endif
         let freshPlayer = VLCMediaPlayer()
+#if DEBUG
+        NSLog("RingonomiFileReload: create-returned")
+#endif
         freshPlayer.delegate = self
         if let videoSurface { freshPlayer.drawable = videoSurface }
         freshPlayer.audio?.isMuted = true
@@ -519,7 +537,13 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         if pendingPositionSeconds != nil, pendingPositionStartedAt == nil {
             pendingPositionStartedAt = Date()
         }
+#if DEBUG
+        NSLog("RingonomiFileReload: play-begin")
+#endif
         freshPlayer.play()
+#if DEBUG
+        NSLog("RingonomiFileReload: play-returned")
+#endif
     }
 
     private func updateStatus() {
