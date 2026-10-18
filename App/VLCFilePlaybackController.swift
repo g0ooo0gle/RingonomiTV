@@ -515,6 +515,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         freshPlayer.audio?.isMuted = true
         player = freshPlayer
         freshPlayer.media = VLCMedia(url: url)
+        freshPlayer.audio?.isMuted = true
         if pendingPositionSeconds != nil, pendingPositionStartedAt == nil {
             pendingPositionStartedAt = Date()
         }
