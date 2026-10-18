@@ -90,9 +90,20 @@ struct PlaybackView: View {
                     Text(item.title).font(.title2).multilineTextAlignment(.center)
                     Text("前回は \(Playback.timestamp(position)) まで再生しました。")
                     Button("続きから再生") { beginPlayback(at: position) }
+                        .focused($playbackFocus, equals: .resume)
                     Button("最初から再生") { beginPlayback(at: 0) }
+                        .focused($playbackFocus, equals: .startOver)
                     Button("閉じる") { close() }
+                        .focused($playbackFocus, equals: .close)
                 }.padding(80).frame(maxWidth: .infinity, maxHeight: .infinity).background(.black)
+                    .focusSection()
+                    .defaultFocus($playbackFocus, .resume)
+                    .onAppear {
+                        playbackFocus = .resume
+#if DEBUG
+                        print("RingonomiResumePrompt: shown")
+#endif
+                    }
             } else {
                 Color.black.ignoresSafeArea()
             }
@@ -112,6 +123,9 @@ struct PlaybackView: View {
     }
 
     private func beginPlayback(at seconds: Double) {
+#if DEBUG
+        print("RingonomiPlaybackBegin: target=\(seconds)")
+#endif
 #if canImport(TVVLCKit)
         if let id = item.resumeID {
             let store = resumeStore
@@ -464,6 +478,15 @@ struct PlaybackView: View {
                             .focused($playbackFocus, equals: .chapters)
                     }
                 }
+                .onMoveCommand { direction in
+                    switch direction {
+                    case .up:
+                        if recordingController.durationSeconds != nil { playbackFocus = .seek }
+                        else { revealTopPanel() }
+                    case .down: hidePanel()
+                    default: break
+                    }
+                }
             } else {
                 HStack(spacing: 24) {
                     Text(controller.status).font(.caption)
@@ -482,11 +505,7 @@ struct PlaybackView: View {
         .onMoveCommand { direction in
             switch direction {
             case .up:
-                if isRecording, recordingController.durationSeconds != nil, playbackFocus != .seek {
-                    playbackFocus = .seek
-                } else {
-                    revealTopPanel()
-                }
+                revealTopPanel()
             case .down:
                 hidePanel()
             default: break

@@ -3,6 +3,8 @@ import RingonomiCore
 
 /// Focus targets used by the two playback panels and the video surface.
 enum PlaybackControlFocus: String, Hashable {
+    case resume
+    case startOver
     case surface
     case seek
     case backward
@@ -41,6 +43,7 @@ struct PlaybackTopControls: View {
     let selectQuality: (String) -> Void
     let close: () -> Void
     @FocusState.Binding var focus: PlaybackControlFocus?
+    @State private var isQualitySheetPresented = false
 
     private let qualityValues = ["1080p", "720p", "540p", "360p"]
 
@@ -99,16 +102,24 @@ struct PlaybackTopControls: View {
                 .accessibilityLabel("音声を選択")
             }
 
-            Menu("画質：\(quality)") {
-                ForEach(qualityValues, id: \.self) { value in
-                    Button(value == quality ? "✓ \(value)" : value) {
-                        guard value != quality else { return }
-                        selectQuality(value)
-                    }
-                }
+            Button("画質：\(quality)") {
+                isQualitySheetPresented = true
             }
             .focused($focus, equals: .quality)
             .disabled(isLoading)
+            .sheet(isPresented: $isQualitySheetPresented) {
+                QualityChoicesView(
+                    currentQuality: quality,
+                    values: qualityValues,
+                    onSelect: { value in
+                        isQualitySheetPresented = false
+                        selectQuality(value)
+                    },
+                    onClose: {
+                        isQualitySheetPresented = false
+                    }
+                )
+            }
 
             Button("閉じる", action: close)
                 .focused($focus, equals: .close)
@@ -119,5 +130,61 @@ struct PlaybackTopControls: View {
 
     private var safeDelay: Double {
         liveCommentDelay.isFinite ? min(10, max(0, liveCommentDelay)) : 2
+    }
+}
+
+private struct QualityChoicesView: View {
+    private enum FocusTarget: Hashable {
+        case option(String)
+        case close
+    }
+
+    let currentQuality: String
+    let values: [String]
+    let onSelect: (String) -> Void
+    let onClose: () -> Void
+    @FocusState private var focusedTarget: FocusTarget?
+
+    private var initialFocus: FocusTarget {
+        if let current = values.first(where: { $0 == currentQuality }) {
+            return .option(current)
+        }
+        if let first = values.first {
+            return .option(first)
+        }
+        return .close
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            Text("画質を選択")
+                .font(.title2)
+            ForEach(values, id: \.self) { value in
+                Button {
+                    onSelect(value)
+                } label: {
+                    HStack(spacing: 16) {
+                        Text(value)
+                        Spacer()
+                        if value == currentQuality {
+                            Text("✓")
+                                .accessibilityLabel("現在の画質")
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 14)
+                }
+                .focused($focusedTarget, equals: .option(value))
+            }
+            Button("戻る", action: onClose)
+                .focused($focusedTarget, equals: .close)
+        }
+        .padding(64)
+        .frame(minWidth: 720, maxWidth: 960)
+        .background(.black)
+        .focusSection()
+        .defaultFocus($focusedTarget, initialFocus)
+        .onExitCommand(perform: onClose)
     }
 }

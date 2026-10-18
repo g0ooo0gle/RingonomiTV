@@ -160,7 +160,10 @@ struct LibraryView: View {
             if let index = arguments.firstIndex(of: "--play-recording"), index + 1 < arguments.count,
                let id = Int(arguments[index + 1]) {
                 let recording = try await client.recording(id: id)
-                if recording.isFree { openRecording(recording, client: client) }
+                if recording.isFree {
+                    openRecording(recording, client: client,
+                                  fromBeginning: arguments.contains("--recording-from-start"))
+                }
             }
             if arguments.contains("--test-recording-failure") {
                 playback = Playback(client: client, channelID: nil, recordingID: -1,
@@ -186,9 +189,9 @@ struct LibraryView: View {
         } catch { self.error = error.localizedDescription }
     }
 
-    private func openRecording(_ recording: Recording, client: RingonomiClient) {
+    private func openRecording(_ recording: Recording, client: RingonomiClient, fromBeginning: Bool = false) {
         let id = resumeStore.identity(for: recording, client: client)
-        let savedPosition = resumeStore.position(for: recording, client: client)
+        let savedPosition = fromBeginning ? nil : resumeStore.position(for: recording, client: client)
         playback = Playback(client: client, channelID: nil, recordingID: recording.playbackID,
                             title: recording.title, initialQuality: quality,
                             resumeID: id, durationHint: recording.recordedVideo.duration,
