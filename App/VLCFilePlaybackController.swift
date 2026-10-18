@@ -48,7 +48,7 @@ struct FilePlaybackSelection: Identifiable, Equatable {
 /// state machine would leave a stopped live transport attached to a VOD URL.
 @MainActor
 final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelegate {
-    let player = VLCMediaPlayer()
+    private(set) var player: VLCMediaPlayer
 
     @Published private(set) var status = "読み込み中…"
     @Published private(set) var isLoading = true
@@ -131,6 +131,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
     private var onProgress: ((Double, Double?, Bool) -> Void)?
 
     override init() {
+        player = VLCMediaPlayer()
         super.init()
         player.delegate = self
         player.audio?.isMuted = true
@@ -417,7 +418,10 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         stopTask = nil
         isStopped = false
         isSuspendedForBackground = false
-        player.delegate = self
+        // The old instance is only used to observe the asynchronous stop
+        // below.  Its delegate must be detached before the replacement so a
+        // queued state notification cannot be mistaken for the new media.
+        player.delegate = nil
         currentURL = url
         generation &+= 1
         endGate.reset()
@@ -496,19 +500,25 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
 
         pendingLoadURL = nil
         pendingLoadGeneration = 0
-        // TVVLCKit 3.7 can treat a new VLCMedia with the same URL as the
-        // already attached media as a no-op.  Replay after EOF therefore
-        // needs an explicit nil media boundary after the native stop has
-        // completed; otherwise the pending marker is consumed but the old
-        // decoder never opens again.
-        player.media = nil
-        player.media = VLCMedia(url: url)
-        if let videoSurface { player.drawable = videoSurface }
-        player.audio?.isMuted = true
+        // TVVLCKit 3.7 may ignore equivalent media URLs, and clearing media
+        // is asynchronous. Retire the stopped instance so its cleanup cannot
+        // race with opening the same file for Replay or foreground resume.
+        let oldPlayer = player
+        oldPlayer.delegate = nil
+        oldPlayer.drawable = nil
+        oldPlayer.audio?.isMuted = true
+        oldPlayer.media = nil
+
+        let freshPlayer = VLCMediaPlayer()
+        freshPlayer.delegate = self
+        if let videoSurface { freshPlayer.drawable = videoSurface }
+        freshPlayer.audio?.isMuted = true
+        player = freshPlayer
+        freshPlayer.media = VLCMedia(url: url)
         if pendingPositionSeconds != nil, pendingPositionStartedAt == nil {
             pendingPositionStartedAt = Date()
         }
-        player.play()
+        freshPlayer.play()
     }
 
     private func updateStatus() {
