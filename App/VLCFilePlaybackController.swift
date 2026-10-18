@@ -346,7 +346,9 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         player.delegate = nil
         if player.state != .stopped { player.stop() }
         player.drawable = nil
-        clearMediaWhenStopped()
+        // Keep media attached to the stopped instance. Foreground resume
+        // replaces it entirely; an asynchronous nil assignment here can
+        // still be running when that old instance is released.
         updateContinuousDisplayNeed()
 #if DEBUG
         print("RingonomiFileLifecycle: suspended target=\(targetSeconds) paused=\(wantsPause) ended=\(isEnded)")
@@ -543,7 +545,8 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         NSLog("RingonomiFileReload: drawable-detached")
 #endif
         oldPlayer.audio?.isMuted = true
-        oldPlayer.media = nil
+        // Native release owns media cleanup. Scheduling an asynchronous
+        // media detach immediately before release can stall VLC teardown.
 
 #if DEBUG
         NSLog("RingonomiFileReload: create-begin")
