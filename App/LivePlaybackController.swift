@@ -46,6 +46,10 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
     private var lastFrameDate = Date.distantPast
     private var lastPictures = 0
     private var lastLog = Date.distantPast
+#if DEBUG
+    private var lastLogUptime: Double?
+    private var lastLogPictures = 0
+#endif
     private var audioSourceID: UUID?
     private var audioTrackIDsByOptionID: [String: Int32] = [:]
     private var preferredAudioName: String?
@@ -106,6 +110,11 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         gate.reset()
         lastFrameDate = .distantPast
         lastPictures = 0
+#if DEBUG
+        lastLog = .distantPast
+        lastLogUptime = nil
+        lastLogPictures = 0
+#endif
         waitingSince = Date()
         isLoading = true
         player.media = VLCMedia(url: url)
@@ -486,7 +495,13 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
 #if DEBUG
             if Date().timeIntervalSince(lastLog) >= 5 {
                 lastLog = Date()
-                print("RingonomiTVLive: pictures=\(pictures) loading=\(isLoading) muted=\(player.audio?.isMuted == true)")
+                let uptime = ProcessInfo.processInfo.systemUptime
+                let elapsed = lastLogUptime.map { uptime - $0 } ?? 0
+                let rate = elapsed > 0 && pictures >= lastLogPictures
+                    ? String(format: "%.1f", Double(pictures - lastLogPictures) / elapsed) : "n/a"
+                print("RingonomiTVLive: pictures=\(pictures) loading=\(isLoading) muted=\(player.audio?.isMuted == true) uptime=\(uptime) fps=\(rate) state=\(player.state.rawValue)")
+                lastLogUptime = uptime
+                lastLogPictures = pictures
             }
 #endif
         } else {
