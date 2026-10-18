@@ -587,13 +587,13 @@ final class RecordingPlaybackController: ObservableObject {
             updateTime()
             checkpoint(force: true)
 #if DEBUG
-            print("RingonomiTVNativeReady: target=\(targetSeconds) actual=\(player.currentTime().seconds) rate=\(player.rate) muted=\(player.isMuted) layerReady=true paused=true")
+            print("RingonomiTVNativeReady: target=\(targetSeconds) actual=\(player.currentTime().seconds) rate=\(player.rate) muted=\(player.isMuted) layerReady=true paused=true timeControl=\(player.timeControlStatus.rawValue)")
 #endif
             return
         }
 
         // Keep the readiness gate closed while the new item is still waiting
-        // to play. VLC/AVPlayer can expose a first frame before the transport
+        // to play. AVPlayer can expose a first frame before the transport
         // has actually entered .playing; unmuting here would briefly produce
         // audio over a stale or black frame. Request play once while muted and
         // let the KVO callback/timer call this method again.
@@ -606,6 +606,7 @@ final class RecordingPlaybackController: ObservableObject {
             guard player.timeControlStatus == .playing else { return }
         }
 
+        playbackStartRequested = false
         preparing = false
         advancedSincePreroll = false
         isLoading = false
@@ -620,7 +621,7 @@ final class RecordingPlaybackController: ObservableObject {
         updateTime()
         checkpoint(force: true)
 #if DEBUG
-        print("RingonomiTVNativeReady: target=\(targetSeconds) actual=\(player.currentTime().seconds) rate=\(player.rate) muted=\(player.isMuted) layerReady=true")
+        print("RingonomiTVNativeReady: target=\(targetSeconds) actual=\(player.currentTime().seconds) rate=\(player.rate) muted=\(player.isMuted) layerReady=true timeControl=\(player.timeControlStatus.rawValue)")
 #endif
     }
     private func playbackStateChanged() {
