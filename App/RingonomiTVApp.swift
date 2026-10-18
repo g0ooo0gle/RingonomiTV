@@ -80,22 +80,34 @@ struct LibraryView: View {
             ReservationListView(address: effectiveAddress, store: reservations, keywords: keywords)
                 .id(connectionKey)
                 .tabItem { Label("予約", systemImage: "record.circle") }.tag(3)
-            Form {
-                TextField("視聴サーバーURL（ポート番号を含む）", text: $draftAddress)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
-                    .disabled(reservations.saving || keywords.saving || account.isBusy)
-                Picker("画質", selection: $quality) {
-                    ForEach(["1080p", "720p", "540p", "360p"], id: \.self) { Text($0) }
+            NavigationStack {
+                Form {
+                    TextField("視聴サーバーURL（ポート番号を含む）", text: $draftAddress)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .disabled(reservations.saving || keywords.saving || account.isBusy)
+                    Picker("画質", selection: $quality) {
+                        ForEach(["1080p", "720p", "540p", "360p"], id: \.self) { Text($0) }
+                    }
+                    Toggle("番組表に副チャンネルを表示", isOn: $guideSubchannels)
+                    Button("接続して読み込む") { applyConnection() }
+                        .disabled(loading || account.isBusy || reservations.saving || keywords.saving)
+                    Text("Apple TVのIPではなく、視聴サーバーのURLを入力してください。")
+                    if loading { ProgressView() }
+                    if let error { Text(error).foregroundStyle(.red) }
+                    Section("Mirakurun") {
+                        NavigationLink("Mirakurun直接視聴") {
+                            MirakurunServiceView()
+                        }
+                        Text("Mirakurunのサービス一覧から、raw TSを直接再生します。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    AccountSettingsView(address: effectiveAddress, account: account)
+                        .disabled(reservations.saving || keywords.saving)
                 }
-                Toggle("番組表に副チャンネルを表示", isOn: $guideSubchannels)
-                Button("接続して読み込む") { applyConnection() }
-                    .disabled(loading || account.isBusy || reservations.saving || keywords.saving)
-                Text("Apple TVのIPではなく、視聴サーバーのURLを入力してください。")
-                if loading { ProgressView() }
-                if let error { Text(error).foregroundStyle(.red) }
-                AccountSettingsView(address: effectiveAddress, account: account)
-                    .disabled(reservations.saving || keywords.saving)
-            }.tabItem { Label("設定", systemImage: "gear") }.tag(4)
+                .navigationTitle("設定")
+            }
+            .tabItem { Label("設定", systemImage: "gear") }.tag(4)
         }
         .onAppear {
             if !loadedAddressDraft { draftAddress = address; loadedAddressDraft = true }
