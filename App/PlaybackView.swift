@@ -274,13 +274,24 @@ struct PlaybackView: View {
         }
         .task(id: streamURL) {
             guard let recordingID = item.recordingID else { return }
+            let requestURL = streamURL
             let currentSession = session
             let currentQuality = quality
             while !Task.isCancelled {
                 do {
+                    try Task.checkCancellation()
                     try await Task.sleep(for: .seconds(4))
                     if failure != nil { continue }
+                    try Task.checkCancellation()
+                    guard streamURL == requestURL,
+                          session == currentSession,
+                          quality == currentQuality else { break }
                     try await item.client.keepRecordingAlive(id: recordingID, session: currentSession, quality: currentQuality)
+                    try Task.checkCancellation()
+                    guard streamURL == requestURL,
+                          session == currentSession,
+                          quality == currentQuality else { break }
+                    if failure != nil { continue }
                     maintenanceError = nil
 #if DEBUG
                     print("RingonomiTVRecording: keep-alive OK quality=\(currentQuality)")
@@ -288,6 +299,10 @@ struct PlaybackView: View {
                 } catch is CancellationError { break }
                 catch {
                     if Task.isCancelled { break }
+                    guard streamURL == requestURL,
+                          session == currentSession,
+                          quality == currentQuality else { break }
+                    if failure != nil { continue }
                     maintenanceError = "接続の維持に失敗しました。再試行しています。"
                 }
             }

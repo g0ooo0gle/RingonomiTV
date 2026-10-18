@@ -26,6 +26,7 @@ final class RecordingPlaybackController: ObservableObject {
     // are still waiting on the main actor.  This gate keeps those callbacks
     // from touching published state after teardown.
     private var isStopped = false
+    private var isChangingQuality = false
     private var wantsPause = false
     private var targetSeconds: Double = 0
     private var preparing = false
@@ -338,6 +339,7 @@ final class RecordingPlaybackController: ObservableObject {
     func load(_ url: URL) {
         guard currentURL != url else { return }
         isStopped = false
+        isChangingQuality = false
         currentURL = url
         commercialMetadataUsable = commercialMetadataComplete && commercialTimeline != nil
         resetAudioSelection(clearPreferred: false)
@@ -362,7 +364,8 @@ final class RecordingPlaybackController: ObservableObject {
         })
         endToken = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
             Task { @MainActor [weak self, weak item] in
-                guard let self, let item, !self.isStopped, self.player.currentItem === item else { return }
+                guard let self, let item, !self.isStopped, !self.isChangingQuality,
+                      self.player.currentItem === item else { return }
                 self.status = "再生終了（再生ボタンで最初から）"
                 self.player.pause()
                 self.wantsPause = true
@@ -391,7 +394,7 @@ final class RecordingPlaybackController: ObservableObject {
         }
     }
     private func preparePosition(_ expected: Int) {
-        guard !isStopped, expected == generation, preparing, !prerolled, !preparationInFlight,
+        guard !isStopped, !isChangingQuality, expected == generation, preparing, !prerolled, !preparationInFlight,
               player.status == .readyToPlay,
               player.currentItem?.status == .readyToPlay else { return }
         preparationInFlight = true
@@ -432,7 +435,7 @@ final class RecordingPlaybackController: ObservableObject {
         }
     }
     private func revealWhenReady() {
-        guard !isStopped, failure == nil, preparing, prerolled,
+        guard !isStopped, !isChangingQuality, failure == nil, preparing, prerolled,
               player.currentItem?.status == .readyToPlay,
               videoLayer?.isReadyForDisplay == true else { return }
         preparing = false
@@ -485,10 +488,13 @@ final class RecordingPlaybackController: ObservableObject {
         if waitingSince == nil { waitingSince = Date() }
     }
     func prepareQualityChange() {
+        guard !isStopped else { return }
         flushPosition()
         if !isLoading { targetSeconds = safeTime() }
         captions.reset(for: targetSeconds)
         resetAudioSelection(clearPreferred: false)
+        // Do not preroll the old item in the interval before load replaces it.
+        isChangingQuality = true
         generation += 1
         cancelPreparation()
         preparing = true
