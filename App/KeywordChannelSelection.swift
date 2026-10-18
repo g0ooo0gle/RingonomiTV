@@ -11,7 +11,13 @@ struct KeywordChannelSelection: View {
 
     var body: some View {
         List {
-            Toggle("全チャンネル", isOn: Binding(get: { selection == nil }, set: { selection = $0 ? nil : [] }))
+            Toggle("全チャンネル", isOn: Binding(
+                get: { selection == nil },
+                set: { isAll in
+                    guard isAll != (selection == nil) else { return }
+                    selection = isAll ? nil : []
+                }
+            ))
             if selection != nil {
                 ForEach(channels) { channel in
                     if let service = service(for: channel) {

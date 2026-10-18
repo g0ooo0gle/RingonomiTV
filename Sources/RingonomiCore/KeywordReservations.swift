@@ -271,8 +271,7 @@ public struct ProgramSearchCondition: Codable, Sendable, Equatable {
             "is_exclude_date_ranges": .bool(false),
             "duration_range_min": .null,
             "duration_range_max": .null,
-            // Product policy keeps automatic reservations on free broadcasts
-            // by default. There is no purchase or subscription flow here.
+            // New rules start with free broadcasts unless the scope is edited.
             "broadcast_type": .string("FreeOnly"),
             "duplicate_title_check_scope": .string("None"),
             "duplicate_title_check_period_days": .integer(6)

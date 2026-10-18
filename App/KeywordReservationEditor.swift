@@ -17,6 +17,7 @@ struct KeywordReservationEditor: View {
     @State private var previewing = false
     @State private var preview: ProgramSearchResponse?
     @State private var previewGeneration = UUID()
+    @State private var previewTask: Task<Void, Never>?
     @Environment(\.dismiss) private var dismiss
 
     init(address: String, store: KeywordReservationStore, original: ReservationCondition?) {
@@ -39,12 +40,11 @@ struct KeywordReservationEditor: View {
                     NavigationLink(search.serviceRanges == nil ? "全チャンネル" : "選択したチャンネル：\(search.serviceRanges?.count ?? 0)件") {
                         KeywordChannelSelection(address: address, selection: $search.serviceRanges)
                     }
-                    Text("ジャンル・曜日時間帯などの既存条件は保持します。これらの条件の編集は今後対応します。")
-                        .font(.caption).foregroundStyle(.secondary)
                 }
+                filterFields
                 Section("番組長・重複チェック") {
-                    TextField("最短の番組長（秒・空欄は指定なし）", text: $minimumDuration)
-                    TextField("最長の番組長（秒・空欄は指定なし）", text: $maximumDuration)
+                    TextField("最短の番組長（分・空欄は指定なし）", text: $minimumDuration)
+                    TextField("最長の番組長（分・空欄は指定なし）", text: $maximumDuration)
                     Picker("同名録画の重複チェック", selection: $search.duplicateTitleCheckScope) {
                         Text("チェックしない").tag("None")
                         Text("同じチャンネル").tag("SameChannelOnly")
@@ -57,7 +57,6 @@ struct KeywordReservationEditor: View {
                 }
                 previewSection
                 RecordingSettingsFields(draft: $recording)
-                if let message { Section { Text(message).foregroundStyle(.red) } }
                 Section {
                     if busy { ProgressView("サーバーの処理結果を確認しています…") }
                     Button(original == nil ? "条件を追加" : "変更を保存") { confirmation = true }
@@ -74,6 +73,11 @@ struct KeywordReservationEditor: View {
             .onChange(of: maximumDuration) { _, _ in invalidatePreview() }
             .onChange(of: duplicateDays) { _, _ in invalidatePreview() }
             .onDisappear { invalidatePreview() }
+            .alert("操作できませんでした", isPresented: Binding(
+                get: { message != nil }, set: { if !$0 { message = nil } }
+            )) {
+                Button("閉じる") { message = nil }
+            } message: { Text(message ?? "") }
             .confirmationDialog("この検索条件を保存しますか？", isPresented: $confirmation, titleVisibility: .visible) {
                 Button("保存する") { Task { await save() } }
                 Button("キャンセル", role: .cancel) {}
@@ -84,6 +88,39 @@ struct KeywordReservationEditor: View {
                 Button("条件を削除", role: .destructive) { Task { await remove() } }
                 Button("キャンセル", role: .cancel) {}
             } message: { Text("すでに作成された録画予約は残ります。不要な予約は「予約」画面で確認してください。") }
+        }
+    }
+
+    private var filterFields: some View {
+        Group {
+            Section("ジャンル") {
+                NavigationLink(search.genreRanges == nil ? "すべてのジャンル" : "指定したジャンル：\(search.genreRanges?.count ?? 0)件") {
+                    KeywordGenreSelection(selection: Binding(
+                        get: { search.genreRanges },
+                        set: { value in
+                            search.genreRanges = value
+                            if value == nil { search.isExcludeGenreRanges = false }
+                        }
+                    ))
+                }
+                Toggle("指定したジャンルを除外", isOn: $search.isExcludeGenreRanges)
+                    .disabled(search.genreRanges == nil)
+            }
+            Section("曜日・時間帯") {
+                NavigationLink(search.dateRanges == nil ? "すべての日時" : "指定した日時範囲：\(search.dateRanges?.count ?? 0)件") {
+                    KeywordTimeRangeSelection(selection: Binding(
+                        get: { search.dateRanges },
+                        set: { value in
+                            search.dateRanges = value
+                            if value == nil { search.isExcludeDateRanges = false }
+                        }
+                    ))
+                }
+                Toggle("指定した日時範囲を除外", isOn: $search.isExcludeDateRanges)
+                    .disabled(search.dateRanges == nil)
+                Text("番組の開始日時を日本時間で指定します。ジャンルと日時は両方の条件で絞り込みます。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -112,7 +149,10 @@ struct KeywordReservationEditor: View {
 
     private var previewSection: some View {
         Section("検索結果の確認") {
-            Button("この条件で番組を検索") { Task { await loadPreview() } }.disabled(previewing)
+            Button("この条件で番組を検索") {
+                previewTask?.cancel()
+                previewTask = Task { await loadPreview() }
+            }.disabled(previewing)
             if previewing { ProgressView("サーバーで番組を検索しています…") }
             if let preview {
                 Text("該当する番組：\(preview.total)件（先頭50件まで表示）")
@@ -143,6 +183,7 @@ struct KeywordReservationEditor: View {
         if let ranges = result.serviceRanges, ranges.isEmpty {
             throw ReservationUIError("対象チャンネルを選ぶか「全チャンネル」を選択してください。")
         }
+        try KeywordSearchFilters.validate(result)
         return result
     }
 
@@ -158,18 +199,20 @@ struct KeywordReservationEditor: View {
             previewing = true
             defer { if previewGeneration == expected { previewing = false } }
             let result = try await RingonomiClient(address: address).searchPrograms(condition: condition)
-            guard previewGeneration == expected else { return }
+            guard !Task.isCancelled, previewGeneration == expected else { return }
             preview = result
 #if DEBUG
             print("RingonomiKeywordPreview: total=\(result.total)")
 #endif
         } catch {
-            guard previewGeneration == expected else { return }
+            guard !Task.isCancelled, previewGeneration == expected else { return }
             message = "検索できませんでした。\(error.localizedDescription)"
         }
     }
 
     private func invalidatePreview() {
+        previewTask?.cancel()
+        previewTask = nil
         previewGeneration = UUID()
         previewing = false
         preview = nil

@@ -18,6 +18,8 @@ They do not imply endorsement or affiliation.
 - License: MIT. The full notice is in [KonomiTV-MIT.txt](App/Licenses/KonomiTV-MIT.txt).
 - API field names, request/response contracts, and recording settings follow
   KonomiTV's API schemas. The server implementation is not bundled here.
+- Keyword-search genre labels follow KonomiTV's
+  [ProgramUtils.ts](https://github.com/tsukumijima/KonomiTV/blob/0a32188274b81c1e7bed642474b208bd2a543a6b/client/src/utils/ProgramUtils.ts).
 
 ## TVVLCKit / VLCKit
 
