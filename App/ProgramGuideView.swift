@@ -14,11 +14,19 @@ struct ProgramGuideView: View {
     @State private var revision = 0
     @State private var selected: GuideSelection?
     @State private var pendingPlayback: GuideChannel?
+    @AppStorage("guidePresentation") private var presentation = "grid"
+    @AppStorage("guideSubchannels") private var includeSubchannels = false
+    @State private var jumpRevision = 0
+    @State private var returnFocusRevision = 0
+    @State private var loadedRequest: String?
+    @FocusState private var refreshFocused: Bool
 
     private var requestKey: String { "\(address)|\(channelType)|\(dayOffset)|\(revision)" }
     private var day: Date {
-        Calendar.current.date(byAdding: .day, value: dayOffset,
-                              to: Calendar.current.startOfDay(for: Date())) ?? Date()
+        GuideGridLayout.televisionDay(containing: Date(), offset: dayOffset)
+    }
+    private var gridLayout: GuideGridLayout {
+        GuideGridLayout(response: guide, baseDate: day, includeSubchannels: includeSubchannels)
     }
     private var isSearching: Bool { !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     private var searchResults: [GuideProgramSearchResult] { searchFuturePrograms(query, in: guide) }
@@ -43,10 +51,15 @@ struct ProgramGuideView: View {
                         Text("地デジ").tag("GR")
                         ForEach(["BS", "CS", "CATV", "SKY", "BS4K"], id: \.self) { Text($0).tag($0) }
                     }.pickerStyle(.menu)
+                    Picker("表示", selection: $presentation) {
+                        Text("番組表").tag("grid")
+                        Text("一覧").tag("list")
+                    }.pickerStyle(.menu)
                     Button("前日") { dayOffset = max(0, dayOffset - 1) }.disabled(dayOffset == 0)
-                    Text(day.formatted(.dateTime.month().day().weekday())).monospacedDigit()
+                    Text(guideDay(day)).monospacedDigit()
                     Button("翌日") { dayOffset = min(6, dayOffset + 1) }.disabled(dayOffset == 6)
-                    Button("更新") { revision += 1 }.disabled(loading)
+                    Button("現在") { dayOffset = 0; jumpRevision += 1 }
+                    Button("更新") { revision += 1 }.disabled(loading).focused($refreshFocused)
                 }
                 TextField("番組・チャンネルを検索", text: $query)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
@@ -54,21 +67,7 @@ struct ProgramGuideView: View {
                     Text("選択中の日・放送波の、これから始まる番組を検索します。空白はAND、読点・カンマはOR。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                List {
-                    if isSearching {
-                        ForEach(Array(searchResults.enumerated()), id: \.offset) { _, result in
-                            programButton(result.program, channel: result.channel, showChannel: true)
-                        }
-                    } else {
-                        ForEach(visibleGroups, id: \.channel.id) { group in
-                            Section(group.channel.name) {
-                                ForEach(visiblePrograms(group)) { program in
-                                    programButton(program, channel: group.channel, showChannel: false)
-                                }
-                            }
-                        }
-                    }
-                }.overlay {
+                guideContent.overlay {
                     if loading {
                         ProgressView("番組表を読み込んでいます…")
                     } else if let error {
@@ -76,23 +75,52 @@ struct ProgramGuideView: View {
                             Text(error).multilineTextAlignment(.center)
                             Button("再試行") { revision += 1 }
                         }.padding(40)
-                    } else if (isSearching ? searchResults.isEmpty : visibleGroups.isEmpty) {
+                    } else if !hasContent {
                         Text(address.isEmpty ? "設定で視聴サーバーに接続してください。" : "該当する番組がありません。")
                             .foregroundStyle(.secondary)
                     }
                 }
             }.padding(.horizontal, 40)
-            .navigationTitle("番組表")
             .task(id: requestKey) { await load() }
             .sheet(item: $selected, onDismiss: {
                 if let channel = pendingPlayback {
                     pendingPlayback = nil
                     onPlay(channel)
-                }
+                } else { returnFocusRevision += 1 }
             }) { selection in
                 GuideProgramDetail(selection: selection) {
                     pendingPlayback = selection.channel
                     selected = nil
+                }
+            }
+        }
+    }
+    private var hasContent: Bool {
+        if isSearching { return !searchResults.isEmpty }
+        if presentation == "grid" { return gridLayout.columns.contains { !$0.entries.isEmpty } }
+        return !visibleGroups.isEmpty
+    }
+    @ViewBuilder private var guideContent: some View {
+        if !isSearching, presentation == "grid", !guide.channels.isEmpty {
+            GuideGridView(layout: gridLayout, jumpRevision: jumpRevision, returnFocusRevision: returnFocusRevision) { program, channel in
+                selected = GuideSelection(program: program, channel: channel)
+            } onLeaveGrid: {
+                refreshFocused = true
+            }.id(requestKey + "|\(includeSubchannels)")
+        } else {
+            List {
+                if isSearching {
+                    ForEach(Array(searchResults.enumerated()), id: \.offset) { _, result in
+                        programButton(result.program, channel: result.channel, showChannel: true)
+                    }
+                } else {
+                    ForEach(visibleGroups, id: \.channel.id) { group in
+                        Section(group.channel.name) {
+                            ForEach(visiblePrograms(group)) { program in
+                                programButton(program, channel: group.channel, showChannel: false)
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -112,6 +140,8 @@ struct ProgramGuideView: View {
     }
     @MainActor private func load() async {
         let expected = requestKey
+        // tvOSの詳細画面から戻るだけでは読み直さず、選択位置とスクロールを保つ。
+        guard loadedRequest != expected else { return }
         guide = ProgramGuideResponse()
         error = nil
         guard !address.isEmpty else { loading = false; return }
@@ -119,10 +149,14 @@ struct ProgramGuideView: View {
         defer { if expected == requestKey { loading = false } }
         do {
             let client = try RingonomiClient(address: address)
-            let end = Calendar.current.date(byAdding: .day, value: 1, to: day) ?? day.addingTimeInterval(86400)
+            let end = day.addingTimeInterval(86400)
             let result = try await client.programGuide(start: day, end: end, type: channelType)
             guard !Task.isCancelled, expected == requestKey else { return }
             guide = result
+            loadedRequest = expected
+#if DEBUG
+            print("RingonomiGuideReady: channels=\(result.channels.count)")
+#endif
         } catch {
             guard !Task.isCancelled, expected == requestKey else { return }
             self.error = "番組表を読み込めませんでした。\(error.localizedDescription)"
@@ -160,10 +194,22 @@ private struct GuideProgramDetail: View {
                     }
                     Button("閉じる") { dismiss() }
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(60)
-            }.navigationTitle("番組の詳細")
+            }
         }
     }
 }
 private func guideTime(_ date: Date?) -> String {
-    date?.formatted(.dateTime.hour().minute()) ?? "時刻未定"
+    guard let date else { return "時刻未定" }
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "ja_JP")
+    formatter.timeZone = TimeZone(identifier: "Asia/Tokyo")
+    formatter.dateFormat = "HH:mm"
+    return formatter.string(from: date)
+}
+private func guideDay(_ date: Date) -> String {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "ja_JP")
+    formatter.timeZone = TimeZone(identifier: "Asia/Tokyo")
+    formatter.dateFormat = "M月d日(E)"
+    return formatter.string(from: date)
 }

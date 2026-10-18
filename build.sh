@@ -17,13 +17,11 @@ export SWIFTPM_MODULECACHE_OVERRIDE="$cache_root/swift"
 mkdir -p "$tmp_root" "$cache_root/clang" "$cache_root/swift" "$cache_root/SourcePackages" Logs
 
 [ -d "$DEVELOPER_DIR" ] || { echo "Xcode developer directory not found: $DEVELOPER_DIR" >&2; exit 1; }
-if [ ! -d RingonomiTV.xcodeproj ]; then
-    xcodegen_command="${XCODEGEN:-xcodegen}"
-    if [ "$xcodegen_command" = "xcodegen" ] && [ -x Tools/xcodegen/bin/xcodegen ]; then
-        xcodegen_command="Tools/xcodegen/bin/xcodegen"
-    fi
-    "$xcodegen_command" generate
+xcodegen_command="${XCODEGEN:-xcodegen}"
+if [ "$xcodegen_command" = "xcodegen" ] && [ -x Tools/xcodegen/bin/xcodegen ]; then
+    xcodegen_command="Tools/xcodegen/bin/xcodegen"
 fi
+"$xcodegen_command" generate --use-cache --cache-path "$cache_root/xcodegen-cache"
 
 # Public builds default to unsigned output. Set CODE_SIGNING_ALLOWED=YES and
 # configure a development team in Xcode for a device build.

@@ -24,6 +24,7 @@ struct Playback: Identifiable {
 struct LibraryView: View {
     @AppStorage("serverAddress") private var address = ""
     @AppStorage("quality") private var quality = "720p"
+    @AppStorage("guideSubchannels") private var guideSubchannels = false
     @State private var channels: [Channel] = []
     @State private var recordings: [Recording] = []
     @State private var error: String?
@@ -94,6 +95,7 @@ struct LibraryView: View {
                 Picker("画質", selection: $quality) {
                     ForEach(["1080p", "720p", "540p", "360p"], id: \.self) { Text($0) }
                 }
+                Toggle("番組表に副チャンネルを表示", isOn: $guideSubchannels)
                 Button("接続して読み込む") { Task { await refresh() } }.disabled(loading)
                 Text("Apple TVのIPではなく、視聴サーバーのURLを入力してください。")
                 if loading { ProgressView() }
@@ -102,7 +104,12 @@ struct LibraryView: View {
         }
         .task {
             if effectiveAddress.isEmpty { selectedTab = 3 }
-            else { await refresh() }
+            else {
+                await refresh()
+#if DEBUG
+                if ProcessInfo.processInfo.arguments.contains("--show-guide") { selectedTab = 2 }
+#endif
+            }
         }
         .fullScreenCover(item: $playback) { item in PlaybackView(item: item) }
         .alert("接続エラー", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {

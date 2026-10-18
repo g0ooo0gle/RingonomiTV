@@ -18,13 +18,11 @@ export TMPDIR="$tmp_root"
 mkdir -p "$cache_root/SourcePackages" "$tmp_root" Logs
 
 [ -d "$DEVELOPER_DIR" ] || { echo "Xcode developer directory not found: $DEVELOPER_DIR" >&2; exit 1; }
-if [ ! -d RingonomiTV.xcodeproj ]; then
-    xcodegen_command="${XCODEGEN:-xcodegen}"
-    if [ "$xcodegen_command" = "xcodegen" ] && [ -x Tools/xcodegen/bin/xcodegen ]; then
-        xcodegen_command="Tools/xcodegen/bin/xcodegen"
-    fi
-    "$xcodegen_command" generate
+xcodegen_command="${XCODEGEN:-xcodegen}"
+if [ "$xcodegen_command" = "xcodegen" ] && [ -x Tools/xcodegen/bin/xcodegen ]; then
+    xcodegen_command="Tools/xcodegen/bin/xcodegen"
 fi
+"$xcodegen_command" generate --use-cache --cache-path "$cache_root/xcodegen-cache"
 
 "$DEVELOPER_DIR/usr/bin/xcodebuild" -project RingonomiTV.xcodeproj -scheme RingonomiTV \
   -configuration Debug -sdk appletvos -destination "id=$device_id" \
