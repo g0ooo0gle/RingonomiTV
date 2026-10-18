@@ -808,15 +808,42 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
     }
 
     private func canFinishAtEndWithPendingPosition() -> Bool {
+        let requested = pendingPositionSeconds
+        let actual = rawPlaybackSeconds
+        let normalizedPosition = Double(player.position)
+        let remaining = rawRemainingSeconds
+        let displayedPictures = player.media.map { max(0, Int($0.statistics.displayedPictures)) } ?? 0
+#if DEBUG
+        print("RingonomiFileEndCheck: requested=\(requested ?? -1) rawActual=\(actual ?? -1) position=\(normalizedPosition) remaining=\(remaining ?? -1) state=\(player.state.rawValue) pictures=\(displayedPictures) generationMatch=\(pendingPositionGeneration == generation) applied=\(pendingPositionApplied)")
+#endif
         guard pendingPositionGeneration == generation,
               pendingPositionApplied,
-              let requested = pendingPositionSeconds,
-              let duration = validDuration(durationSeconds ?? durationHint),
-              let actual = rawPlaybackSeconds else { return false }
-        let tolerance = positionTolerance(for: requested, duration: duration)
-        return abs(duration - requested) <= tolerance
-            && abs(duration - actual) <= tolerance
-            && abs(actual - requested) <= tolerance
+              let requested else { return false }
+
+        if let duration = validDuration(durationSeconds ?? durationHint) {
+            let tolerance = positionTolerance(for: requested, duration: duration)
+            if abs(duration - requested) <= tolerance,
+               let actual,
+               abs(duration - actual) <= tolerance,
+               abs(actual - requested) <= tolerance {
+                return true
+            }
+        }
+
+        // At the end of an HTTP MPEG-TS seek, VLC 3.0.17 can report ended and
+        // normalized position 1 before its cached VLCTime catches up. Accept
+        // that narrow case only with a completed-recording hint and decoded
+        // output evidence; unknown/growing files and frame-less EOF remain
+        // failures.
+        guard player.state == .ended,
+              let completedDuration = validDuration(durationHint),
+              normalizedPosition >= 1,
+              let remaining,
+              remaining.isFinite,
+              abs(remaining) <= 0.05,
+              displayedPictures > 0 else { return false }
+        let completedTolerance = positionTolerance(for: requested, duration: completedDuration)
+        return abs(completedDuration - requested) <= completedTolerance
     }
 
     private func refreshDurationAndSeekability() {
@@ -845,7 +872,10 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         updateContinuousDisplayNeed()
         reportProgress(force: true)
 #if DEBUG
-        print("RingonomiFileEnded: time=\(currentSeconds) duration=\(durationSeconds ?? -1)")
+        let rawActual = rawPlaybackSeconds ?? -1
+        let remaining = rawRemainingSeconds ?? -1
+        let displayedPictures = player.media.map { max(0, Int($0.statistics.displayedPictures)) } ?? 0
+        print("RingonomiFileEnded: time=\(currentSeconds) duration=\(durationSeconds ?? -1) rawActual=\(rawActual) position=\(player.position) remaining=\(remaining) state=\(player.state.rawValue) pictures=\(displayedPictures)")
 #endif
     }
 
