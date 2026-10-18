@@ -16,6 +16,7 @@ enum PlaybackControlFocus: String, Hashable {
     case audio
     case quality
     case close
+    case panelClose
     case retry
 }
 
@@ -122,7 +123,7 @@ struct PlaybackTopControls: View {
             }
 
             Button("閉じる", action: close)
-                .focused($focus, equals: .close)
+                .focused($focus, equals: .panelClose)
         }
         .frame(maxWidth: .infinity)
         .focusSection()

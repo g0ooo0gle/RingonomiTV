@@ -158,20 +158,24 @@ struct PlaybackView: View {
             if isRecording {
                 NativeRecordingVideo(url: streamURL, controller: recordingController)
                     .ignoresSafeArea()
-                    .focusable(surfaceIsFocusable, interactions: .activate)
-                    .focusEffectDisabled()
-                    .focused($playbackFocus, equals: .surface)
-                    .onMoveCommand { handleMoveCommand($0) }
-                    .onTapGesture { revealBottomPanel() }
             } else {
                 VLCVideo(url: streamURL, controller: controller)
                     .ignoresSafeArea()
-                    .focusable(surfaceIsFocusable, interactions: .activate)
-                    .focusEffectDisabled()
-                    .focused($playbackFocus, equals: .surface)
-                    .onMoveCommand { handleMoveCommand($0) }
-                    .onTapGesture { revealBottomPanel() }
             }
+            // Keep focus effects and remote input away from the native video
+            // layer. Returning from a panel must not refocus AVPlayer/VLC views.
+            Color.clear
+                .contentShape(Rectangle())
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .ignoresSafeArea()
+                .focusable(surfaceIsFocusable, interactions: .activate)
+                .focusEffectDisabled()
+                .focused($playbackFocus, equals: .surface)
+                .allowsHitTesting(surfaceIsFocusable)
+                .onMoveCommand { handleMoveCommand($0) }
+                .onTapGesture { revealBottomPanel() }
+                .accessibilityLabel("再生メニュー")
+                .accessibilityHidden(!surfaceIsFocusable)
             if isRecording, recordingCommentsEnabled {
                 PlaybackCommentOverlay(comments: commentStore.comments,
                                         clock: { recordingController.currentSeconds },
@@ -216,17 +220,24 @@ struct PlaybackView: View {
                     }
                 }.padding(60).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            if let visiblePanel {
-                if visiblePanel == .top {
-                    topPanel
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                } else {
-                    bottomPanel
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
-            } else if let maintenanceError {
+            // Preserve the controls' identity while handing focus back to the
+            // remote surface. Removing a focused panel during a transition can
+            // leave tvOS updating focus against a disappearing view hierarchy.
+            topPanel
+                .offset(y: visiblePanel == .top || reduceMotion ? 0 : -320)
+                .opacity(visiblePanel == .top ? 1 : 0)
+                .disabled(visiblePanel != .top || isLoading || failure != nil)
+                .allowsHitTesting(visiblePanel == .top)
+                .accessibilityHidden(visiblePanel != .top)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            bottomPanel
+                .offset(y: visiblePanel == .bottom || reduceMotion ? 0 : 320)
+                .opacity(visiblePanel == .bottom ? 1 : 0)
+                .disabled(visiblePanel != .bottom || isLoading || failure != nil)
+                .allowsHitTesting(visiblePanel == .bottom)
+                .accessibilityHidden(visiblePanel != .bottom)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            if visiblePanel == nil, let maintenanceError {
                 Text(maintenanceError)
                     .font(.caption)
                     .foregroundStyle(.orange)
@@ -537,7 +548,7 @@ struct PlaybackView: View {
         switch panel {
         case .top:
             switch focus {
-            case .captions, .comments, .quality, .close:
+            case .captions, .comments, .quality, .panelClose:
                 return true
             case .audio:
                 return audioOptions.count > 1
