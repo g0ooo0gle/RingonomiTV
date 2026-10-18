@@ -48,6 +48,9 @@ struct PlaybackView: View {
     @State private var session = UUID().uuidString
     @State private var maintenanceError: String?
     @State private var hasStarted = false
+    @AppStorage("recordingCommentsEnabled") private var recordingCommentsEnabled = false
+    @State private var commentReload = 0
+    @StateObject private var commentStore = RecordingCommentStore()
     init(item: Playback, resumeStore: RecordingResumeStore) {
         self.item = item
         self.resumeStore = resumeStore
@@ -84,7 +87,10 @@ struct PlaybackView: View {
             if !hasStarted, item.savedPosition == nil { beginPlayback(at: 0) }
         }
         .onExitCommand { close() }
-        .onDisappear { flushPosition() }
+        .onDisappear {
+            flushPosition()
+            commentStore.cancel()
+        }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { flushPosition() }
         }
@@ -123,6 +129,14 @@ struct PlaybackView: View {
             } else {
                 VLCVideo(url: streamURL, controller: controller).ignoresSafeArea()
             }
+            if isRecording, recordingCommentsEnabled {
+                RecordingCommentOverlay(comments: commentStore.comments,
+                                        clock: { recordingController.currentSeconds },
+                                        videoRect: recordingController.videoRect,
+                                        isPaused: recordingController.isPaused,
+                                        isVisible: !isLoading && failure == nil)
+                    .ignoresSafeArea()
+            }
             if isLoading || failure != nil {
                 Color.black.ignoresSafeArea()
                 VStack(spacing: 24) {
@@ -144,6 +158,9 @@ struct PlaybackView: View {
                 if item.recordingID != nil { Text(recordingController.playbackTime).font(.caption).monospacedDigit() }
                 if let maintenanceError { Text(maintenanceError).font(.caption) }
                 if let audioSelectionError { Text(audioSelectionError).font(.caption).foregroundStyle(.orange) }
+                if isRecording, recordingCommentsEnabled, let status = commentStore.status {
+                    Text(status).font(.caption)
+                }
             }.padding(40).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .allowsHitTesting(false)
 #else
@@ -161,6 +178,15 @@ struct PlaybackView: View {
                         RecordingChapterControls(client: item.client, recordingID: recordingID,
                                                  fileID: item.recordedFileID, controller: recordingController)
                     }
+                    Menu(recordingCommentsEnabled ? "実況：表示" : "実況：非表示") {
+                        Button(recordingCommentsEnabled ? "実況を非表示にする" : "実況を表示する") {
+                            recordingCommentsEnabled.toggle()
+                        }
+                        if recordingCommentsEnabled {
+                            Button("過去ログを再取得") { commentReload += 1 }
+                                .disabled(commentStore.loading)
+                        }
+                    }.accessibilityLabel("録画の実況を設定")
                 }
                 if audioOptions.count > 1 {
                     Menu("音声") {
@@ -192,6 +218,15 @@ struct PlaybackView: View {
         .onPlayPauseCommand {
             if isRecording { recordingController.togglePause() } else { controller.togglePause() }
         }
+        .task(id: CommentRequestID(server: item.client.baseURL, recordingID: item.recordingID,
+                                   enabled: recordingCommentsEnabled, reload: commentReload)) {
+            guard let recordingID = item.recordingID else { return }
+            if recordingCommentsEnabled {
+                await commentStore.load(client: item.client, recordingID: recordingID)
+            } else {
+                commentStore.disable()
+            }
+        }
         .task(id: streamURL) {
             guard let recordingID = item.recordingID else { return }
             let currentSession = session
@@ -214,4 +249,11 @@ struct PlaybackView: View {
         }
 #endif
     }
+}
+
+private struct CommentRequestID: Hashable {
+    let server: URL
+    let recordingID: Int?
+    let enabled: Bool
+    let reload: Int
 }

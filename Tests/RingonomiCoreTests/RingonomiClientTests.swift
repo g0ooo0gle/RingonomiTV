@@ -20,7 +20,7 @@ final class RingonomiClientTests: XCTestCase {
         let url = client.recordingURL(id: 12, session: "a&b", quality: "720p")
         XCTAssertEqual(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first?.value, "a&b")
     }
-    func testRecordingUsesVideoIDAndSharesSessionAcrossPlaylistAndHeartbeat() throws {
+    func testRecordingUsesProgramIDAndSharesSessionAcrossPlaylistAndHeartbeat() throws {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         let data = Data(#"{"id":7,"title":"録画","description":"番組","is_free":true,"recorded_video":{"id":42,"duration":75.5}}"#.utf8)
@@ -30,10 +30,10 @@ final class RingonomiClientTests: XCTestCase {
         XCTAssertEqual(recording.recordedVideo.duration, 75.5)
         let client = try RingonomiClient(address: "https://localhost/proxy/")
         let session = "test&session=1"
-        let playlist = client.recordingURL(id: recording.recordedVideo.id, session: session, quality: "540p")
-        let heartbeat = client.recordingKeepAliveURL(id: recording.recordedVideo.id, session: session, quality: "540p")
-        XCTAssertEqual(playlist.path, "/proxy/api/streams/video/42/540p/playlist")
-        XCTAssertEqual(heartbeat.path, "/proxy/api/streams/video/42/540p/keep-alive")
+        let playlist = client.recordingURL(id: recording.playbackID, session: session, quality: "540p")
+        let heartbeat = client.recordingKeepAliveURL(id: recording.playbackID, session: session, quality: "540p")
+        XCTAssertEqual(playlist.path, "/proxy/api/streams/video/7/540p/playlist")
+        XCTAssertEqual(heartbeat.path, "/proxy/api/streams/video/7/540p/keep-alive")
         for url in [playlist, heartbeat] {
             XCTAssertEqual(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems, [URLQueryItem(name: "session_id", value: session)])
         }

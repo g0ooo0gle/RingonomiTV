@@ -505,6 +505,8 @@ final class RecordingPlaybackController: ObservableObject {
         seek(to: safeTime() + seconds)
     }
     var currentSeconds: Double { isLoading ? targetSeconds : safeTime() }
+    var videoRect: CGRect { videoLayer?.videoRect ?? .zero }
+    var isPaused: Bool { wantsPause }
 
     func seek(to seconds: Double) {
         guard !isLoading, failure == nil, seconds.isFinite else { return }
