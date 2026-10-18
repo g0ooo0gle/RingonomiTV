@@ -50,6 +50,10 @@ struct PlaybackView: View {
     @State private var hasStarted = false
     @AppStorage("recordingCaptionsEnabled") private var recordingCaptionsEnabled = true
     @AppStorage("recordingCommentsEnabled") private var recordingCommentsEnabled = false
+    @AppStorage("liveCommentsEnabled") private var liveCommentsEnabled = false
+    @AppStorage("liveCommentDelay") private var liveCommentDelay = 2.0
+    @State private var liveCommentReload = 0
+    @StateObject private var liveCommentStore = LiveCommentStore()
     @State private var commentReload = 0
     @StateObject private var commentStore = RecordingCommentStore()
     init(item: Playback, resumeStore: RecordingResumeStore) {
@@ -57,6 +61,7 @@ struct PlaybackView: View {
         self.resumeStore = resumeStore
         _quality = State(initialValue: item.initialQuality)
     }
+    private var commentDelay: Double { liveCommentDelay.isFinite ? min(10, max(0, liveCommentDelay)) : 2 }
     private var streamURL: URL { item.url(quality: quality, session: session) }
 #if canImport(TVVLCKit)
     @StateObject private var controller = PlaybackController()
@@ -91,6 +96,7 @@ struct PlaybackView: View {
         .onDisappear {
             flushPosition()
             commentStore.cancel()
+            liveCommentStore.cancel()
         }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { flushPosition() }
@@ -131,11 +137,19 @@ struct PlaybackView: View {
                 VLCVideo(url: streamURL, controller: controller).ignoresSafeArea()
             }
             if isRecording, recordingCommentsEnabled {
-                RecordingCommentOverlay(comments: commentStore.comments,
+                PlaybackCommentOverlay(comments: commentStore.comments,
                                         clock: { recordingController.currentSeconds },
                                         videoRect: recordingController.videoRect,
                                         isPaused: recordingController.isPaused,
-                                        isVisible: !isLoading && failure == nil)
+                                        isVisible: !isLoading && failure == nil, topReservedSpace: 480)
+                    .ignoresSafeArea()
+            }
+            if !isRecording, liveCommentsEnabled {
+                PlaybackCommentOverlay(comments: liveCommentStore.comments,
+                                       clock: { liveCommentStore.currentSeconds },
+                                       videoRect: controller.videoRect,
+                                       isPaused: controller.isPaused || isLoading,
+                                       isVisible: !isLoading && failure == nil)
                     .ignoresSafeArea()
             }
             if isRecording, recordingCaptionsEnabled {
@@ -168,6 +182,9 @@ struct PlaybackView: View {
                 if isRecording, recordingCaptionsEnabled {
                     RecordingCaptionStatus(controller: recordingController.captions)
                 }
+                if !isRecording, liveCommentsEnabled, let status = liveCommentStore.status {
+                    Text(status).font(.caption)
+                }
                 if isRecording, recordingCommentsEnabled, let status = commentStore.status {
                     Text(status).font(.caption)
                 }
@@ -193,6 +210,23 @@ struct PlaybackView: View {
                    alignment: item.recordingID != nil ? .top : .bottom)
         }
 #if canImport(TVVLCKit)
+        .task(id: LiveCommentRequestID(channel: item.channelID, enabled: liveCommentsEnabled,
+                                      active: scenePhase == .active && failure == nil, reload: liveCommentReload)) {
+            guard !isRecording, let channel = item.channelID else {
+                liveCommentStore.disable()
+                return
+            }
+            guard liveCommentsEnabled, scenePhase == .active, failure == nil else {
+                liveCommentStore.disable()
+                return
+            }
+            updateLiveCommentClock()
+            await liveCommentStore.run(client: item.client, channelID: channel)
+        }
+        .onChange(of: isLoading) { _, _ in updateLiveCommentClock() }
+        .onChange(of: controller.isPaused) { _, _ in updateLiveCommentClock() }
+        .onChange(of: failure) { _, _ in updateLiveCommentClock() }
+        .onChange(of: liveCommentDelay) { _, _ in updateLiveCommentClock() }
         .task(id: recordingCaptionsEnabled) {
             recordingController.captions.setEnabled(recordingCaptionsEnabled)
         }
@@ -231,6 +265,11 @@ struct PlaybackView: View {
 #endif
     }
 #if canImport(TVVLCKit)
+    private func updateLiveCommentClock() {
+        liveCommentStore.updatePlaybackState(playing: !isRecording && !isLoading && failure == nil && !controller.isPaused,
+                                             delay: commentDelay)
+    }
+
     private var recordingTransportControls: some View {
         HStack(spacing: 24) {
             Button("10秒戻る") { recordingController.seek(seconds: -10) }
@@ -264,6 +303,23 @@ struct PlaybackView: View {
                     }
                 }.accessibilityLabel("録画の実況を設定")
             }
+            if !isRecording {
+                Menu(liveCommentsEnabled ? "実況：表示" : "実況：非表示") {
+                    Button(liveCommentsEnabled ? "実況を非表示にする" : "実況を表示する") {
+                        liveCommentsEnabled.toggle()
+                    }
+                    if liveCommentsEnabled {
+                        Menu("表示の遅延：\(Int(commentDelay))秒") {
+                            ForEach([0, 1, 2, 3, 5, 10], id: \.self) { value in
+                                Button(value == Int(commentDelay) ? "✓ \(value)秒" : "\(value)秒") {
+                                    liveCommentDelay = Double(value)
+                                }
+                            }
+                        }
+                        Button("実況に再接続") { liveCommentReload += 1 }
+                    }
+                }.accessibilityLabel("ライブの実況を設定")
+            }
             if audioOptions.count > 1 {
                 Menu("音声") {
                     ForEach(audioOptions) { option in
@@ -292,6 +348,13 @@ struct PlaybackView: View {
         .focusSection()
     }
 #endif
+}
+
+private struct LiveCommentRequestID: Hashable {
+    let channel: String?
+    let enabled: Bool
+    let active: Bool
+    let reload: Int
 }
 
 private struct CommentRequestID: Hashable {

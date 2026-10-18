@@ -21,6 +21,10 @@ They do not imply endorsement or affiliation.
 - Keyword-search genre labels follow KonomiTV's
   [ProgramUtils.ts](https://github.com/tsukumijima/KonomiTV/blob/0a32188274b81c1e7bed642474b208bd2a543a6b/client/src/utils/ProgramUtils.ts).
 
+- Live-comment control messages and the Nico-compatible NX-Jikkyo receive
+  handshake follow KonomiTV's
+  [LiveCommentManager.ts](https://github.com/tsukumijima/KonomiTV/blob/0a32188274b81c1e7bed642474b208bd2a543a6b/client/src/services/player/managers/LiveCommentManager.ts).
+
 ## TVVLCKit / VLCKit
 
 - Source: https://code.videolan.org/videolan/VLCKit/

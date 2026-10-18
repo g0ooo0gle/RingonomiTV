@@ -22,7 +22,23 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
     // actor while SwiftUI is dismantling the representable.  Teardown must
     // not publish into that invalidating graph.
     private var isStopped = false
-    private var wantsPause = false
+    @Published private var wantsPause = false
+    var isPaused: Bool { wantsPause }
+    private weak var videoSurface: UIView?
+    var videoRect: CGRect {
+        guard let bounds = videoSurface?.bounds else { return .zero }
+        let size = player.videoSize
+        guard size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0 else { return bounds }
+        let scale = min(bounds.width / size.width, bounds.height / size.height)
+        return CGRect(x: (bounds.width - size.width * scale) / 2,
+                      y: (bounds.height - size.height * scale) / 2,
+                      width: size.width * scale, height: size.height * scale)
+    }
+
+    func attachSurface(_ view: UIView) {
+        videoSurface = view
+        player.drawable = view
+    }
     private var gate = PlaybackReadinessGate()
     private var monitor: Task<Void, Never>?
     private var waitingSince = Date()
@@ -120,6 +136,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         player.audio?.isMuted = true
         player.stop()
         player.drawable = nil
+        videoSurface = nil
     }
     nonisolated func mediaPlayerStateChanged(_ notification: Notification) {
         Task { @MainActor [weak self] in self?.updateStatus() }
@@ -491,7 +508,7 @@ struct VLCVideo: UIViewRepresentable {
     func makeUIView(context: Context) -> UIView {
         let view = UIView()
         view.backgroundColor = .black
-        controller.player.drawable = view
+        controller.attachSurface(view)
         controller.load(url)
         return view
     }

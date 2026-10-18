@@ -2,21 +2,24 @@ import SwiftUI
 import UIKit
 import RingonomiCore
 
-/// Renders recorded-program comments over the video without taking focus from
+/// Renders playback comments over the video without taking focus from
 /// the transport controls.
 ///
 /// The timeline owns admission, lane assignment, collision avoidance, and
 /// thinning.  This view only rebuilds that immutable layout when its inputs or
 /// the viewport change, then asks it for the small set of frames visible at
 /// the current playback position.
-struct RecordingCommentOverlay: View {
+struct PlaybackCommentOverlay: View {
     let comments: [PlaybackComment]
     let clock: () -> Double
     let videoRect: CGRect
     let isPaused: Bool
     let isVisible: Bool
 
-    @State private var timeline: RecordedCommentTimeline?
+    var topReservedSpace = 280.0
+    var bottomReservedSpace = 160.0
+
+    @State private var layout: CommentLayout?
     @State private var metricCache: [MetricCacheKey: PlaybackCommentMetric] = [:]
     @State private var activeGeneration = UUID()
 
@@ -34,7 +37,7 @@ struct RecordingCommentOverlay: View {
                 .frame(width: rect.width, height: rect.height)
                 .clipped()
                 .position(x: rect.midX, y: rect.midY)
-                .task(id: LayoutInput(viewportSize: rect.size, comments: comments)) {
+                .task(id: LayoutInput(viewportSize: rect.size, comments: comments, top: topReservedSpace, bottom: bottomReservedSpace)) {
                     do {
                         try await rebuildTimeline(for: rect.size, comments: comments)
                     } catch is CancellationError {
@@ -64,13 +67,13 @@ struct RecordingCommentOverlay: View {
            size.height.isFinite,
            size.width > 0,
            size.height > 0,
-           let timeline {
+           let layout {
             TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: isPaused)) { _ in
                 Canvas { context, canvasSize in
                     draw(
                         context: &context,
                         canvasSize: canvasSize,
-                        timeline: timeline
+                        layout: layout
                     )
                 }
                 .allowsHitTesting(false)
@@ -97,12 +100,12 @@ struct RecordingCommentOverlay: View {
               size.height > 0,
               comments.count <= 100_000 else {
             guard !Task.isCancelled, activeGeneration == generation else { return }
-            timeline = nil
+            layout = nil
             return
         }
 
         let scale = max(0.1, size.height / 1080.0)
-        var nextMetricCache = metricCache
+        var nextMetricCache: [MetricCacheKey: PlaybackCommentMetric] = [:]
         var fontCache: [Int: UIFont] = [:]
         var metrics: [PlaybackCommentMetric] = []
         metrics.reserveCapacity(comments.count)
@@ -128,8 +131,8 @@ struct RecordingCommentOverlay: View {
         try Task.checkCancellation()
 
         // The title can occupy two lines above status and playback time.
-        let topInset = 280.0 * scale
-        let bottomInset = 160.0 * scale
+        let topInset = topReservedSpace * scale
+        let bottomInset = bottomReservedSpace * scale
 
         let nextTimeline = RecordedCommentTimeline(
             comments: comments,
@@ -146,11 +149,8 @@ struct RecordingCommentOverlay: View {
         // Publish the completed local result once.  In particular, do not
         // mutate @State once per comment while UIKit performs measurement.
         metricCache = nextMetricCache
-        timeline = nextTimeline
+        layout = CommentLayout(timeline: nextTimeline, comments: comments)
 
-#if DEBUG
-        debugState.didLogFirstVisible = false
-#endif
     }
 
     @MainActor
@@ -166,7 +166,8 @@ struct RecordingCommentOverlay: View {
             pointSize: Int((pointSize * 100).rounded())
         )
 
-        if let cached = metricCache[key] {
+        if let cached = metricCache[key] ?? self.metricCache[key] {
+            metricCache[key] = cached
             return cached
         }
 
@@ -206,7 +207,7 @@ struct RecordingCommentOverlay: View {
     private func draw(
         context: inout GraphicsContext,
         canvasSize: CGSize,
-        timeline: RecordedCommentTimeline
+        layout: CommentLayout
     ) {
         guard canvasSize.width.isFinite,
               canvasSize.height.isFinite,
@@ -216,12 +217,12 @@ struct RecordingCommentOverlay: View {
         let currentTime = clock()
         guard currentTime.isFinite, currentTime >= 0 else { return }
 
-        let frames = timeline.visible(at: currentTime)
+        let frames = layout.timeline.visible(at: currentTime)
         debugLogIfNeeded(frameCount: frames.count)
 
         for frame in frames {
             guard frame.commentIndex >= 0,
-                  frame.commentIndex < comments.count,
+                  frame.commentIndex < layout.comments.count,
                   frame.x.isFinite,
                   frame.y.isFinite,
                   frame.width.isFinite,
@@ -231,7 +232,7 @@ struct RecordingCommentOverlay: View {
                 continue
             }
 
-            let comment = comments[frame.commentIndex]
+            let comment = layout.comments[frame.commentIndex]
             guard !comment.text.isEmpty else { continue }
 
             let pointSize = basePointSize(for: comment.size) *
@@ -288,7 +289,7 @@ struct RecordingCommentOverlay: View {
 #if DEBUG
         guard frameCount > 0, !debugState.didLogFirstVisible else { return }
         debugState.didLogFirstVisible = true
-        print("RingonomiRecordingCommentsVisible count=\(min(frameCount, 16))")
+        print("RingonomiPlaybackCommentsVisible count=\(min(frameCount, 16))")
 #else
         _ = frameCount
 #endif
@@ -302,6 +303,13 @@ private struct MetricCacheKey: Hashable {
 
 private struct LayoutInput: Equatable {
     let viewportSize: CGSize
+    let comments: [PlaybackComment]
+    let top: Double
+    let bottom: Double
+}
+
+private struct CommentLayout {
+    let timeline: RecordedCommentTimeline
     let comments: [PlaybackComment]
 }
 
