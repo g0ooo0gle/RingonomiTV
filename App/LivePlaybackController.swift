@@ -74,6 +74,11 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
     private var audioBaselineDecoded = 0
     private var audioBaselinePlayed = 0
     private var audioNeedsFreshBuffers = true
+    // A native statistics read can be unavailable while the player is being
+    // replaced or while VLC is still opening/buffering. Keep the previous
+    // baseline in that case, then establish a new baseline from the first
+    // valid sample before waiting for a subsequent audio counter advance.
+    private var audioBaselinePending = false
     private var audioRecoveryPending = false
     private var audioRecoveryRawID: Int32?
     private struct PendingAudioSelection {
@@ -316,6 +321,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         audioBaselineDecoded = 0
         audioBaselinePlayed = 0
         audioNeedsFreshBuffers = true
+        audioBaselinePending = false
         audioRecoveryPending = false
         audioRecoveryRawID = nil
         pendingAudioSelection = nil
@@ -337,6 +343,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         audioBaselineDecoded = 0
         audioBaselinePlayed = 0
         audioNeedsFreshBuffers = false
+        audioBaselinePending = false
         audioRecoveryPending = false
         audioRecoveryRawID = nil
         pendingAudioSelection = nil
@@ -349,16 +356,57 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         lastPreferredAudioAttemptID = nil
     }
 
-    private var currentAudioStatistics: (decoded: Int, played: Int) {
-        guard let media = player.media else { return (0, 0) }
+    private struct NativePlaybackStatistics {
+        let displayedPictures: Int
+        let decodedAudio: Int
+        let playedAudioBuffers: Int
+    }
+
+    private var currentNativeStatistics: NativePlaybackStatistics? {
+        switch player.state {
+        case .buffering, .playing, .paused:
+            break
+        default:
+            return nil
+        }
+        guard let media = player.media, player.hasVideoOut else { return nil }
+        let size = player.videoSize
+        guard size.width.isFinite, size.height.isFinite,
+              size.width > 0, size.height > 0 else { return nil }
+
         let stats = media.statistics
-        return (Int(stats.decodedAudio), Int(stats.playedAudioBuffers))
+        let pictures = Int(stats.displayedPictures)
+        let decodedAudio = Int(stats.decodedAudio)
+        let playedAudioBuffers = Int(stats.playedAudioBuffers)
+        guard pictures >= 0, pictures < 100_000_000,
+              decodedAudio >= 0, playedAudioBuffers >= 0 else { return nil }
+        // A zero picture count after an established video stream is the
+        // default/unavailable value seen during native teardown. Do not let
+        // it overwrite the last trusted counter or make the gate advance.
+        guard pictures > 0 || lastPictures == 0 else { return nil }
+        return NativePlaybackStatistics(
+            displayedPictures: pictures,
+            decodedAudio: decodedAudio,
+            playedAudioBuffers: playedAudioBuffers
+        )
+    }
+
+    private var currentAudioStatistics: (decoded: Int, played: Int)? {
+        guard let stats = currentNativeStatistics,
+              stats.decodedAudio > 0 || stats.playedAudioBuffers > 0 else {
+            return nil
+        }
+        return (stats.decodedAudio, stats.playedAudioBuffers)
     }
 
     private func captureAudioBaseline() {
-        let stats = currentAudioStatistics
-        audioBaselineDecoded = stats.decoded
-        audioBaselinePlayed = stats.played
+        if let stats = currentAudioStatistics {
+            audioBaselineDecoded = stats.decoded
+            audioBaselinePlayed = stats.played
+            audioBaselinePending = false
+        } else {
+            audioBaselinePending = true
+        }
         audioNeedsFreshBuffers = true
         gate.reset()
     }
@@ -480,11 +528,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         let actualRawID = currentRawAudioTrackID
         audioRecoveryRawID = pending.previousRawID
         audioRecoveryPending = actualRawID != pending.previousRawID
-        let stats = currentAudioStatistics
-        audioBaselineDecoded = stats.decoded
-        audioBaselinePlayed = stats.played
-        audioNeedsFreshBuffers = true
-        gate.reset()
+        captureAudioBaseline()
         selectedAudioID = pending.previousID
         if wantsPause, !isLoading {
             isLoading = false
@@ -628,22 +672,31 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         }
         refreshAudioTracks()
         if isLoading { player.audio?.isMuted = true }
-        let valid = player.hasVideoOut && player.videoSize.width > 0 && player.time.intValue > 0
-        if valid, let media = player.media {
-            let stats = media.statistics
-            let pictures = Int(stats.displayedPictures)
+        if player.time.intValue > 0, let stats = currentNativeStatistics {
+            let pictures = stats.displayedPictures
             if pictures > lastPictures { lastFrameDate = Date() }
             lastPictures = pictures
-            let decodedAudio = Int(stats.decodedAudio)
-            let playedAudioBuffers = Int(stats.playedAudioBuffers)
-            // VLC may reset decoder statistics when replacing a track.
-            // A counter from the old decoder must not become an unreachable
-            // threshold for the new one.
-            if decodedAudio < audioBaselineDecoded { audioBaselineDecoded = 0 }
-            if playedAudioBuffers < audioBaselinePlayed { audioBaselinePlayed = 0 }
-            let audioProgressed = audioNeedsFreshBuffers
+            let decodedAudio = stats.decodedAudio
+            let playedAudioBuffers = stats.playedAudioBuffers
+            let hasAudioCounters = decodedAudio > 0 || playedAudioBuffers > 0
+            if !hasAudioCounters {
+                // Keep the old baseline. A zero pair can be the native
+                // default while opening/tearing down, not an audio ACK.
+                audioBaselinePending = true
+            } else if audioBaselinePending
+                        || decodedAudio < audioBaselineDecoded
+                        || playedAudioBuffers < audioBaselinePlayed {
+                // The first valid sample after an unavailable read, or after
+                // a decoder counter rollback, establishes the new baseline.
+                // It must not itself satisfy the fresh-buffer requirement.
+                audioBaselineDecoded = decodedAudio
+                audioBaselinePlayed = playedAudioBuffers
+                audioBaselinePending = false
+                audioNeedsFreshBuffers = true
+            }
+            let audioProgressed = !audioBaselinePending && (audioNeedsFreshBuffers
                 ? decodedAudio > audioBaselineDecoded && playedAudioBuffers > audioBaselinePlayed
-                : decodedAudio > 0 && playedAudioBuffers > 0
+                : decodedAudio > 0 && playedAudioBuffers > 0)
             let ready = gate.update(hasVideo: true, pictures: pictures,
                                     audioReady: player.numberOfAudioTracks > 0 && pendingAudioSelection == nil
                                         && !audioRecoveryPending && audioProgressed)
@@ -669,6 +722,9 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
             }
 #endif
         } else {
+            // Keep timeout monitoring alive, but do not turn an unavailable
+            // native statistics read into a new zero baseline.
+            audioBaselinePending = true
             gate.reset()
         }
         // Losing the video output entirely must close the gate as well as a
@@ -681,7 +737,15 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         let size = player.videoSize
         if failure != nil { status = "再生できません" }
         else if isLoading { status = "読み込み中…" }
-        else { status = "\(wantsPause ? "一時停止" : "再生中") · \(Int(size.width))×\(Int(size.height))" }
+        else {
+            let playbackStatus = wantsPause ? "一時停止" : "再生中"
+            if let width = Int(exactly: Double(size.width)),
+               let height = Int(exactly: Double(size.height)), width > 0, height > 0 {
+                status = "\(playbackStatus) · \(width)×\(height)"
+            } else {
+                status = playbackStatus
+            }
+        }
     }
 
     private func fail(_ message: String) {
