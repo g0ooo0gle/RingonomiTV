@@ -1,0 +1,48 @@
+name: RingonomiTV
+options:
+  deploymentTarget:
+    tvOS: '17.0'
+packages:
+  RingonomiCore:
+    path: .
+targets:
+  RingonomiTV:
+    type: application
+    platform: tvOS
+    sources: [App]
+    info:
+      path: App/Info.plist
+      properties:
+        NSLocalNetworkUsageDescription: 設定した視聴サーバーから番組情報と映像を取得します。
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+    dependencies:
+      - package: RingonomiCore
+      - framework: Vendor/TVVLCKit-binary/TVVLCKit.xcframework
+        embed: true
+        codeSign: true
+      - sdk: CoreText.framework
+      - sdk: AVFoundation.framework
+      - sdk: AudioToolbox.framework
+      - sdk: OpenGLES.framework
+      - sdk: VideoToolbox.framework
+      - sdk: CoreMedia.framework
+      - sdk: libc++.tbd
+      - sdk: libxml2.tbd
+      - sdk: libz.tbd
+      - sdk: libbz2.tbd
+      - sdk: libiconv.tbd
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.ringonomitv.tv
+        SWIFT_VERSION: '6.0'
+        TARGETED_DEVICE_FAMILY: '3'
+        CODE_SIGN_STYLE: Automatic
+        MARKETING_VERSION: '0.1.0'
+        CURRENT_PROJECT_VERSION: '1'
+        INFOPLIST_KEY_CFBundleDisplayName: りんごのみTV
+schemes:
+  RingonomiTV:
+    build:
+      targets:
+        RingonomiTV: all

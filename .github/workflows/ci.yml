@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  core:
+    runs-on: macos-15
+    env:
+      RINGONOMITV_CACHE_ROOT: ${{ runner.temp }}/ringonomitv-cache
+      RINGONOMITV_BUILD_TMPDIR: ${{ runner.temp }}/ringonomitv-tmp
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '16.4'
+
+      - name: Run Swift tests
+        run: ./test.sh
+
+      - name: Run contract smoke check
+        run: xcrun swift run --package-path . --scratch-path .build --cache-path "$RINGONOMITV_CACHE_ROOT/swiftpm" RingonomiContractCheck
