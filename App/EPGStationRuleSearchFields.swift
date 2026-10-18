@@ -435,8 +435,8 @@ struct EPGStationRuleTimeSelection: View {
                 object["start"] = .integer(start)
                 object["range"] = draft.range.map(RawJSONValue.integer) ?? .null
             } else {
-                object["start"] = .null
-                object["range"] = .null
+                object.removeValue(forKey: "start")
+                object.removeValue(forKey: "range")
             }
             values[index] = .object(object)
         } else {
@@ -445,8 +445,8 @@ struct EPGStationRuleTimeSelection: View {
                 object["start"] = .integer(start)
                 object["range"] = draft.range.map(RawJSONValue.integer) ?? .null
             } else {
-                object["start"] = .null
-                object["range"] = .null
+                object.removeValue(forKey: "start")
+                object.removeValue(forKey: "range")
             }
             values.append(.object(object))
         }

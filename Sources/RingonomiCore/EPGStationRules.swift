@@ -97,7 +97,7 @@ public extension EPGStationRuleOptions {
     /// newer server are ignored.
     func matchesServerReadback(_ actual: EPGStationRuleOptions) -> Bool {
         EPGStationRuleReadbackComparison.matches(
-            requested: rawValues,
+            requested: EPGStationRulePayloadNormalization.normalizedOptions(rawValues),
             actual: actual.rawValues
         )
     }
@@ -379,7 +379,7 @@ public extension EPGStationClient {
             throw EPGStationError.invalidRequest
         }
         var body: [String: RawJSONValue] = [
-            "option": .object(searchValues),
+            "option": .object(EPGStationRulePayloadNormalization.normalizedSearchValues(searchValues)),
             "isHalfWidth": .bool(isHalfWidth)
         ]
         if let limit { body["limit"] = .integer(limit) }
@@ -441,7 +441,8 @@ private extension EPGStationClient {
 private enum EPGStationRuleEncoder {
     static func data(for options: EPGStationRuleOptions) throws -> Data {
         do {
-            return try JSONEncoder().encode(options)
+            let values = EPGStationRulePayloadNormalization.normalizedOptions(options.rawValues)
+            return try JSONEncoder().encode(values)
         } catch {
             throw EPGStationWriteError.invalidRequest
         }
@@ -494,28 +495,131 @@ private enum EPGStationRuleValidationError: Error {
     case malformed
 }
 
-private enum EPGStationRuleReadbackComparison {
-    private static let searchBooleanKeys = [
+/// Removes explicit nulls for fields that EPGStation treats as optional
+/// properties. Unknown fields are left untouched so a newer server field is
+/// still round-tripped during a full rule update.
+private enum EPGStationRulePayloadNormalization {
+    fileprivate static let searchBooleanKeys = [
         "keyCS", "keyRegExp", "name", "description", "extended",
         "ignoreKeyCS", "ignoreKeyRegExp", "ignoreName", "ignoreDescription", "ignoreExtended",
         "GR", "BS", "CS", "SKY", "isFree"
     ]
-    private static let searchNullableKeys = [
+    fileprivate static let searchNullableKeys = [
         "keyword", "ignoreKeyword", "channelIds", "genres", "times",
         "durationMin", "durationMax", "searchPeriods"
     ]
+    fileprivate static let reserveNullableKeys = ["periodToAvoidDuplicate", "tags"]
+    fileprivate static let saveNullableKeys = ["parentDirectoryName", "directory", "recordedFormat"]
+    fileprivate static let encodeNullableKeys = [
+        "mode1", "encodeParentDirectoryName1", "directory1",
+        "mode2", "encodeParentDirectoryName2", "directory2",
+        "mode3", "encodeParentDirectoryName3", "directory3"
+    ]
+
+    static func normalizedOptions(_ values: [String: RawJSONValue]) -> [String: RawJSONValue] {
+        var normalized = values
+        if let search = object(normalized["searchOption"]) {
+            normalized["searchOption"] = .object(normalizedSearchValues(search))
+        }
+        if let reserve = object(normalized["reserveOption"]) {
+            normalized["reserveOption"] = .object(normalizedReserveValues(reserve))
+        }
+        normalizeOptionalObject(
+            in: &normalized,
+            key: "saveOption",
+            nullableKeys: saveNullableKeys
+        )
+        normalizeOptionalObject(
+            in: &normalized,
+            key: "encodeOption",
+            nullableKeys: encodeNullableKeys
+        )
+        return normalized
+    }
+
+    static func normalizedSearchValues(_ values: [String: RawJSONValue]) -> [String: RawJSONValue] {
+        var normalized = removeNulls(
+            from: values,
+            keys: searchBooleanKeys + searchNullableKeys
+        )
+        if let genres = normalized["genres"] {
+            normalized["genres"] = normalizeNestedOptional(
+                genres,
+                removing: "subGenre"
+            )
+        }
+        if let times = normalized["times"] {
+            normalized["times"] = normalizeNestedOptional(
+                times,
+                removing: "start",
+                "range"
+            )
+        }
+        return normalized
+    }
+
+    private static func normalizedReserveValues(_ values: [String: RawJSONValue]) -> [String: RawJSONValue] {
+        removeNulls(from: values, keys: reserveNullableKeys)
+    }
+
+    private static func normalizeOptionalObject(
+        in values: inout [String: RawJSONValue],
+        key: String,
+        nullableKeys: [String]
+    ) {
+        guard let value = values[key] else { return }
+        if isNull(value) {
+            values.removeValue(forKey: key)
+        } else if let object = object(value) {
+            values[key] = .object(removeNulls(from: object, keys: nullableKeys))
+        }
+    }
+
+    private static func normalizeNestedOptional(
+        _ value: RawJSONValue,
+        removing keys: String...
+    ) -> RawJSONValue {
+        guard case .array(let values) = value else { return value }
+        return .array(values.map { value in
+            guard case .object(let object) = value else { return value }
+            return .object(removeNulls(from: object, keys: keys))
+        })
+    }
+
+    private static func removeNulls(
+        from values: [String: RawJSONValue],
+        keys: [String]
+    ) -> [String: RawJSONValue] {
+        var result = values
+        for key in keys where isNull(result[key]) {
+            result.removeValue(forKey: key)
+        }
+        return result
+    }
+
+    private static func object(_ value: RawJSONValue?) -> [String: RawJSONValue]? {
+        guard let value, case .object(let object) = value else { return nil }
+        return object
+    }
+
+    private static func isNull(_ value: RawJSONValue?) -> Bool {
+        guard let value else { return false }
+        if case .null = value { return true }
+        return false
+    }
+}
+
+private enum EPGStationRuleReadbackComparison {
+    private static let searchBooleanKeys = EPGStationRulePayloadNormalization.searchBooleanKeys
+    private static let searchNullableKeys = EPGStationRulePayloadNormalization.searchNullableKeys
     private static let reserveBooleanDefaults: [String: Bool] = [
         "enable": false,
         "allowEndLack": true,
         "avoidDuplicate": false
     ]
-    private static let reserveNullableKeys = ["periodToAvoidDuplicate", "tags"]
-    private static let saveNullableKeys = ["parentDirectoryName", "directory", "recordedFormat"]
-    private static let encodeNullableKeys = [
-        "mode1", "encodeParentDirectoryName1", "directory1",
-        "mode2", "encodeParentDirectoryName2", "directory2",
-        "mode3", "encodeParentDirectoryName3", "directory3"
-    ]
+    private static let reserveNullableKeys = EPGStationRulePayloadNormalization.reserveNullableKeys
+    private static let saveNullableKeys = EPGStationRulePayloadNormalization.saveNullableKeys
+    private static let encodeNullableKeys = EPGStationRulePayloadNormalization.encodeNullableKeys
 
     static func matches(
         requested: [String: RawJSONValue],
@@ -644,7 +748,8 @@ private enum EPGStationRuleReadbackComparison {
         expected: RawJSONValue
     ) -> Bool {
         if isNull(expected) {
-            return actual == nil || actual.map(isNull) == true
+            guard let actual else { return false }
+            return isNull(actual)
         }
         guard let actual else { return false }
         if case .object(let expectedObject) = expected,

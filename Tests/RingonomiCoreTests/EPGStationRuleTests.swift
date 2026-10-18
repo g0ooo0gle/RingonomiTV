@@ -242,6 +242,172 @@ final class EPGStationRuleTests: XCTestCase {
         XCTAssertEqual(createBody["futureRuleField"] as? String, "preserve")
     }
 
+    func testRuleWriteOmitsKnownNullsAndPreservesUnknownNulls() async throws {
+        let recorder = RuleRequestRecorder()
+        RuleURLProtocol.handler = { request in
+            recorder.append(request)
+            return RuleURLProtocol.Stub(body: Data(#"{"ruleId":42}"#.utf8))
+        }
+        defer { RuleURLProtocol.handler = nil }
+
+        let options = EPGStationRuleOptions(rawValues: [
+            "isTimeSpecification": .bool(false),
+            "searchOption": .object([
+                "keyword": .null,
+                "ignoreKeyword": .null,
+                "keyCS": .null,
+                "channelIds": .null,
+                "genres": .array([
+                    .object([
+                        "genre": .integer(1),
+                        "subGenre": .null,
+                        "futureGenreField": .null
+                    ])
+                ]),
+                "times": .array([
+                    .object([
+                        "week": .integer(0x7F),
+                        "start": .null,
+                        "range": .null,
+                        "futureTimeField": .null
+                    ])
+                ]),
+                "isFree": .null,
+                "durationMin": .null,
+                "durationMax": .integer(30),
+                "searchPeriods": .null,
+                "futureSearchField": .null
+            ]),
+            "reserveOption": .object([
+                "enable": .bool(true),
+                "allowEndLack": .bool(true),
+                "avoidDuplicate": .bool(false),
+                "periodToAvoidDuplicate": .null,
+                "tags": .null,
+                "futureReserveField": .null
+            ]),
+            "saveOption": .object([
+                "parentDirectoryName": .null,
+                "directory": .null,
+                "recordedFormat": .null,
+                "futureSaveField": .null
+            ]),
+            "encodeOption": .object([
+                "mode1": .null,
+                "encodeParentDirectoryName1": .null,
+                "directory1": .null,
+                "isDeleteOriginalAfterEncode": .bool(false),
+                "futureEncodeField": .null
+            ]),
+            "futureRuleField": .null
+        ])
+
+        _ = try await client().createRule(options: options)
+        let request = try XCTUnwrap(recorder.all.first)
+        let body = try jsonBody(request)
+        let search = try XCTUnwrap(body["searchOption"] as? [String: Any])
+        XCTAssertNil(search["keyword"])
+        XCTAssertNil(search["keyCS"])
+        XCTAssertTrue(search["futureSearchField"] is NSNull)
+        let genres = try XCTUnwrap(search["genres"] as? [[String: Any]])
+        XCTAssertNil(genres.first?["subGenre"])
+        XCTAssertTrue(genres.first?["futureGenreField"] is NSNull)
+        let times = try XCTUnwrap(search["times"] as? [[String: Any]])
+        XCTAssertNil(times.first?["start"])
+        XCTAssertNil(times.first?["range"])
+        XCTAssertTrue(times.first?["futureTimeField"] is NSNull)
+
+        let reserve = try XCTUnwrap(body["reserveOption"] as? [String: Any])
+        XCTAssertNil(reserve["periodToAvoidDuplicate"])
+        XCTAssertNil(reserve["tags"])
+        XCTAssertTrue(reserve["futureReserveField"] is NSNull)
+        let save = try XCTUnwrap(body["saveOption"] as? [String: Any])
+        XCTAssertNil(save["parentDirectoryName"])
+        XCTAssertTrue(save["futureSaveField"] is NSNull)
+        let encode = try XCTUnwrap(body["encodeOption"] as? [String: Any])
+        XCTAssertNil(encode["mode1"])
+        XCTAssertEqual(encode["isDeleteOriginalAfterEncode"] as? Bool, false)
+        XCTAssertTrue(encode["futureEncodeField"] is NSNull)
+        XCTAssertTrue(body["futureRuleField"] is NSNull)
+    }
+
+    func testPreviewNormalizesKnownNullsAndReadbackComparisonUsesSameShape() async throws {
+        let recorder = RuleRequestRecorder()
+        RuleURLProtocol.handler = { request in
+            recorder.append(request)
+            return RuleURLProtocol.Stub(body: Data("[]".utf8))
+        }
+        defer { RuleURLProtocol.handler = nil }
+
+        let searchValues: [String: RawJSONValue] = [
+            "keyword": .null,
+            "name": .null,
+            "times": .array([
+                .object([
+                    "week": .integer(0x7F),
+                    "start": .null,
+                    "range": .null,
+                    "futureTimeField": .null
+                ])
+            ]),
+            "futureSearchField": .null
+        ]
+        _ = try await client().previewRule(searchValues: searchValues)
+        let body = try jsonBody(try XCTUnwrap(recorder.all.first))
+        let option = try XCTUnwrap(body["option"] as? [String: Any])
+        XCTAssertNil(option["keyword"])
+        XCTAssertNil(option["name"])
+        XCTAssertTrue(option["futureSearchField"] is NSNull)
+        let times = try XCTUnwrap(option["times"] as? [[String: Any]])
+        XCTAssertNil(times.first?["start"])
+        XCTAssertNil(times.first?["range"])
+        XCTAssertTrue(times.first?["futureTimeField"] is NSNull)
+
+        let requested = EPGStationRuleOptions(rawValues: [
+            "isTimeSpecification": .bool(false),
+            "searchOption": .object(searchValues),
+            "reserveOption": .object([
+                "enable": .bool(true),
+                "allowEndLack": .bool(true),
+                "avoidDuplicate": .bool(false)
+            ])
+        ])
+        let actual = EPGStationRuleOptions(rawValues: [
+            "isTimeSpecification": .bool(false),
+            "searchOption": .object([
+                "times": .array([
+                    .object([
+                        "week": .integer(0x7F),
+                        "futureTimeField": .null
+                    ])
+                ]),
+                "futureSearchField": .null
+            ]),
+            "reserveOption": .object([
+                "enable": .bool(true),
+                "allowEndLack": .bool(true),
+                "avoidDuplicate": .bool(false)
+            ])
+        ])
+        XCTAssertTrue(requested.matchesServerReadback(actual))
+
+        let droppedUnknown = EPGStationRuleOptions(rawValues: [
+            "isTimeSpecification": .bool(false),
+            "searchOption": .object([
+                "times": .array([
+                    .object(["week": .integer(0x7F)])
+                ]),
+                "futureSearchField": .null
+            ]),
+            "reserveOption": .object([
+                "enable": .bool(true),
+                "allowEndLack": .bool(true),
+                "avoidDuplicate": .bool(false)
+            ])
+        ])
+        XCTAssertFalse(droppedUnknown.matchesServerReadback(actual))
+    }
+
     func testRuleMutationAmbiguousBodiesFailAsOutcomeUnknown() async throws {
         let cases: [(name: String, body: Data, operation: Int)] = [
             ("post missing id", Data(#"{}"#.utf8), 0),
