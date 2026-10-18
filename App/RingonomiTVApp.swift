@@ -22,6 +22,7 @@ struct LibraryView: View {
     @State private var playback: Playback?
     @StateObject private var playbackIdleTimer = PlaybackIdleTimer()
     @State private var selectedTab = 0
+    @State private var settingsPath: [SettingsDestination] = []
     @StateObject private var reservations = ReservationStore()
     @StateObject private var keywords = KeywordReservationStore()
     @StateObject private var resumeStore = RecordingResumeStore()
@@ -80,7 +81,7 @@ struct LibraryView: View {
             ReservationListView(address: effectiveAddress, store: reservations, keywords: keywords)
                 .id(connectionKey)
                 .tabItem { Label("予約", systemImage: "record.circle") }.tag(3)
-            NavigationStack {
+            NavigationStack(path: $settingsPath) {
                 Form {
                     TextField("視聴サーバーURL（ポート番号を含む）", text: $draftAddress)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
@@ -106,11 +107,24 @@ struct LibraryView: View {
                         .disabled(reservations.saving || keywords.saving)
                 }
                 .navigationTitle("設定")
+                .navigationDestination(for: SettingsDestination.self) { destination in
+                    switch destination {
+                    case .mirakurun:
+                        MirakurunServiceView()
+                    }
+                }
             }
             .tabItem { Label("設定", systemImage: "gear") }.tag(4)
         }
         .onAppear {
             if !loadedAddressDraft { draftAddress = address; loadedAddressDraft = true }
+#if DEBUG
+            let arguments = ProcessInfo.processInfo.arguments
+            if arguments.contains("--show-mirakurun") || arguments.contains("--play-mirakurun-service") {
+                selectedTab = 4
+                settingsPath = [.mirakurun]
+            }
+#endif
         }
         .task(id: connectionKey) {
             channels = []
@@ -141,6 +155,13 @@ struct LibraryView: View {
                 }
 #endif
             }
+#if DEBUG
+            let arguments = ProcessInfo.processInfo.arguments
+            if arguments.contains("--show-mirakurun") || arguments.contains("--play-mirakurun-service") {
+                selectedTab = 4
+                settingsPath = [.mirakurun]
+            }
+#endif
         }
         .task(id: effectiveAddress) {
             await account.restore(address: effectiveAddress)
@@ -225,4 +246,8 @@ struct LibraryView: View {
 private struct ConnectionLoadKey: Hashable {
     let address: String
     let revision: Int
+}
+
+private enum SettingsDestination: Hashable {
+    case mirakurun
 }

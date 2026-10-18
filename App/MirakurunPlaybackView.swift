@@ -49,6 +49,10 @@ struct MirakurunPlaybackView: View {
     private var needsContinuousDisplay: Bool { false }
 #endif
 
+    private var isMenuVisible: Bool {
+        menuVisible && !isLoading && failure == nil
+    }
+
     var body: some View {
         ZStack {
 #if canImport(TVVLCKit)
@@ -56,11 +60,11 @@ struct MirakurunPlaybackView: View {
                 .ignoresSafeArea()
             surface
             controlsOverlay
-                .offset(y: menuVisible ? 0 : 320)
-                .opacity(menuVisible ? 1 : 0)
-                .disabled(!menuVisible || isLoading || failure != nil)
-                .allowsHitTesting(menuVisible && !isLoading && failure == nil)
-                .accessibilityHidden(!menuVisible || isLoading || failure != nil)
+                .offset(y: isMenuVisible ? 0 : 320)
+                .opacity(isMenuVisible ? 1 : 0)
+                .disabled(!isMenuVisible)
+                .allowsHitTesting(isMenuVisible)
+                .accessibilityHidden(!isMenuVisible)
                 .zIndex(1)
             if isLoading {
                 loadingOverlay
@@ -120,7 +124,7 @@ struct MirakurunPlaybackView: View {
             updateContinuousDisplay()
         }
         .onChange(of: controller.audioOptions) { _, options in
-            if menuVisible, options.count < 2, focus == .audio {
+            if isMenuVisible, options.count < 2, focus == .audio {
                 focus = .playPause
             }
         }
@@ -149,11 +153,11 @@ struct MirakurunPlaybackView: View {
             .contentShape(Rectangle())
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .ignoresSafeArea()
-            .focusable(!isLoading && failure == nil && !menuVisible, interactions: .activate)
+            .focusable(!isLoading && failure == nil && !isMenuVisible, interactions: .activate)
             .focusEffectDisabled()
             .focused($focus, equals: .surface)
-            .allowsHitTesting(!isLoading && failure == nil && !menuVisible)
-            .accessibilityHidden(isLoading || failure != nil || menuVisible)
+            .allowsHitTesting(!isLoading && failure == nil && !isMenuVisible)
+            .accessibilityHidden(isLoading || failure != nil || isMenuVisible)
             .accessibilityLabel("Mirakurun再生メニュー")
             .onMoveCommand { direction in
                 guard !isLoading, failure == nil else { return }
@@ -276,7 +280,7 @@ struct MirakurunPlaybackView: View {
     }
 
     private func handleExitCommand() {
-        if menuVisible {
+        if isMenuVisible {
             hideMenu()
         } else {
             close()

@@ -58,8 +58,36 @@ struct MirakurunServiceView: View {
     @State private var didPrepareDraft = false
     @State private var playback: MirakurunPlaybackSelection?
     @State private var inputError: String?
+#if DEBUG
+    @State private var debugPlaybackHandled = false
+#endif
     @StateObject private var store = MirakurunServiceStore()
     @StateObject private var playbackIdleTimer = PlaybackIdleTimer()
+
+    private var effectiveAddress: String {
+#if DEBUG
+        return runtimeAddress ?? address
+#else
+        return address
+#endif
+    }
+
+#if DEBUG
+    private var runtimeAddress: String? {
+        let arguments = ProcessInfo.processInfo.arguments
+        guard let index = arguments.firstIndex(of: "--mirakurun-url"),
+              index + 1 < arguments.count else { return nil }
+        let value = arguments[index + 1].trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+
+    private var debugServiceID: Int? {
+        let arguments = ProcessInfo.processInfo.arguments
+        guard let index = arguments.firstIndex(of: "--play-mirakurun-service"),
+              index + 1 < arguments.count else { return nil }
+        return Int(arguments[index + 1])
+    }
+#endif
 
     var body: some View {
         Form {
@@ -81,7 +109,7 @@ struct MirakurunServiceView: View {
             }
 
             Section("サービス") {
-                if address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if effectiveAddress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Text("接続先を入力して、サービスを読み込んでください。")
                         .foregroundStyle(.secondary)
                 } else if store.isLoading && store.services.isEmpty {
@@ -90,13 +118,13 @@ struct MirakurunServiceView: View {
                 } else if let error = store.error {
                     Text(error)
                         .foregroundStyle(.red)
-                    Button("再試行") { store.load(address: address) }
-                        .disabled(store.isLoading || address.isEmpty)
+                    Button("再試行") { store.load(address: effectiveAddress) }
+                        .disabled(store.isLoading || effectiveAddress.isEmpty)
                 } else if store.services.isEmpty {
                     Text("サービスがありません。接続先を確認して再読み込みしてください。")
                         .foregroundStyle(.secondary)
-                    Button("再読み込み") { store.load(address: address) }
-                        .disabled(store.isLoading || address.isEmpty)
+                    Button("再読み込み") { store.load(address: effectiveAddress) }
+                        .disabled(store.isLoading || effectiveAddress.isEmpty)
                 } else {
                     ForEach(store.services) { service in
                         Button {
@@ -125,13 +153,16 @@ struct MirakurunServiceView: View {
         .navigationTitle("Mirakurun直接視聴")
         .onAppear {
             if !didPrepareDraft {
-                draftAddress = address
+                draftAddress = effectiveAddress
                 didPrepareDraft = true
             }
-            if !address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            if !effectiveAddress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                store.services.isEmpty, !store.isLoading, store.error == nil {
-                store.load(address: address)
+                store.load(address: effectiveAddress)
             }
+#if DEBUG
+            openDebugServiceIfNeeded()
+#endif
         }
         .onDisappear {
             store.cancel()
@@ -147,10 +178,26 @@ struct MirakurunServiceView: View {
                 playbackIdleTimer.setNeedsContinuousDisplay(false)
             }
         }
+#if DEBUG
+        .onChange(of: store.services) { _, _ in
+            openDebugServiceIfNeeded()
+        }
+#endif
     }
 
     private func connect() {
         let next = draftAddress.trimmingCharacters(in: .whitespacesAndNewlines)
+#if DEBUG
+        if let runtimeAddress {
+            guard !runtimeAddress.isEmpty else {
+                inputError = "Mirakurunの接続先を指定してください。"
+                return
+            }
+            inputError = nil
+            store.load(address: runtimeAddress)
+            return
+        }
+#endif
         do {
             _ = try MirakurunClient(address: next)
             inputError = nil
@@ -163,7 +210,7 @@ struct MirakurunServiceView: View {
 
     private func open(_ service: MirakurunService) {
         do {
-            let client = try MirakurunClient(address: address)
+            let client = try MirakurunClient(address: effectiveAddress)
             inputError = nil
             playback = MirakurunPlaybackSelection(
                 url: client.streamURL(for: service),
@@ -173,6 +220,15 @@ struct MirakurunServiceView: View {
             inputError = error.localizedDescription
         }
     }
+
+#if DEBUG
+    private func openDebugServiceIfNeeded() {
+        guard !debugPlaybackHandled, let serviceID = debugServiceID,
+              let service = store.services.first(where: { $0.id == serviceID }) else { return }
+        debugPlaybackHandled = true
+        open(service)
+    }
+#endif
 
     private func displayName(for service: MirakurunService) -> String {
         let name = service.name.trimmingCharacters(in: .whitespacesAndNewlines)
