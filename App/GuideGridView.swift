@@ -73,6 +73,7 @@ struct GuideGridView: View {
 #if DEBUG
                 print("RingonomiGuideSelect: column=\(position.column) minute=\(position.minute)")
 #endif
+                hasFocus = false
                 onSelect(entry.program, layout.columns[position.column].channel)
             }
             .onExitCommand { hasFocus = false; onLeaveGrid() }
