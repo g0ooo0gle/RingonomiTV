@@ -108,6 +108,12 @@ struct EPGStationLivePlaybackView: View {
     }
 
     var body: some View {
+        playbackContent
+            .environment(\.colorScheme, .dark)
+            .tint(.cyan)
+    }
+
+    private var playbackContent: some View {
         ZStack {
 #if canImport(TVVLCKit)
             if let displayedURL {
@@ -168,8 +174,6 @@ struct EPGStationLivePlaybackView: View {
             }
         }
         .background(.black)
-        .environment(\.colorScheme, .dark)
-        .tint(.cyan)
         .onAppear {
             guard !hasAppeared else { return }
             hasAppeared = true
