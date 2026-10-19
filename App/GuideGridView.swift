@@ -79,14 +79,40 @@ struct GuideGridView: View {
             .onExitCommand { hasFocus = false; onLeaveGrid() }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(accessibilityLabel)
+            .accessibilityValue(accessibilityValue)
             .accessibilityHint("上下で番組、左右でチャンネルを選び、決定で詳細を開きます。")
+            .accessibilityIdentifier("guide.grid")
         }
     }
     private var accessibilityLabel: String {
         guard layout.columns.indices.contains(position.column), let entry = layout.focusedEntry(position) else {
             return "番組情報なし"
         }
-        return layout.columns[position.column].channel.name + "、" + entry.program.title + "、" + entry.program.description
+        let channel = layout.columns[position.column].channel
+        let channelName = channel.name.isEmpty ? channel.displayChannelId : channel.name
+        let title = entry.program.title.isEmpty ? "番組情報なし" : entry.program.title
+        return "\(channelName.isEmpty ? "チャンネル" : channelName)、\(title)"
+    }
+    private var accessibilityValue: String {
+        guard layout.columns.indices.contains(position.column), let entry = layout.focusedEntry(position) else {
+            return "放送時刻なし"
+        }
+        guard let start = accessibilityDate(entry.program.startDate),
+              let end = accessibilityDate(entry.program.endDate) else {
+            return "放送時刻不明"
+        }
+        return "放送時刻 \(start)〜\(end)"
+    }
+    private func accessibilityDate(_ date: Date?) -> String? {
+        guard let date, date.timeIntervalSinceReferenceDate.isFinite,
+              date >= .distantPast, date <= .distantFuture else { return nil }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "ja_JP")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = TimeZone(identifier: "Asia/Tokyo")
+        formatter.dateFormat = "M月d日 HH:mm"
+        let value = formatter.string(from: date)
+        return value.isEmpty ? nil : value
     }
     private func jumpToNow(viewport: CGSize, columnWidth: CGFloat) {
         let minute = min(1439, max(0, Date().timeIntervalSince(layout.baseDate) / 60))

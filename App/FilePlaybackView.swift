@@ -220,6 +220,11 @@ struct FilePlaybackView: View {
             setPanel(.bottom)
             playbackFocus = .playPause
         }
+        .onChange(of: controller.audioOptions) { _, options in
+            guard options.count < 2, panelIsVisible(.top),
+                  playbackFocus == .audio || playbackFocus == nil else { return }
+            playbackFocus = focusForPanel(.top)
+        }
         .onChange(of: visiblePanel) { _, panel in
 #if DEBUG
             print("RingonomiFilePanel: panel=\(String(describing: panel)) focus=\(String(describing: playbackFocus)) loading=\(controller.isLoading) failure=\(controller.failure != nil)")
@@ -286,15 +291,11 @@ struct FilePlaybackView: View {
                 Text(controller.status)
                     .font(.caption)
                 if controller.audioOptions.count > 1 {
-                    Menu("音声") {
-                        ForEach(controller.audioOptions) { option in
-                            Button(option.id == controller.selectedAudioID ? "✓ \(option.name)" : option.name) {
-                                controller.selectAudioTrack(id: option.id)
-                            }
-                        }
-                    }
+                    PlaybackAudioMenu(options: controller.audioOptions,
+                                      selectedID: controller.selectedAudioID,
+                                      isDisabled: controller.isLoading || controller.failure != nil,
+                                      onSelect: { controller.selectAudioTrack(id: $0) })
                     .focused($playbackFocus, equals: .audio)
-                    .disabled(controller.isLoading || controller.failure != nil)
                 }
                 Button("画面調整", action: openViewport)
                     .focused($playbackFocus, equals: .viewport)

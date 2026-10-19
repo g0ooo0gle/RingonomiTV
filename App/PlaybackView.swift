@@ -426,6 +426,18 @@ struct PlaybackView: View {
 #endif
         }
         .onChange(of: controller.isPaused) { _, _ in updateLiveCommentClock() }
+        .onChange(of: audioOptions) { _, options in
+            // A stream can lose an alternate track without starting a new load.
+            // Do not leave focus pointing at the audio menu that just vanished.
+            guard options.count < 2 else { return }
+            let audioLostFocus = playbackFocus == .audio
+                || (playbackFocus == nil && lastReadyPlaybackFocus == .audio)
+            if lastReadyPlaybackFocus == .audio {
+                lastReadyPlaybackFocus = isRecording ? .captions : .comments
+            }
+            guard audioLostFocus, panelIsVisible(.top), !isQualityOverlayPresented else { return }
+            playbackFocus = focusForPanel(.top)
+        }
         .onChange(of: failure) { _, failure in
             updateLiveCommentClock()
             if failure != nil {

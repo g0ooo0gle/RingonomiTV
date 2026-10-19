@@ -58,7 +58,9 @@ struct PlaybackTopControls: View {
                     }
                 }
                 .focused($focus, equals: .captions)
-                .accessibilityLabel("録画の字幕を設定")
+                .accessibilityLabel("録画の字幕")
+                .accessibilityValue(recordingCaptionsEnabled ? "表示" : "非表示")
+                .accessibilityIdentifier("playback.captions")
 
                 Menu(recordingCommentsEnabled ? "実況：表示" : "実況：非表示") {
                     Button(recordingCommentsEnabled ? "実況を非表示にする" : "実況を表示する") {
@@ -70,7 +72,9 @@ struct PlaybackTopControls: View {
                     }
                 }
                 .focused($focus, equals: .comments)
-                .accessibilityLabel("録画の実況を設定")
+                .accessibilityLabel("録画の実況")
+                .accessibilityValue(recordingCommentsEnabled ? "表示" : "非表示")
+                .accessibilityIdentifier("playback.comments")
             } else {
                 Menu(liveCommentsEnabled ? "実況：表示" : "実況：非表示") {
                     Button(liveCommentsEnabled ? "実況を非表示にする" : "実況を表示する") {
@@ -82,26 +86,29 @@ struct PlaybackTopControls: View {
                                 Button(value == Int(safeDelay) ? "✓ \(value)秒" : "\(value)秒") {
                                     liveCommentDelay = Double(value)
                                 }
+                                .accessibilityLabel("\(value)秒")
+                                .accessibilityValue(value == Int(safeDelay) ? "選択中" : "未選択")
+                                .accessibilityIdentifier("playback.commentDelay.\(value)")
                             }
                         }
+                        .accessibilityLabel("実況表示の遅延")
+                        .accessibilityValue("\(Int(safeDelay))秒")
+                        .accessibilityIdentifier("playback.commentDelay")
                         Button("実況に再接続") { liveCommentReload() }
                     }
                 }
                 .focused($focus, equals: .comments)
-                .accessibilityLabel("ライブの実況を設定")
+                .accessibilityLabel("ライブの実況")
+                .accessibilityValue(liveCommentsEnabled ? "表示" : "非表示")
+                .accessibilityIdentifier("playback.comments")
             }
 
             if audioOptions.count > 1 {
-                Menu("音声") {
-                    ForEach(audioOptions) { option in
-                        Button(option.id == selectedAudioID ? "✓ \(option.name)" : option.name) {
-                            selectAudio(option.id)
-                        }
-                    }
-                }
+                PlaybackAudioMenu(options: audioOptions,
+                                  selectedID: selectedAudioID,
+                                  isDisabled: isLoading || failure != nil,
+                                  onSelect: selectAudio)
                 .focused($focus, equals: .audio)
-                .disabled(isLoading || failure != nil)
-                .accessibilityLabel("音声を選択")
             }
 
             Button("画質：\(quality)") {
@@ -116,6 +123,9 @@ struct PlaybackTopControls: View {
             }
             .focused($focus, equals: .quality)
             .disabled(isLoading)
+            .accessibilityLabel("画質")
+            .accessibilityValue(quality)
+            .accessibilityIdentifier("playback.quality")
 
             Button("画面", action: openViewport)
                 .focused($focus, equals: .viewport)
@@ -179,7 +189,7 @@ struct QualityChoicesView: View {
                         Spacer()
                         if value == currentQuality {
                             Text("✓")
-                                .accessibilityLabel("現在の画質")
+                                .accessibilityHidden(true)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -187,6 +197,9 @@ struct QualityChoicesView: View {
                     .padding(.vertical, 14)
                 }
                 .focused($focusedTarget, equals: .option(value))
+                .accessibilityLabel("画質 \(value)")
+                .accessibilityValue(value == currentQuality ? "選択中" : "未選択")
+                .accessibilityIdentifier("playback.quality.\(value)")
             }
             Button("戻る", action: onClose)
                 .focused($focusedTarget, equals: .close)

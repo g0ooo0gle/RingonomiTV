@@ -141,7 +141,7 @@ struct MirakurunPlaybackView: View {
             updateContinuousDisplay()
         }
         .onChange(of: controller.audioOptions) { _, options in
-            if isMenuVisible, options.count < 2, focus == .audio {
+            if isMenuVisible, options.count < 2, focus == .audio || focus == nil {
                 focus = .playPause
             }
         }
@@ -234,16 +234,11 @@ struct MirakurunPlaybackView: View {
                 .focused($focus, equals: .playPause)
 
                 if controller.audioOptions.count > 1 {
-                    Menu("音声") {
-                        ForEach(controller.audioOptions) { option in
-                            Button(option.id == controller.selectedAudioID ? "✓ \(option.name)" : option.name) {
-                                controller.selectAudioTrack(id: option.id)
-                            }
-                        }
-                    }
+                    PlaybackAudioMenu(options: controller.audioOptions,
+                                      selectedID: controller.selectedAudioID,
+                                      isDisabled: isLoading || failure != nil,
+                                      onSelect: { controller.selectAudioTrack(id: $0) })
                     .focused($focus, equals: .audio)
-                    .disabled(isLoading || failure != nil)
-                    .accessibilityLabel("音声を選択")
                 }
 
                 Button("画面調整", action: openViewport)

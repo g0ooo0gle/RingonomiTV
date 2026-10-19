@@ -426,6 +426,8 @@ struct EPGStationLivePlaybackView: View {
                     .focused($focus, equals: .quality)
                     .disabled(effectiveLoading || effectiveFailure != nil)
                     .accessibilityLabel("画質を選択")
+                    .accessibilityValue(qualityAccessibilityValue)
+                    .accessibilityIdentifier("playback.quality")
                 }
 
                 Button("画面", action: openViewportPanel)
@@ -453,6 +455,11 @@ struct EPGStationLivePlaybackView: View {
     private var qualityButtonTitle: String {
         guard let selected = store.selectedQuality else { return "画質" }
         return "画質: \(selected.name)"
+    }
+
+    private var qualityAccessibilityValue: String {
+        guard let selected = store.selectedQuality else { return "未選択" }
+        return "現在選択中 \(selected.name)"
     }
 
     private var qualityPrompt: some View {
@@ -562,6 +569,10 @@ struct EPGStationLivePlaybackView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                             }
                             .focused($focus, equals: .qualityChoice(index))
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel("\(quality.name)、形式 \(quality.format.rawValue.uppercased())")
+                            .accessibilityValue(quality.id == store.selectedQuality?.id ? "現在選択中" : "未選択")
+                            .accessibilityIdentifier("playback.quality.\(index)")
                             .id(index)
                         }
                     }
