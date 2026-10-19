@@ -281,7 +281,7 @@ struct VideoViewportSettingsView: View {
                         .fill(focusedAction == action ? Color.white : Color.white.opacity(0.10))
                 )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(VideoViewportButtonStyle())
         .focusEffectDisabled()
         .focused($focusedAction, equals: action)
         .disabled(isDisabled)
@@ -301,5 +301,13 @@ struct VideoViewportSettingsView: View {
 
     private func close() {
         onClose()
+    }
+}
+
+/// The editor supplies its own focus colors and keeps every hit target fixed.
+private struct VideoViewportButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(configuration.isPressed ? 0.75 : 1)
     }
 }
