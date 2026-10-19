@@ -21,6 +21,7 @@ struct FilePlaybackSelection: Identifiable, Equatable {
     let durationHint: Double?
     let resumePosition: Double
     let identity: String?
+    let smbConnection: SMBConnection?
 
     init(
         id: UUID = UUID(),
@@ -28,7 +29,8 @@ struct FilePlaybackSelection: Identifiable, Equatable {
         title: String,
         durationHint: Double? = nil,
         resumePosition: Double = 0,
-        identity: String? = nil
+        identity: String? = nil,
+        smbConnection: SMBConnection? = nil
     ) {
         self.id = id
         self.url = url
@@ -36,6 +38,7 @@ struct FilePlaybackSelection: Identifiable, Equatable {
         self.durationHint = durationHint
         self.resumePosition = resumePosition
         self.identity = identity
+        self.smbConnection = smbConnection
     }
 }
 
@@ -49,6 +52,7 @@ struct FilePlaybackSelection: Identifiable, Equatable {
 @MainActor
 final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelegate {
     private(set) var player: VLCMediaPlayer
+    private var smbAuthentication: RNGSMBPlaybackAuthentication?
 
     @Published private(set) var status = "読み込み中…"
     @Published private(set) var isLoading = true
@@ -146,7 +150,9 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
 #if DEBUG
         if !isStopped { NSLog("RingonomiFileLifecycle: released-without-stop") }
 #endif
-        StoppedVLCPlayerRetirement(player, context: .file).releaseAfterCurrentTurn {}
+        smbAuthentication?.invalidate()
+        StoppedVLCPlayerRetirement(player, context: .file,
+            retainedResources: smbAuthentication.map { [$0] } ?? []).releaseAfterCurrentTurn {}
     }
 
     var canSeek: Bool {
@@ -395,6 +401,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         print("RingonomiFileLifecycle: stopped trusted=\(lastTrustedSeconds ?? -1) ended=\(lastTrustedEnded)")
 #endif
         isStopped = true
+        smbAuthentication?.invalidate()
         isSuspendedForBackground = false
         generation &+= 1
         endGate.reset()
@@ -539,11 +546,36 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         // Native release owns media cleanup. Scheduling an asynchronous
         // media detach immediately before release can stall VLC teardown.
 
-        let freshPlayer = VLCMediaPlayer()
+        let oldAuthentication = smbAuthentication
+        oldAuthentication?.invalidate()
+        let freshPlayer: VLCMediaPlayer
+        let freshAuthentication: RNGSMBPlaybackAuthentication?
+        do {
+            if let connection = selection?.smbConnection {
+                _ = try connection.relativePath(for: url)
+                let credentials = try SMBCredentialsKeychain().load(for: connection)
+                guard credentials?.domain.isEmpty != false else {
+                    throw SMBError.invalidConnection
+                }
+                freshPlayer = VLCMediaPlayer(options: ["--quiet", "--verbose=-1"])
+                freshPlayer.libraryInstance.loggers = nil
+                freshAuthentication = RNGSMBPlaybackAuthentication(
+                    library: freshPlayer.libraryInstance,
+                    username: credentials?.username, password: credentials?.password)
+                guard freshAuthentication != nil else { throw SMBError.invalidConnection }
+            } else {
+                freshPlayer = VLCMediaPlayer()
+                freshAuthentication = nil
+            }
+        } catch {
+            fail("共有を開けませんでした。接続設定とログイン情報を確認してください。")
+            return
+        }
         freshPlayer.delegate = self
         if let videoSurface { freshPlayer.drawable = videoSurface }
         freshPlayer.audio?.isMuted = true
         player = freshPlayer
+        smbAuthentication = freshAuthentication
         stopRequested = false
         freshPlayer.media = VLCMedia(url: url)
         freshPlayer.audio?.isMuted = true
@@ -551,12 +583,14 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
             pendingPositionStartedAt = Date()
         }
         freshPlayer.play()
-        retireStoppedPlayer(oldPlayer)
+        retireStoppedPlayer(oldPlayer, authentication: oldAuthentication)
     }
 
-    private func retireStoppedPlayer(_ oldPlayer: VLCMediaPlayer) {
+    private func retireStoppedPlayer(_ oldPlayer: VLCMediaPlayer,
+                                     authentication: RNGSMBPlaybackAuthentication? = nil) {
         isRetiringPlayer = true
-        let retirement = StoppedVLCPlayerRetirement(oldPlayer, context: .file)
+        let retirement = StoppedVLCPlayerRetirement(oldPlayer, context: .file,
+            retainedResources: authentication.map { [$0] } ?? [])
         // Start after this stack unwinds so its local references cannot make
         // the final native release fall back onto the main thread. VLC release
         // can wait for decoder callbacks that themselves need the main queue.
@@ -1298,6 +1332,11 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
 
     private func isSupported(_ url: URL) -> Bool {
         guard let scheme = url.scheme?.lowercased() else { return false }
+        if scheme == "smb" {
+            guard let connection = selection?.smbConnection,
+                  let path = try? connection.relativePath(for: url) else { return false }
+            return !path.isRoot
+        }
         return scheme == "http" || scheme == "https" || scheme == "file"
     }
 

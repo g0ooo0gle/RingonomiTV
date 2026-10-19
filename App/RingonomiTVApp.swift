@@ -117,6 +117,9 @@ struct LibraryView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                    Section("ファイルライブラリ") {
+                        NavigationLink("SMB共有の動画") { SMBPlaybackLibraryView() }
+                    }
                     AccountSettingsView(address: effectiveAddress, account: account)
                         .disabled(reservations.saving || keywords.saving)
                 }
@@ -135,6 +138,8 @@ struct LibraryView: View {
                         EPGStationRuleListView()
                     case .epgstationGuide:
                         EPGStationProgramGuideView()
+                    case .smb:
+                        SMBPlaybackLibraryView()
                     }
                 }
             }
@@ -144,6 +149,10 @@ struct LibraryView: View {
             if !loadedAddressDraft { draftAddress = address; loadedAddressDraft = true }
 #if DEBUG
             let arguments = ProcessInfo.processInfo.arguments
+            if arguments.contains("--show-smb") {
+                selectedTab = 4
+                settingsPath = [.smb]
+            }
             if arguments.contains("--show-mirakurun") || arguments.contains("--play-mirakurun-service") {
                 selectedTab = 4
                 settingsPath = [.mirakurun]
@@ -309,6 +318,7 @@ private struct ConnectionLoadKey: Hashable {
 }
 
 private enum SettingsDestination: Hashable {
+    case smb
     case mirakurun
     case mirakurunGuide
     case epgstation

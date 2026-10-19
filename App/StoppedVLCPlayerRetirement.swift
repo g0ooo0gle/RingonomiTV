@@ -21,11 +21,13 @@ final class StoppedVLCPlayerRetirement: @unchecked Sendable {
 
     private let context: Context
     private var player: VLCMediaPlayer?
+    private var retainedResources: [AnyObject]
     private var didScheduleRelease = false
 
-    init(_ player: VLCMediaPlayer, context: Context) {
+    init(_ player: VLCMediaPlayer, context: Context, retainedResources: [AnyObject] = []) {
         self.player = player
         self.context = context
+        self.retainedResources = retainedResources
     }
 
     func releaseAfterCurrentTurn(onRelease: @escaping @MainActor @Sendable () -> Void) {
@@ -47,6 +49,8 @@ final class StoppedVLCPlayerRetirement: @unchecked Sendable {
         NSLog("\(debugPrefix): release-begin")
 #endif
         player = nil
+        // Authentication providers must outlive the decoder's final callback.
+        retainedResources = []
 #if DEBUG
         NSLog("\(debugPrefix): release-returned")
 #endif
