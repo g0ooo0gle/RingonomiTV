@@ -22,6 +22,7 @@ struct LiveChannelLibraryView: View {
     @State private var showingSearch = false
     @State private var confirmingReset = false
     @State private var focusRestoreID: String?
+    @State private var restoreAfterRetry = false
     @FocusState private var focus: LiveChannelFocus?
 
     private enum LiveChannelFocus: Hashable {
@@ -89,7 +90,16 @@ struct LiveChannelLibraryView: View {
         }
         .onAppear { restoreFocusIfNeeded() }
         .onChange(of: loading) { _, isLoading in
-            if !isLoading { restoreFocusIfNeeded() }
+            if !isLoading {
+                if restoreAfterRetry {
+                    restoreAfterRetry = false
+                    if focus == nil || focus == .retry {
+                        if error != nil { focus = .retry }
+                        else { focus = visibleChannels.first.map { .watch(stableID($0)) } ?? .search }
+                    }
+                }
+                restoreFocusIfNeeded()
+            }
         }
         .onChange(of: visibleChannels.map(stableID)) { _, ids in
             restoreFocusAfterRemoval(visibleIDs: ids)
@@ -202,7 +212,7 @@ struct LiveChannelLibraryView: View {
                     .foregroundStyle(.red)
                     .lineLimit(2)
                 Spacer(minLength: 12)
-                Button("再試行", action: onRefresh)
+                Button("再試行", action: retry)
                     .focused($focus, equals: .retry)
                     .disabled(loading || !configured)
             }
@@ -228,7 +238,7 @@ struct LiveChannelLibraryView: View {
                 Text(error)
                     .foregroundStyle(.red)
                     .multilineTextAlignment(.center)
-                Button("再試行", action: onRefresh)
+                Button("再試行", action: retry)
                     .focused($focus, equals: .retry)
                     .disabled(loading || !configured)
             }
@@ -333,8 +343,7 @@ struct LiveChannelLibraryView: View {
     }
 
     private func stableID(_ channel: Channel) -> String {
-        let displayID = channel.displayChannelId.trimmingCharacters(in: .whitespacesAndNewlines)
-        return displayID.isEmpty ? channel.id : displayID
+        channel.displayChannelId
     }
 
     private func channelTitle(_ channel: Channel) -> String {
@@ -344,6 +353,11 @@ struct LiveChannelLibraryView: View {
 
     private func boundedSearch(_ value: String) -> String {
         String(value.trimmingCharacters(in: .whitespacesAndNewlines).prefix(256))
+    }
+
+    private func retry() {
+        restoreAfterRetry = true
+        onRefresh()
     }
 
     private func restoreFocusIfNeeded() {

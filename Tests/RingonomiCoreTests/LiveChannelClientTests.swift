@@ -180,4 +180,27 @@ final class LiveChannelClientTests: XCTestCase {
             XCTAssertEqual(error, .invalidResponse)
         }
     }
+
+    func testChannelsRejectsIdentifiersThatCannotBePlayedOrSaved() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [LiveChannelClientURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel(); LiveChannelClientURLProtocol.handler = nil }
+        let client = try RingonomiClient(address: "http://example.invalid/")
+        for identifier in ["", " gr011", "gr011 ", "gr/011", String(repeating: "a", count: 129)] {
+            let payload = try JSONSerialization.data(withJSONObject: ["GR": [[
+                "id": "sample", "display_channel_id": identifier, "name": "テスト",
+                "is_watchable": true, "is_display": true
+            ]]])
+            LiveChannelClientURLProtocol.handler = { _ in
+                LiveChannelClientURLProtocol.Stub(body: payload)
+            }
+            do {
+                _ = try await client.channels(using: session)
+                XCTFail("invalid display identifier must fail before playback or persistence")
+            } catch let error as ConnectionError {
+                XCTAssertEqual(error, .invalidResponse)
+            }
+        }
+    }
 }

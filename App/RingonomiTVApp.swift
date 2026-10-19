@@ -300,6 +300,7 @@ struct LibraryView: View {
     }
 
     private func applyConnection() {
+        error = nil
         do {
             let next = draftAddress.trimmingCharacters(in: .whitespacesAndNewlines)
             _ = try RingonomiClient(address: next)

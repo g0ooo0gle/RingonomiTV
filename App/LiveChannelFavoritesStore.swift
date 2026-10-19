@@ -99,6 +99,8 @@ final class LiveChannelFavoritesStore: ObservableObject {
             favoriteIDs = candidate.favoriteIDs(serverKey: serverKey)
             error = nil
             needsReset = false
+        } catch let failure as LiveChannelFavoritesError {
+            self.error = failure.errorDescription ?? "お気に入りを保存できませんでした。"
         } catch {
             // Keep the prior archive and favoriteIDs intact. A size or model
             // validation failure should still leave removal and retry usable.

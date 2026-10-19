@@ -368,6 +368,12 @@ public struct RingonomiClient: Sendable {
         for kind in ["GR", "BS", "CS", "CATV", "SKY", "BS4K"] {
             for channel in groups[kind] ?? [] {
                 guard channel.isWatchable && channel.isDisplay else { continue }
+                let identifier = channel.displayChannelId.utf8
+                guard !identifier.isEmpty, identifier.count <= 128,
+                      identifier.allSatisfy({ byte in
+                          (0x30...0x39).contains(byte) || (0x41...0x5A).contains(byte) ||
+                          (0x61...0x7A).contains(byte) || byte == 0x2D || byte == 0x5F
+                      }) else { throw ConnectionError.invalidResponse }
                 result.append(channel)
             }
         }
