@@ -519,6 +519,7 @@ struct SMBFolderView: View {
     @StateObject private var directory: SMBDirectoryStore
     @State private var currentPath: SMBRelativePath
     @State private var query = ""
+    @State private var showingSearch = false
     @State private var message: String?
     @State private var needsReload = true
 
@@ -577,8 +578,15 @@ struct SMBFolderView: View {
             }
         }
         .navigationTitle(title)
-        .searchable(text: $query, prompt: "このフォルダーを検索")
         .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    showingSearch = true
+                } label: {
+                    Label("検索", systemImage: "magnifyingglass")
+                }
+                .disabled(directory.loading)
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     togglePin()
@@ -593,6 +601,11 @@ struct SMBFolderView: View {
             ToolbarItem(placement: .automatic) {
                 Button("更新") { reload() }
                     .disabled(directory.loading)
+            }
+        }
+        .sheet(isPresented: $showingSearch) {
+            SMBFolderSearchForm(initialQuery: query) { value in
+                query = value.trimmingCharacters(in: .whitespacesAndNewlines)
             }
         }
         .overlay(alignment: .bottom) {
@@ -791,6 +804,50 @@ struct SMBFolderView: View {
         currentPath = newPath
         query = ""
         reload()
+    }
+}
+
+private struct SMBFolderSearchForm: View {
+    let initialQuery: String
+    let onSearch: (String) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var draft: String
+
+    init(initialQuery: String, onSearch: @escaping (String) -> Void) {
+        self.initialQuery = initialQuery
+        self.onSearch = onSearch
+        _draft = State(initialValue: initialQuery)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            Text("このフォルダー内を検索")
+                .font(.title2)
+                .bold()
+
+            TextField("ファイル名・フォルダー名", text: $draft)
+                .textFieldStyle(.roundedBorder)
+
+            HStack(spacing: 20) {
+                Button("検索") {
+                    onSearch(draft)
+                    dismiss()
+                }
+                Button("解除") {
+                    onSearch("")
+                    dismiss()
+                }
+                Button("キャンセル", role: .cancel) {
+                    dismiss()
+                }
+            }
+        }
+        .padding(40)
+        .frame(maxWidth: 720)
+        .onExitCommand {
+            dismiss()
+        }
     }
 }
 
