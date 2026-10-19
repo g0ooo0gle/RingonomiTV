@@ -187,7 +187,6 @@ struct SMBLibraryView: View {
 #if DEBUG
             .onAppear { prepareRuntimeConnection() }
 #endif
-        }
     }
 
 #if DEBUG
