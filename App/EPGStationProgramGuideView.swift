@@ -442,7 +442,7 @@ private struct EPGStationProgramGuideDetailView: View {
                     ))
                     .focusable()
                     Text(selection.sourceProgram.isFree ? "無料放送" : "有料放送")
-                        .foregroundStyle(selection.sourceProgram.isFree ? .secondary : .orange)
+                        .foregroundStyle(selection.sourceProgram.isFree ? Color.secondary : Color.orange)
                         .focusable()
                 }
                 if let description = selection.sourceProgram.description, !description.isEmpty {
