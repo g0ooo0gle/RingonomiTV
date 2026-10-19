@@ -116,9 +116,8 @@ public struct LiveCommentTransport: Sendable {
                 onEvent: onEvent
             )
         }, onCancel: {
-            // URLSessionWebSocketTask.receive() is not guaranteed to stop just
-            // because its surrounding Swift Task was cancelled.  Closing the
-            // actual sockets makes cancellation observable by both loops.
+            // Close both connections as well as resuming cancelled callback
+            // waits, so a superseded session cannot keep receiving frames.
             resources.cancelAll()
         })
     }
@@ -359,12 +358,7 @@ public struct LiveCommentTransport: Sendable {
             try await Task.sleep(for: .seconds(Self.commentPingInterval))
             try await withThrowingTaskGroup(of: Void.self) { group in
                 group.addTask {
-                    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                        socket.sendPing { error in
-                            if error != nil { continuation.resume(throwing: LiveCommentTransportError.connectionClosed) }
-                            else { continuation.resume() }
-                        }
-                    }
+                    try await self.sendPing(socket: socket)
                 }
                 group.addTask {
                     try await Task.sleep(for: .seconds(Self.commentPongTimeout))
@@ -374,8 +368,8 @@ public struct LiveCommentTransport: Sendable {
                     _ = try await group.next()
                     group.cancelAll()
                 } catch {
-                    // Cancelling the socket completes an outstanding ping's
-                    // handler, allowing the structured group to drain.
+                    // The cancellation-aware ping bridge also resumes if the
+                    // socket never invokes its outstanding callback.
                     resources.cancelAll()
                     group.cancelAll()
                     throw error
@@ -531,7 +525,26 @@ public struct LiveCommentTransport: Sendable {
         stream: LiveCommentTransportStream
     ) async throws -> Data {
         do {
-            let message = try await socket.receive()
+            let operation = SocketCallbackOperation<URLSessionWebSocketTask.Message>()
+            let message = try await withTaskCancellationHandler(operation: {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URLSessionWebSocketTask.Message, Error>) in
+                    guard operation.install(continuation) else {
+                        continuation.resume(throwing: CancellationError())
+                        return
+                    }
+                    socket.receive { result in
+                        switch result {
+                        case .success(let message):
+                            operation.succeed(message)
+                        case .failure:
+                            operation.fail(LiveCommentTransportError.connectionClosed)
+                        }
+                    }
+                }
+            }, onCancel: {
+                operation.cancel()
+                socket.cancel(with: .goingAway, reason: nil)
+            })
             switch message {
             case .data(let data):
                 return data
@@ -613,6 +626,28 @@ public struct LiveCommentTransport: Sendable {
         configuration.timeoutIntervalForResource = 0
         return URLSession(configuration: configuration)
     }
+
+    private func sendPing(socket: URLSessionWebSocketTask) async throws {
+        let operation = SocketCallbackOperation<Void>()
+        try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                guard operation.install(continuation) else {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                socket.sendPing { error in
+                    if error == nil {
+                        operation.succeed(())
+                    } else {
+                        operation.fail(LiveCommentTransportError.connectionClosed)
+                    }
+                }
+            }
+        }, onCancel: {
+            operation.cancel()
+            socket.cancel(with: .goingAway, reason: nil)
+        })
+    }
 }
 
 private actor WebSocketSender {
@@ -629,7 +664,72 @@ private actor WebSocketSender {
         guard let text = String(data: data, encoding: .utf8) else {
             throw LiveCommentTransportError.connectionClosed
         }
-        try await socket.send(.string(text))
+        let socket = self.socket
+        let operation = SocketCallbackOperation<Void>()
+        try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                guard operation.install(continuation) else {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                socket.send(.string(text)) { error in
+                    if error == nil {
+                        operation.succeed(())
+                    } else {
+                        operation.fail(LiveCommentTransportError.connectionClosed)
+                    }
+                }
+            }
+        }, onCancel: {
+            operation.cancel()
+            socket.cancel(with: .goingAway, reason: nil)
+        })
+    }
+}
+
+/// Bridges URLSession's callback APIs to async/await without leaving a
+/// continuation suspended when cancellation closes a WebSocket. URLSession
+/// may invoke the callback after cancellation, so completion is guarded and
+/// every path resumes at most once.
+final class SocketCallbackOperation<Value: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Value, Error>?
+    private var completed = false
+
+    func install(_ continuation: CheckedContinuation<Value, Error>) -> Bool {
+        lock.lock()
+        guard !completed else {
+            lock.unlock()
+            return false
+        }
+        self.continuation = continuation
+        lock.unlock()
+        return true
+    }
+
+    func succeed(_ value: Value) {
+        finish(.success(value))
+    }
+
+    func fail(_ error: Error) {
+        finish(.failure(error))
+    }
+
+    func cancel() {
+        finish(.failure(CancellationError()))
+    }
+
+    private func finish(_ result: Result<Value, Error>) {
+        lock.lock()
+        guard !completed else {
+            lock.unlock()
+            return
+        }
+        completed = true
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(with: result)
     }
 }
 
