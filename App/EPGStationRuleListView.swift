@@ -60,9 +60,11 @@ struct EPGStationRuleListView: View {
         }
         .navigationTitle("EPGStationキーワード予約")
         .toolbar {
-            Button("ルールを追加") { creation = .init(address: effectiveAddress, original: nil) }
-                .disabled(effectiveAddress.isEmpty || mutation.busy || mutation.pending != nil)
-            Button("更新", action: reload).disabled(effectiveAddress.isEmpty || store.loading)
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Button("ルールを追加") { creation = .init(address: effectiveAddress, original: nil) }
+                    .disabled(effectiveAddress.isEmpty || mutation.busy || mutation.pending != nil)
+                Button("更新", action: reload).disabled(effectiveAddress.isEmpty || store.loading)
+            }
         }
         .sheet(item: $creation, onDismiss: { restoreRowFocus = true; reload() }) { context in
             EPGStationRuleEditor(address: context.address, original: context.original) { offset = 0; selectedID = nil }

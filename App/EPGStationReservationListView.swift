@@ -129,12 +129,14 @@ struct EPGStationReservationListView: View {
         }
         .navigationTitle("EPGStation予約")
         .toolbar {
-            NavigationLink("キーワード予約") { EPGStationRuleListView() }
-            Button("予約を追加") {
-                creation = EPGStationReservationEditorConnection(address: effectiveAddress, original: nil)
-            }.disabled(effectiveAddress.isEmpty || mutation.busy || mutation.pending != nil)
-            Button("更新", action: reload)
-                .disabled(effectiveAddress.isEmpty || store.loading)
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                NavigationLink("キーワード予約") { EPGStationRuleListView() }
+                Button("予約を追加") {
+                    creation = EPGStationReservationEditorConnection(address: effectiveAddress, original: nil)
+                }.disabled(effectiveAddress.isEmpty || mutation.busy || mutation.pending != nil)
+                Button("更新", action: reload)
+                    .disabled(effectiveAddress.isEmpty || store.loading)
+            }
         }
         .sheet(item: $creation) { context in
             EPGStationReservationEditor(address: context.address, original: context.original) {
