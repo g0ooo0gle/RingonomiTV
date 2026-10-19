@@ -11,6 +11,7 @@ struct RingonomiTVApp: App {
     var body: some Scene { WindowGroup { LibraryView() } }
 }
 struct LibraryView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @AppStorage("serverAddress") private var address = ""
     @State private var draftAddress = ""
     @State private var loadedAddressDraft = false
@@ -18,6 +19,7 @@ struct LibraryView: View {
     @AppStorage("guideSubchannels") private var guideSubchannels = false
     @State private var channels: [Channel] = []
     @State private var error: String?
+    @State private var channelError: String?
     @State private var loading = false
     @State private var playback: Playback?
     @StateObject private var playbackIdleTimer = PlaybackIdleTimer()
@@ -27,6 +29,7 @@ struct LibraryView: View {
     @StateObject private var keywords = KeywordReservationStore()
     @StateObject private var resumeStore = RecordingResumeStore()
     @StateObject private var account = BackendAccountStore(storage: AccountKeychain())
+    @StateObject private var liveFavorites = LiveChannelFavoritesStore()
     @State private var loadGeneration = UUID()
 #if DEBUG
     @State private var launchArgumentsHandled = false
@@ -52,21 +55,18 @@ struct LibraryView: View {
     var body: some View {
         TabView(selection: $selectedTab) {
             NavigationStack {
-                List(channels) { channel in
-                    Button {
+                LiveChannelLibraryView(
+                    channels: channels, loading: loading, error: channelError,
+                    configured: !effectiveAddress.isEmpty, favorites: liveFavorites,
+                    onRefresh: { Task { await refresh() } },
+                    onPlay: { channel in
                         do {
                             let client = try RingonomiClient.connected(to: effectiveAddress)
                             playback = Playback(client: client, channelID: channel.displayChannelId, recordingID: nil, title: channel.name, initialQuality: quality)
                         } catch { self.error = error.localizedDescription }
-                    } label: {
-                        VStack(alignment: .leading) {
-                            Text(channel.name).font(.headline)
-                            Text(channel.programPresent?.title ?? "番組情報なし")
-                            Text(channel.programPresent?.description ?? "").font(.caption).lineLimit(2)
-                        }
                     }
-                }.navigationTitle("りんごのみTV · ライブ")
-                .toolbar { Button("更新") { Task { await refresh() } }.disabled(loading) }
+                )
+                .id(connectionKey)
             }.tabItem { Label("ライブ", systemImage: "tv") }.tag(0)
             RecordingLibraryView(address: effectiveAddress, resumeStore: resumeStore) { recording, client in
                 openRecording(recording, client: client)
@@ -95,6 +95,7 @@ struct LibraryView: View {
                     Text("Apple TVのIPではなく、視聴サーバーのURLを入力してください。")
                     if loading { ProgressView() }
                     if let error { Text(error).foregroundStyle(.red) }
+                    if let channelError { Text(channelError).foregroundStyle(.red) }
                     Section("Mirakurun") {
                         NavigationLink("Mirakurunの番組表") { MirakurunProgramGuideView() }
                         NavigationLink("Mirakurun直接視聴") {
@@ -181,6 +182,8 @@ struct LibraryView: View {
         }
         .task(id: connectionKey) {
             channels = []
+            channelError = nil
+            liveFavorites.configure(address: effectiveAddress)
             playback = nil
             reservations.invalidateConnection()
             keywords.invalidateConnection()
@@ -243,7 +246,14 @@ struct LibraryView: View {
             }
         }
         .onChange(of: playback?.id) { _, id in
-            if id == nil { playbackIdleTimer.setNeedsContinuousDisplay(false) }
+            if id == nil {
+                playbackIdleTimer.setNeedsContinuousDisplay(false)
+                // Refresh current-program labels after watching while the
+                // live library keeps its filters and selected channel.
+                if selectedTab == 0, scenePhase == .active, !loading {
+                    Task { await refresh() }
+                }
+            }
         }
         .alert("接続エラー", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
             Button("閉じる") { error = nil }
@@ -254,7 +264,7 @@ struct LibraryView: View {
         let requestedAddress = effectiveAddress
         loadGeneration = expected
         loading = true
-        error = nil
+        channelError = nil
         defer { if loadGeneration == expected { loading = false } }
         do {
             let client = try RingonomiClient.connected(to: requestedAddress)
@@ -284,7 +294,8 @@ struct LibraryView: View {
 #endif
         } catch {
             guard !Task.isCancelled, expected == loadGeneration, requestedAddress == effectiveAddress else { return }
-            self.error = error.localizedDescription
+            channelError = (error as? ConnectionError)?.errorDescription
+                ?? "チャンネルを読み込めませんでした。接続先を確認し、再試行してください。"
         }
     }
 

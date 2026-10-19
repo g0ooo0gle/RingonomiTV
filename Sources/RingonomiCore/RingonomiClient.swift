@@ -12,6 +12,10 @@ public struct Channel: Decodable, Identifiable, Sendable {
     public let isWatchable: Bool
     public let isDisplay: Bool
     public let programPresent: Program?
+    /// Optional metadata retained for local broadcast-family filtering. Older
+    /// channel responses may omit both fields.
+    public let type: String?
+    public let channelNumber: String?
 }
 /// Channel metadata embedded in a recorded-program response.
 ///
@@ -310,12 +314,61 @@ public struct RingonomiClient: Sendable {
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         return try decoder.decode(T.self, from: data)
     }
-    public func channels() async throws -> [Channel] {
-        let groups = try await fetch(["api", "channels"], as: [String: [Channel]].self)
+    public func channels(using urlSession: URLSession = .shared) async throws -> [Channel] {
+        var request = URLRequest(url: endpoint(["api", "channels"]))
+        request.timeoutInterval = 20
+        let responseData: (URLSession.AsyncBytes, URLResponse)
+        do {
+            responseData = try await backendBytes(for: request, using: urlSession)
+        } catch let error as ConnectionError where error == .http(0) {
+            // The shared transport uses HTTP 0 for a non-HTTP response. A
+            // channel list must report that as malformed data rather than a
+            // server status.
+            throw ConnectionError.invalidResponse
+        }
+        let bytes = responseData.0
+        let response = responseData.1
+        defer { bytes.task.cancel() }
+        guard let http = response as? HTTPURLResponse else {
+            throw ConnectionError.invalidResponse
+        }
+        guard http.statusCode == 200 else {
+            if (200..<300).contains(http.statusCode) {
+                throw ConnectionError.invalidResponse
+            }
+            throw ConnectionError.http(http.statusCode)
+        }
+
+        let maximumBytes = 4 * 1024 * 1024
+        guard response.expectedContentLength <= Int64(maximumBytes) || response.expectedContentLength < 0 else {
+            throw ConnectionError.invalidResponse
+        }
+        var data = Data()
+        data.reserveCapacity(Int(max(0, response.expectedContentLength)))
+        for try await byte in bytes {
+            guard data.count < maximumBytes else { throw ConnectionError.invalidResponse }
+            data.append(byte)
+        }
+        try Task.checkCancellation()
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let groups: [String: [Channel]]
+        do {
+            groups = try decoder.decode([String: [Channel]].self, from: data)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw ConnectionError.invalidResponse
+        }
+        let totalChannels = groups.values.reduce(into: 0) { total, group in
+            total += group.count
+        }
+        guard totalChannels <= 4096 else { throw ConnectionError.invalidResponse }
         var result: [Channel] = []
         for kind in ["GR", "BS", "CS", "CATV", "SKY", "BS4K"] {
             for channel in groups[kind] ?? [] {
-                if channel.isWatchable && channel.isDisplay { result.append(channel) }
+                guard channel.isWatchable && channel.isDisplay else { continue }
+                result.append(channel)
             }
         }
         return result
