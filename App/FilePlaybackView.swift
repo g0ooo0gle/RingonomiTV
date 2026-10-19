@@ -333,6 +333,11 @@ struct FilePlaybackView: View {
                     .font(.caption)
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
+                if !controller.canSeekRelative {
+                    Text("このファイルはシークに対応していません")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             bottomOperationRow

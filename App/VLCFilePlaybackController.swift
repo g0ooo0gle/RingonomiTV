@@ -159,10 +159,11 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         canSeekRelative && durationSeconds != nil
     }
 
-    /// A time-based jump does not need a duration. A proportional scrubber
-    /// still requires one, because its position would otherwise be a guess.
+    /// The SMB transport can report seekable even when its TS demuxer
+    /// cannot perform time-based seeks. Require a known duration there.
     var canSeekRelative: Bool {
         !isStopped && !isLoading && failure == nil && isSeekable
+            && (selection?.smbConnection == nil || durationSeconds != nil)
     }
 
     func attachSurface(_ view: UIView) {
@@ -468,7 +469,11 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         pendingLoadGeneration = generation
         pendingLoadURL = url
         let effectiveDuration = durationHint ?? durationSeconds
-        targetSeconds = clamp(position, duration: effectiveDuration) ?? 0
+        // Unknown-length SMB streams cannot reliably restore a timestamp.
+        // Restart them at the beginning after Retry or foreground return.
+        let canRestorePosition = selection?.smbConnection == nil || effectiveDuration != nil
+        targetSeconds = canRestorePosition
+            ? (clamp(position, duration: effectiveDuration) ?? 0) : 0
         pendingPositionSeconds = nil
         pendingPositionGeneration = generation
         pendingPositionApplied = false
@@ -563,12 +568,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
                 guard credentials?.domain.isEmpty != false else {
                     throw SMBError.invalidConnection
                 }
-                // SMB files have a stable byte range. Let the TS demuxer
-                // inspect PCR timestamps instead of opting into byte-percent
-                // seeking, which cannot supply a reliable time slider.
-                freshPlayer = VLCMediaPlayer(options: [
-                    "--quiet", "--verbose=-1", "--no-ts-seek-percent", "--ts-trust-pcr"
-                ])
+                freshPlayer = VLCMediaPlayer(options: ["--quiet", "--verbose=-1"])
                 freshPlayer.libraryInstance.loggers = nil
                 if let credentials {
                     // Supply credentials before opening the file so SMB does
