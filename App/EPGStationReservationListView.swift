@@ -244,19 +244,14 @@ private struct EPGStationReservationDetailView: View {
             if store.loading {
                 ProgressView("予約の詳細を読み込んでいます…")
                 Button("読み込みを中止") { store.cancel() }
-                    .onExitCommand(perform: goBack)
             } else if let error = store.error {
                 Text(error).foregroundStyle(.red)
                 Button("再試行", action: reload)
-                    .onExitCommand(perform: goBack)
                 Button("一覧に戻る", action: goBack)
-                    .onExitCommand(perform: goBack)
             } else if store.cancelled {
                 Text("読み込みを中止しました。")
                 Button("再試行", action: reload)
-                    .onExitCommand(perform: goBack)
                 Button("一覧に戻る", action: goBack)
-                    .onExitCommand(perform: goBack)
             } else if let item = store.item {
                 Section {
                     VStack(alignment: .leading, spacing: 16) {
@@ -268,16 +263,15 @@ private struct EPGStationReservationDetailView: View {
                     }
                     .focusable()
                     .accessibilityElement(children: .combine)
-                    .onExitCommand(perform: goBack)
                 }
                 if let description = item.description, !description.isEmpty {
                     Section("番組の内容") {
-                        Text(description).focusable().onExitCommand(perform: goBack)
+                        Text(description).focusable()
                     }
                 }
                 if let extended = item.extended, !extended.isEmpty {
                     Section("詳しい情報") {
-                        Text(extended).focusable().onExitCommand(perform: goBack)
+                        Text(extended).focusable()
                     }
                 }
                 Section("録画の設定") {
@@ -287,17 +281,14 @@ private struct EPGStationReservationDetailView: View {
                 Section {
                     Button("詳細を更新", action: reload)
                         .disabled(submitting || mutation.busy)
-                        .onExitCommand(perform: goBack)
                     Button("一覧に戻る", action: goBack)
                         .disabled(submitting || mutation.busy)
-                        .onExitCommand(perform: goBack)
                 }
                 Section("予約の操作") {
                     if item.ruleID == nil {
                         Button("録画設定を変更") {
                             editing = EPGStationReservationEditorConnection(address: address, original: item)
                         }
-                            .onExitCommand(perform: goBack)
                     } else {
                         Text("ルール予約の設定は、予約元のルールで変更してください。")
                             .font(.caption).foregroundStyle(.secondary)
@@ -305,7 +296,7 @@ private struct EPGStationReservationDetailView: View {
                     Button(item.ruleID == nil ? "予約を取り消す" : "この回の予約を除外", role: .destructive) {
                         confirmedAfterStart = Date().timeIntervalSince1970 * 1000 >= item.startAt
                         confirmCancel = true
-                    }.onExitCommand(perform: goBack)
+                    }
                 }.disabled(submitting || mutation.busy || mutation.pending != nil)
             }
             if submitting || mutation.busy { ProgressView("予約の処理結果を確認しています…") }
