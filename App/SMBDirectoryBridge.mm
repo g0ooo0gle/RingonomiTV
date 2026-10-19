@@ -58,6 +58,7 @@ struct RequestState {
     libvlc_media_t *media = nullptr;
 
     std::atomic_bool parsing{false};
+    std::atomic_bool stopRequested{false};
     std::atomic_bool stopScheduled{false};
 
     std::mutex stopMutex;
@@ -118,7 +119,10 @@ struct RequestState {
 
     void waitForStop() {
         std::unique_lock<std::mutex> lock(stopMutex);
-        stopCondition.wait(lock, [this] { return !stopPending; });
+        stopCondition.wait(lock, [this] {
+            return !stopRequested.load(std::memory_order_acquire) ||
+                   (stopScheduled.load(std::memory_order_acquire) && !stopPending);
+        });
     }
 
     void finishStop() {
@@ -385,12 +389,9 @@ void MediaParsedChanged(const libvlc_event_t *event, void *data) {
     state->signalParse(status, terminal);
 }
 
-void StopParsing(const std::shared_ptr<RequestState> &state, bool timeout) {
+void ScheduleStopOnUtilityQueue(const std::shared_ptr<RequestState> &state) {
     if (state == nullptr) {
         return;
-    }
-    if (timeout) {
-        state->timedOut.store(true, std::memory_order_release);
     }
 
     // A cancellation may originate from the MainActor. libvlc_media_parse_stop
@@ -419,6 +420,27 @@ void StopParsing(const std::shared_ptr<RequestState> &state, bool timeout) {
         } else {
             state->finishStop();
         }
+    }
+}
+
+void StopParsing(const std::shared_ptr<RequestState> &state, bool timeout) {
+    if (state == nullptr) {
+        return;
+    }
+    if (timeout) {
+        state->timedOut.store(true, std::memory_order_release);
+    }
+
+    // Do not make the caller acquire stopMutex. In particular, cancellation
+    // can arrive on the MainActor while the worker is registering the async
+    // parse operation under that mutex.
+    bool alreadyRequested =
+        state->stopRequested.exchange(true, std::memory_order_acq_rel);
+    if (!alreadyRequested) {
+        std::shared_ptr<RequestState> stopState = state;
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            ScheduleStopOnUtilityQueue(stopState);
+        });
     }
     state->signalParse(libvlc_media_parsed_status_timeout, true);
 }
@@ -591,14 +613,25 @@ NSError *RunListing(libvlc_instance_t *instance,
 
     SetDialogCallbacks(instance, state.get());
     int parseResult = -1;
-    if (attached && !state->cancelled.load(std::memory_order_acquire) &&
-        !state->timedOut.load(std::memory_order_acquire)) {
-        state->parsing.store(true, std::memory_order_release);
-        parseResult = libvlc_media_parse_with_options(
-            media,
-            static_cast<libvlc_media_parse_flag_t>(libvlc_media_parse_network |
-                                                   libvlc_media_do_interact),
-            kParseTimeoutMilliseconds);
+    {
+        // Keep the start decision, parsing flag, and async parse registration
+        // in the same boundary as StopParsing's stopScheduled decision. A
+        // cancellation that wins this boundary prevents parse from starting;
+        // one that arrives after it is guaranteed to schedule parse_stop.
+        std::lock_guard<std::mutex> lock(state->stopMutex);
+        bool canStart = attached &&
+                        !state->cancelled.load(std::memory_order_acquire) &&
+                        !state->timedOut.load(std::memory_order_acquire) &&
+                        !state->stopRequested.load(std::memory_order_acquire) &&
+                        !state->stopScheduled.load(std::memory_order_acquire);
+        if (canStart) {
+            state->parsing.store(true, std::memory_order_release);
+            parseResult = libvlc_media_parse_with_options(
+                media,
+                static_cast<libvlc_media_parse_flag_t>(libvlc_media_parse_network |
+                                                       libvlc_media_do_interact),
+                kParseTimeoutMilliseconds);
+        }
     }
 
     NSError *error = nil;
