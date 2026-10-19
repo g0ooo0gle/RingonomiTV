@@ -1,5 +1,13 @@
 import Foundation
 
+public enum EPGStationLivePreparationError: Error, LocalizedError, Equatable, Sendable {
+    case timedOut
+
+    public var errorDescription: String? {
+        "配信の準備が完了しませんでした。再試行してください。"
+    }
+}
+
 private enum EPGStationLiveLimits {
     static let maximumQualityCount = 256
 }
@@ -147,6 +155,46 @@ public extension EPGStationClient {
         )
     }
 
+    /// Start a live stream and wait until its HLS playlist contains playable
+    /// media.  EPGStation creates the HLS stream before its first playlist is
+    /// available, so callers should use this method when the player must not
+    /// be handed an empty URL response.
+    ///
+    /// The preparation window is deliberately bounded.  A temporary keep
+    /// request runs while the playlist is being prepared; the caller should
+    /// take over normal keep-alive scheduling after this method succeeds.
+    func prepareLiveStream(
+        channelID: Int,
+        quality: EPGStationLiveQuality
+    ) async throws -> EPGStationLiveStream {
+        guard quality.format == .hls else {
+            return try await startLiveStream(channelID: channelID, quality: quality)
+        }
+
+        return try await withThrowingTaskGroup(of: EPGStationLiveStream.self) { group in
+            group.addTask { [self] in
+                let stream = try await startLiveStream(channelID: channelID, quality: quality)
+                guard let streamID = stream.streamID else {
+                    throw EPGStationError.invalidResponse
+                }
+                return try await waitForLivePlaylist(
+                    stream: stream,
+                    streamID: streamID
+                )
+            }
+            group.addTask {
+                try await Task.sleep(for: .seconds(12))
+                throw EPGStationLivePreparationError.timedOut
+            }
+            defer { group.cancelAll() }
+            guard let prepared = try await group.next() else {
+                throw CancellationError()
+            }
+            group.cancelAll()
+            return prepared
+        }
+    }
+
     /// Reset the server-side inactivity timer for an HLS stream.
     /// Stream ID zero is valid and must not be treated as a missing ID.
     func keepLiveStream(id: Int) async throws {
@@ -162,6 +210,134 @@ public extension EPGStationClient {
 }
 
 private extension EPGStationClient {
+    private enum LivePreparationEvent: Sendable {
+        case ready
+    }
+
+    func waitForLivePlaylist(
+        stream: EPGStationLiveStream,
+        streamID: Int
+    ) async throws -> EPGStationLiveStream {
+        return try await withThrowingTaskGroup(of: LivePreparationEvent.self) { group in
+            group.addTask { [self] in
+                try await pollLivePlaylist(url: stream.url)
+                return .ready
+            }
+            group.addTask { [self] in
+                return try await keepLiveStreamDuringPreparation(id: streamID)
+            }
+            defer { group.cancelAll() }
+            while let event = try await group.next() {
+                if case .ready = event {
+                    group.cancelAll()
+                    return stream
+                }
+            }
+            throw CancellationError()
+        }
+    }
+
+    func pollLivePlaylist(url: URL) async throws {
+        while true {
+            try Task.checkCancellation()
+            do {
+                let data = try await data(for: url)
+                if try Self.isPlayableLivePlaylist(data) {
+                    return
+                }
+            } catch let error as EPGStationError {
+                switch error {
+                case .httpStatus(404), .httpStatus(503):
+                    break
+                default:
+                    throw error
+                }
+            }
+            try await Task.sleep(for: .milliseconds(300))
+        }
+    }
+
+    func keepLiveStreamDuringPreparation(id: Int) async throws -> Never {
+        while true {
+            try await Task.sleep(for: .seconds(4))
+            try Task.checkCancellation()
+            do {
+                try await keepLiveStream(id: id)
+            } catch EPGStationError.httpStatus(503) {
+                // An encoder can be temporarily busy while its first
+                // segment is being prepared.  The outer deadline still
+                // bounds this retry; a missing or unauthorized stream fails.
+                continue
+            }
+        }
+    }
+
+    static func isPlayableLivePlaylist(_ data: Data) throws -> Bool {
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw EPGStationError.invalidResponse
+        }
+        let lines = text
+            .split(whereSeparator: { $0.isNewline })
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard lines.first == "#EXTM3U" else {
+            throw EPGStationError.invalidResponse
+        }
+
+        for index in lines.indices {
+            let line = lines[index]
+            if line.hasPrefix("#EXTINF:") {
+                let value = String(line.dropFirst("#EXTINF:".count))
+                guard let comma = value.firstIndex(of: ",") else {
+                    throw EPGStationError.invalidResponse
+                }
+                let durationText = String(value[..<comma])
+                guard let duration = Double(durationText),
+                      duration.isFinite,
+                      duration >= 0 else {
+                    throw EPGStationError.invalidResponse
+                }
+                return try hasSegmentURI(after: index, lines: lines)
+            }
+
+            if line.hasPrefix("#EXT-X-STREAM-INF:") {
+                let attributes = String(line.dropFirst("#EXT-X-STREAM-INF:".count))
+                guard !attributes.trimmingCharacters(in: .whitespaces).isEmpty,
+                      index + 1 < lines.count else {
+                    throw EPGStationError.invalidResponse
+                }
+                let uri = lines[index + 1]
+                guard !uri.isEmpty, !uri.hasPrefix("#") else {
+                    throw EPGStationError.invalidResponse
+                }
+                return true
+            }
+
+            guard line.hasPrefix("#") else {
+                throw EPGStationError.invalidResponse
+            }
+        }
+
+        // A header plus tags such as TARGETDURATION is a valid but not yet
+        // playable media playlist.  Keep polling until its first segment.
+        return false
+    }
+
+    static func hasSegmentURI(after index: Int, lines: [String]) throws -> Bool {
+        // Segment metadata may follow EXTINF before its URI.  Keep this
+        // readiness check small; the player parses the complete playlist.
+        for line in lines.dropFirst(index + 1).prefix(16) {
+            if !line.hasPrefix("#") { return true }
+            if line.hasPrefix("#EXT-X-BYTERANGE:") ||
+               line == "#EXT-X-GAP" ||
+               line.hasPrefix("#EXT-X-PROGRAM-DATE-TIME:") {
+                continue
+            }
+            throw EPGStationError.invalidResponse
+        }
+        return false
+    }
+
     static func liveQualities(
         from profiles: [EPGStationLiveProfile]
     ) throws -> [EPGStationLiveQuality] {

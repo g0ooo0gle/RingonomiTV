@@ -83,7 +83,7 @@ final class EPGStationLivePlaybackStore: ObservableObject {
                     self.error = "視聴するチャンネルが不正です。"
                     return
                 }
-                let stream = try await client.startLiveStream(channelID: channelID, quality: initial)
+                let stream = try await client.prepareLiveStream(channelID: channelID, quality: initial)
                 try Task.checkCancellation()
                 guard self.generation == expected, !self.isSuspended else { return }
                 self.selectedQuality = initial
@@ -130,7 +130,7 @@ final class EPGStationLivePlaybackStore: ObservableObject {
 
         request = Task { @MainActor [weak self] in
             do {
-                let stream = try await client.startLiveStream(channelID: channelID, quality: quality)
+                let stream = try await client.prepareLiveStream(channelID: channelID, quality: quality)
                 try Task.checkCancellation()
                 guard let self, self.generation == expected, !self.isSuspended else { return }
                 self.stream = stream

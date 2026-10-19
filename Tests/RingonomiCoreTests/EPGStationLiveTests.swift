@@ -325,6 +325,201 @@ final class EPGStationLiveTests: XCTestCase {
         }
     }
 
+    func testPrepareHLSPollsThroughUnavailableAndEmptyPlaylist() async throws {
+        let recorder = EPGStationLiveRequestRecorder()
+        EPGStationLiveURLProtocol.handler = { request in
+            recorder.append(request)
+            let path = request.url?.path
+            if path == "/proxy/api/streams/live/42/hls" {
+                return EPGStationLiveURLProtocol.Stub(body: Data(#"{"streamId":0}"#.utf8))
+            }
+            if path == "/proxy/streamfiles/stream0.m3u8" {
+                let playlistRequests = recorder.all.filter {
+                    $0.url?.path == "/proxy/streamfiles/stream0.m3u8"
+                }.count
+                switch playlistRequests {
+                case 1:
+                    return EPGStationLiveURLProtocol.Stub(status: 503, body: Data())
+                case 2:
+                    return EPGStationLiveURLProtocol.Stub(
+                        body: Data("#EXTM3U\n#EXT-X-TARGETDURATION:2\n".utf8)
+                    )
+                default:
+                    return EPGStationLiveURLProtocol.Stub(
+                        body: Data("#EXTM3U\n#EXTINF:1,\nsegment.ts\n".utf8)
+                    )
+                }
+            }
+            return EPGStationLiveURLProtocol.Stub(body: Data())
+        }
+        defer { EPGStationLiveURLProtocol.handler = nil }
+
+        let quality = try EPGStationLiveQuality(format: .hls, mode: 0, name: "HLS")
+        let stream = try await client().prepareLiveStream(channelID: 42, quality: quality)
+
+        XCTAssertEqual(stream.streamID, 0)
+        XCTAssertEqual(stream.url.path, "/proxy/streamfiles/stream0.m3u8")
+        XCTAssertGreaterThanOrEqual(
+            recorder.all.filter { $0.url?.path == "/proxy/streamfiles/stream0.m3u8" }.count,
+            3
+        )
+    }
+
+    func testPrepareHLSPropagatesStartHTTPError() async throws {
+        EPGStationLiveURLProtocol.handler = { request in
+            if request.url?.path == "/proxy/api/streams/live/42/hls" {
+                return EPGStationLiveURLProtocol.Stub(status: 401, body: Data())
+            }
+            XCTFail("preparation must stop after start error")
+            return EPGStationLiveURLProtocol.Stub(body: Data())
+        }
+        defer { EPGStationLiveURLProtocol.handler = nil }
+
+        let quality = try EPGStationLiveQuality(format: .hls, mode: 0, name: "HLS")
+        do {
+            _ = try await client().prepareLiveStream(channelID: 42, quality: quality)
+            XCTFail("expected start HTTP error")
+        } catch let error as EPGStationError {
+            XCTAssertEqual(error, .httpStatus(401))
+        }
+    }
+
+    func testPrepareHLSRejectsMalformedPlaylist() async throws {
+        EPGStationLiveURLProtocol.handler = { request in
+            if request.url?.path == "/proxy/api/streams/live/42/hls" {
+                return EPGStationLiveURLProtocol.Stub(body: Data(#"{"streamId":0}"#.utf8))
+            }
+            return EPGStationLiveURLProtocol.Stub(body: Data("not an HLS playlist".utf8))
+        }
+        defer { EPGStationLiveURLProtocol.handler = nil }
+
+        let quality = try EPGStationLiveQuality(format: .hls, mode: 0, name: "HLS")
+        do {
+            _ = try await client().prepareLiveStream(channelID: 42, quality: quality)
+            XCTFail("expected malformed playlist")
+        } catch let error as EPGStationError {
+            XCTAssertEqual(error, .invalidResponse)
+        }
+    }
+
+    func testPrepareHLSCancellationStopsSlowRequest() async throws {
+        EPGStationLiveBlockingURLProtocol.reset()
+        defer { EPGStationLiveBlockingURLProtocol.reset() }
+
+        let quality = try EPGStationLiveQuality(format: .hls, mode: 0, name: "HLS")
+        let liveClient = try client(protocolClass: EPGStationLiveBlockingURLProtocol.self)
+        let task = Task {
+            try await liveClient.prepareLiveStream(channelID: 42, quality: quality)
+        }
+        for _ in 0..<100 {
+            if EPGStationLiveBlockingURLProtocol.requestCount() > 0 { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertGreaterThan(EPGStationLiveBlockingURLProtocol.requestCount(), 0)
+        task.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("expected cancellation")
+        } catch is CancellationError {
+            // Expected: start or playlist reads must be canceled promptly.
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+    }
+
+    func testPrepareHLSTimesOutOnPersistentlyEmptyPlaylist() async throws {
+        let recorder = EPGStationLiveRequestRecorder()
+        EPGStationLiveURLProtocol.handler = { request in
+            recorder.append(request)
+            if request.url?.path == "/proxy/api/streams/live/42/hls" {
+                return EPGStationLiveURLProtocol.Stub(body: Data(#"{"streamId":0}"#.utf8))
+            }
+            if request.url?.path == "/proxy/streamfiles/stream0.m3u8" {
+                return EPGStationLiveURLProtocol.Stub(
+                    body: Data("#EXTM3U\n#EXT-X-TARGETDURATION:2\n".utf8)
+                )
+            }
+            return EPGStationLiveURLProtocol.Stub(body: Data())
+        }
+        defer { EPGStationLiveURLProtocol.handler = nil }
+
+        let quality = try EPGStationLiveQuality(format: .hls, mode: 0, name: "HLS")
+        do {
+            _ = try await client().prepareLiveStream(channelID: 42, quality: quality)
+            XCTFail("expected preparation timeout")
+        } catch let error as EPGStationLivePreparationError {
+            XCTAssertEqual(error, .timedOut)
+        }
+        XCTAssertGreaterThanOrEqual(
+            recorder.all.filter { $0.httpMethod == "PUT" }.count,
+            1
+        )
+        // A URLProtocol callback already queued by URLSession can finish
+        // after cancellation.  No further polling may continue afterward.
+        try await Task.sleep(for: .milliseconds(300))
+        let finishedRequestCount = recorder.all.count
+        try await Task.sleep(for: .milliseconds(700))
+        XCTAssertEqual(recorder.all.count, finishedRequestCount)
+    }
+
+    func testPrepareHLSContinuesAfterTemporarilyBusyKeep() async throws {
+        let recorder = EPGStationLiveRequestRecorder()
+        EPGStationLiveURLProtocol.handler = { request in
+            recorder.append(request)
+            if request.url?.path == "/proxy/api/streams/live/42/hls" {
+                return EPGStationLiveURLProtocol.Stub(body: Data(#"{"streamId":0}"#.utf8))
+            }
+            if request.httpMethod == "PUT" {
+                return EPGStationLiveURLProtocol.Stub(status: 503, body: Data())
+            }
+            let keepWasAttempted = recorder.all.contains { $0.httpMethod == "PUT" }
+            let playlist = keepWasAttempted
+                ? "#EXTM3U\n#EXTINF:2,\nsegment.ts\n"
+                : "#EXTM3U\n#EXT-X-TARGETDURATION:2\n"
+            return EPGStationLiveURLProtocol.Stub(body: Data(playlist.utf8))
+        }
+        defer { EPGStationLiveURLProtocol.handler = nil }
+        let quality = try EPGStationLiveQuality(format: .hls, mode: 0, name: "HLS")
+        let stream = try await client().prepareLiveStream(channelID: 42, quality: quality)
+        XCTAssertEqual(stream.streamID, 0)
+        XCTAssertEqual(recorder.all.filter { $0.httpMethod == "PUT" }.count, 1)
+    }
+
+    func testPlaylistReadinessAcceptsByteRangeMetadata() async throws {
+        let recorder = EPGStationLiveRequestRecorder()
+        EPGStationLiveURLProtocol.handler = { request in
+            recorder.append(request)
+            if request.url?.path == "/proxy/api/streams/live/42/hls" {
+                return EPGStationLiveURLProtocol.Stub(body: Data(#"{"streamId":0}"#.utf8))
+            }
+            let count = recorder.all.filter { $0.url?.path.hasSuffix(".m3u8") == true }.count
+            let playlist = "#EXTM3U\n#EXTINF:2,\n#EXT-X-BYTERANGE:1024@0\n" + (count > 1 ? "segment.ts\n" : "")
+            return EPGStationLiveURLProtocol.Stub(body: Data(playlist.utf8))
+        }
+        defer { EPGStationLiveURLProtocol.handler = nil }
+        let quality = try EPGStationLiveQuality(format: .hls, mode: 0, name: "HLS")
+        let stream = try await client().prepareLiveStream(channelID: 42, quality: quality)
+        XCTAssertEqual(stream.streamID, 0)
+        XCTAssertEqual(recorder.all.filter { $0.url?.path.hasSuffix(".m3u8") == true }.count, 2)
+    }
+
+    func testPlaylistReadinessRejectsMissingSegmentBeforeNextSegment() async throws {
+        EPGStationLiveURLProtocol.handler = { request in
+            let response = request.url?.path == "/proxy/api/streams/live/42/hls"
+                ? #"{"streamId":0}"#
+                : "#EXTM3U\n#EXTINF:2,\n#EXTINF:2,\nsegment.ts\n"
+            return EPGStationLiveURLProtocol.Stub(body: Data(response.utf8))
+        }
+        defer { EPGStationLiveURLProtocol.handler = nil }
+        let quality = try EPGStationLiveQuality(format: .hls, mode: 0, name: "HLS")
+        do {
+            _ = try await client().prepareLiveStream(channelID: 42, quality: quality)
+            XCTFail("expected missing segment error")
+        } catch let error as EPGStationError {
+            XCTAssertEqual(error, .invalidResponse)
+        }
+    }
+
     func testHTTPStatusMalformedAndRedirectRemainSafe() async throws {
         EPGStationLiveURLProtocol.handler = { _ in
             EPGStationLiveURLProtocol.Stub(status: 503, body: Data("private".utf8))
