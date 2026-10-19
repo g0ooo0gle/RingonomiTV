@@ -96,6 +96,7 @@ struct LibraryView: View {
                     if loading { ProgressView() }
                     if let error { Text(error).foregroundStyle(.red) }
                     Section("Mirakurun") {
+                        NavigationLink("Mirakurunの番組表") { MirakurunProgramGuideView() }
                         NavigationLink("Mirakurun直接視聴") {
                             MirakurunServiceView()
                         }
@@ -124,6 +125,8 @@ struct LibraryView: View {
                     switch destination {
                     case .mirakurun:
                         MirakurunServiceView()
+                    case .mirakurunGuide:
+                        MirakurunProgramGuideView()
                     case .epgstation:
                         EPGStationLibraryView()
                     case .epgstationReservations:
@@ -144,6 +147,10 @@ struct LibraryView: View {
             if arguments.contains("--show-mirakurun") || arguments.contains("--play-mirakurun-service") {
                 selectedTab = 4
                 settingsPath = [.mirakurun]
+            }
+            if arguments.contains("--show-mirakurun-guide") {
+                selectedTab = 4
+                settingsPath = [.mirakurunGuide]
             }
             if arguments.contains("--show-epgstation") || arguments.contains("--play-epgstation-recording") {
                 selectedTab = 4
@@ -197,6 +204,10 @@ struct LibraryView: View {
             if arguments.contains("--show-mirakurun") || arguments.contains("--play-mirakurun-service") {
                 selectedTab = 4
                 settingsPath = [.mirakurun]
+            }
+            if arguments.contains("--show-mirakurun-guide") {
+                selectedTab = 4
+                settingsPath = [.mirakurunGuide]
             }
             if arguments.contains("--show-epgstation") || arguments.contains("--play-epgstation-recording") {
                 selectedTab = 4
@@ -299,6 +310,7 @@ private struct ConnectionLoadKey: Hashable {
 
 private enum SettingsDestination: Hashable {
     case mirakurun
+    case mirakurunGuide
     case epgstation
     case epgstationReservations
     case epgstationRules

@@ -256,6 +256,8 @@ public struct MirakurunService: Decodable, Equatable, Sendable, Identifiable {
 /// hook; the default path always uses a private ephemeral URLSession.
 public struct MirakurunClient: Sendable {
     public static let maximumServiceResponseBytes = 4 * 1024 * 1024
+    public static let maximumProgramResponseBytes = 4 * 1024 * 1024
+    public static let maximumProgramCount = 4_096
 
     public let baseURL: URL
 
@@ -288,7 +290,56 @@ public struct MirakurunClient: Sendable {
     /// session; no KonomiTV bearer token, cookie, credential store, cache, or
     /// keep-alive route is involved.
     public func services(using suppliedSession: URLSession? = nil) async throws -> [MirakurunService] {
-        let requestURL = endpoint(["api", "services"])
+        do {
+            let data = try await data(
+                for: endpoint(["api", "services"]),
+                using: suppliedSession,
+                maximumBytes: Self.maximumServiceResponseBytes
+            )
+            do {
+                let services = try JSONDecoder().decode([MirakurunService].self, from: data)
+                var identifiers = Set<Int>(minimumCapacity: services.count)
+                guard services.allSatisfy({ identifiers.insert($0.id).inserted }) else {
+                    throw MirakurunError.invalidResponse
+                }
+                return services
+            } catch {
+                if let error = error as? MirakurunError { throw error }
+                throw MirakurunError.invalidResponse
+            }
+        } catch let error as MirakurunError {
+            throw error
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            if Task.isCancelled { throw CancellationError() }
+            throw MirakurunError.transport
+        }
+    }
+
+    /// Build an API URL while retaining a configured proxy path and safely
+    /// encoding query values. No request is sent by this method.
+    func endpoint(
+        _ components: [String],
+        queryItems: [URLQueryItem] = []
+    ) -> URL {
+        var urlComponents = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
+        let prefix = MirakurunURLRules.canonicalBasePath(urlComponents.percentEncodedPath)
+        urlComponents.percentEncodedPath = prefix + components.joined(separator: "/")
+        urlComponents.queryItems = queryItems.isEmpty ? nil : queryItems
+        urlComponents.fragment = nil
+        return urlComponents.url!
+    }
+
+    /// Perform one anonymous, bounded GET. This helper is internal so the
+    /// program-guide extension can share the exact same redirect, cookie,
+    /// cancellation, and response-size policy as the service list.
+    func data(
+        for requestURL: URL,
+        using suppliedSession: URLSession? = nil,
+        maximumBytes: Int = MirakurunClient.maximumServiceResponseBytes
+    ) async throws -> Data {
+        try Task.checkCancellation()
         var request = URLRequest(url: requestURL)
         request.httpMethod = "GET"
         request.timeoutInterval = 20
@@ -313,32 +364,19 @@ public struct MirakurunClient: Sendable {
                 bytes.task.cancel()
                 throw MirakurunError.redirectRejected
             }
-            guard (200..<300).contains(httpResponse.statusCode) else {
+            guard httpResponse.statusCode == 200 else {
                 bytes.task.cancel()
                 throw MirakurunError.httpStatus(httpResponse.statusCode)
             }
             if let contentLength = httpResponse.value(forHTTPHeaderField: "Content-Length"),
                let length = Int64(contentLength),
-               length > Int64(Self.maximumServiceResponseBytes) {
+               length > Int64(maximumBytes) {
                 bytes.task.cancel()
                 throw MirakurunError.responseTooLarge
             }
-            let data = try await Self.readBounded(
-                bytes,
-                maximumBytes: Self.maximumServiceResponseBytes
-            )
+            let body = try await Self.readBounded(bytes, maximumBytes: maximumBytes)
             try Task.checkCancellation()
-            do {
-                let services = try JSONDecoder().decode([MirakurunService].self, from: data)
-                var identifiers = Set<Int>(minimumCapacity: services.count)
-                guard services.allSatisfy({ identifiers.insert($0.id).inserted }) else {
-                    throw MirakurunError.invalidResponse
-                }
-                return services
-            } catch {
-                if let error = error as? MirakurunError { throw error }
-                throw MirakurunError.invalidResponse
-            }
+            return body
         } catch let error as MirakurunError {
             throw error
         } catch is CancellationError {
@@ -348,15 +386,6 @@ public struct MirakurunClient: Sendable {
             if delegate.rejected { throw MirakurunError.redirectRejected }
             throw MirakurunError.transport
         }
-    }
-
-    private func endpoint(_ components: [String]) -> URL {
-        var urlComponents = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
-        let prefix = MirakurunURLRules.canonicalBasePath(urlComponents.percentEncodedPath)
-        urlComponents.percentEncodedPath = prefix + components.joined(separator: "/")
-        urlComponents.query = nil
-        urlComponents.fragment = nil
-        return urlComponents.url!
     }
 
     private static func transportSession(for supplied: URLSession?) -> URLSession {

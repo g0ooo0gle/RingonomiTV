@@ -6,6 +6,7 @@ final class MirakurunServiceStore: ObservableObject {
     @Published private(set) var services: [MirakurunService] = []
     @Published private(set) var isLoading = false
     @Published private(set) var error: String?
+    @Published private(set) var loadedAddress: String?
 
     private var request: Task<Void, Never>?
     private var generation = UUID()
@@ -16,6 +17,7 @@ final class MirakurunServiceStore: ObservableObject {
         let expectedGeneration = UUID()
         generation = expectedGeneration
         services = []
+        loadedAddress = nil
         error = nil
         isLoading = true
 
@@ -32,6 +34,7 @@ final class MirakurunServiceStore: ObservableObject {
                     return $0.id < $1.id
                 }
                 isLoading = false
+                loadedAddress = requestedAddress
             } catch is CancellationError {
                 guard let self, self.generation == expectedGeneration else { return }
                 isLoading = false
@@ -109,6 +112,7 @@ struct MirakurunServiceView: View {
             }
 
             Section("サービス") {
+                NavigationLink("番組表から探す") { MirakurunProgramGuideView() }
                 if effectiveAddress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Text("接続先を入力して、サービスを読み込んでください。")
                         .foregroundStyle(.secondary)
@@ -157,7 +161,7 @@ struct MirakurunServiceView: View {
                 didPrepareDraft = true
             }
             if !effectiveAddress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-               store.services.isEmpty, !store.isLoading, store.error == nil {
+               store.loadedAddress != effectiveAddress, !store.isLoading {
                 store.load(address: effectiveAddress)
             }
 #if DEBUG
@@ -166,6 +170,16 @@ struct MirakurunServiceView: View {
         }
         .onDisappear {
             store.cancel()
+        }
+        .onChange(of: effectiveAddress) { _, next in
+            playback = nil
+            inputError = nil
+            draftAddress = next
+            if !next.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                store.load(address: next)
+            } else {
+                store.cancel()
+            }
         }
         .fullScreenCover(item: $playback) { item in
             MirakurunPlaybackView(item: item) { needsDisplay in
