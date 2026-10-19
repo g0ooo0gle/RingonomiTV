@@ -562,7 +562,12 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
                 guard credentials?.domain.isEmpty != false else {
                     throw SMBError.invalidConnection
                 }
-                freshPlayer = VLCMediaPlayer(options: ["--quiet", "--verbose=-1"])
+                // SMB files have a stable byte range. Let the TS demuxer
+                // inspect PCR timestamps instead of opting into byte-percent
+                // seeking, which cannot supply a reliable time slider.
+                freshPlayer = VLCMediaPlayer(options: [
+                    "--quiet", "--verbose=-1", "--no-ts-seek-percent", "--ts-trust-pcr"
+                ])
                 freshPlayer.libraryInstance.loggers = nil
                 freshAuthentication = RNGSMBPlaybackAuthentication(
                     library: freshPlayer.libraryInstance,
