@@ -275,7 +275,6 @@ struct LibraryView: View {
         .preferredColorScheme(appearanceMode.preferredColorScheme)
         .environment(\.appColorStyle, colorStyle)
         .tint(palette.accent)
-        .scrollContentBackground(.hidden)
         .background(palette.background.ignoresSafeArea())
     }
     @MainActor private func refresh() async {
