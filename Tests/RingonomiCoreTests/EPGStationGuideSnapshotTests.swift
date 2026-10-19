@@ -32,7 +32,7 @@ final class EPGStationGuideSnapshotTests: XCTestCase {
         XCTAssertEqual(displayChannel.serviceId, channel.serviceID)
         XCTAssertEqual(displayChannel.remoconId, 7)
         XCTAssertEqual(displayChannel.channelNumber, "7")
-        XCTAssertFalse(displayChannel.isWatchable)
+        XCTAssertTrue(displayChannel.isWatchable)
         XCTAssertTrue(displayChannel.isDisplay)
 
         XCTAssertEqual(displayProgram.id, "epgstation.program.5001")

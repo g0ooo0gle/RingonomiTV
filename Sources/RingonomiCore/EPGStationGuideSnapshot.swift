@@ -40,8 +40,7 @@ public struct EPGStationGuideSnapshot: Sendable, Equatable {
                 jikkyoForce: nil,
                 isSubchannel: false,
                 isRadiochannel: false,
-                // EPGStation live playback is not connected to this guide yet.
-                isWatchable: false,
+                isWatchable: true,
                 isDisplay: true
             )
 

@@ -18,7 +18,10 @@ struct EPGStationProgramGuideView: View {
     @State private var selected: EPGStationGuideSelection?
     @State private var pendingReservation: EPGStationGuideSelection?
     @State private var reservationRoute: EPGStationGuideSelection?
+    @State private var pendingPlayback: EPGStationLivePlaybackSelection?
+    @State private var playback: EPGStationLivePlaybackSelection?
     @StateObject private var store = EPGStationProgramGuideStore()
+    @StateObject private var playbackIdleTimer = PlaybackIdleTimer()
     @FocusState private var refreshFocused: Bool
 
 #if DEBUG
@@ -107,6 +110,8 @@ struct EPGStationProgramGuideView: View {
             selected = nil
             pendingReservation = nil
             reservationRoute = nil
+            pendingPlayback = nil
+            playback = nil
             draftAddress = next
             inputError = nil
             dayOffset = 0
@@ -134,10 +139,36 @@ struct EPGStationProgramGuideView: View {
             EPGStationProgramGuideDetailView(
                 selection: selection,
                 onReserve: {
+                    guard selected?.id == selection.id, selection.address == effectiveAddress else { return }
+                    pendingPlayback = nil
                     pendingReservation = selection
+                    selected = nil
+                },
+                onWatch: {
+                    guard selected?.id == selection.id, selection.address == effectiveAddress else { return }
+                    pendingReservation = nil
+                    pendingPlayback = EPGStationLivePlaybackSelection(
+                        address: selection.address,
+                        channelID: selection.sourceProgram.channelID,
+                        title: selection.channel.name
+                    )
                     selected = nil
                 }
             )
+        }
+        .fullScreenCover(item: $playback, onDismiss: {
+            playbackIdleTimer.setNeedsContinuousDisplay(false)
+            returnFocusRevision += 1
+        }) { item in
+            EPGStationLivePlaybackView(item: item) { needsDisplay in
+                guard playback?.id == item.id else { return }
+                playbackIdleTimer.setNeedsContinuousDisplay(needsDisplay)
+            }
+        }
+        .onChange(of: playback?.id) { _, id in
+            if id == nil {
+                playbackIdleTimer.setNeedsContinuousDisplay(false)
+            }
         }
         .sheet(item: $reservationRoute, onDismiss: {
             reservationRoute = nil
@@ -347,9 +378,14 @@ struct EPGStationProgramGuideView: View {
     }
 
     private func detailDismissed() {
+        let pendingReservation = self.pendingReservation
+        let pendingPlayback = self.pendingPlayback
+        self.pendingReservation = nil
+        self.pendingPlayback = nil
         if let pendingReservation {
-            self.pendingReservation = nil
             reservationRoute = pendingReservation
+        } else if let pendingPlayback {
+            playback = pendingPlayback
         } else {
             returnFocusRevision += 1
         }
@@ -420,15 +456,18 @@ private struct EPGStationGuideSelection: Identifiable {
 private struct EPGStationProgramGuideDetailView: View {
     let selection: EPGStationGuideSelection
     let onReserve: () -> Void
+    let onWatch: () -> Void
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var mutation = EPGStationMutationStore.shared
     @FocusState private var focusedAction: Action?
-    private enum Action: Hashable { case reserve, close }
+    private enum Action: Hashable { case watch, reserve, close }
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
                 EPGStationListHeader("番組詳細") {
+                    Button("このチャンネルを視聴", action: onWatch)
+                        .focused($focusedAction, equals: .watch)
                     if canReserve {
                         Button("録画予約", action: onReserve)
                             .disabled(mutation.busy || mutation.pending != nil)
@@ -487,9 +526,7 @@ private struct EPGStationProgramGuideDetailView: View {
             }
             .navigationTitle("")
         }
-        .defaultFocus($focusedAction,
-                      canReserve && !mutation.busy && mutation.pending == nil ? .reserve : .close,
-                      priority: .userInitiated)
+        .defaultFocus($focusedAction, .watch, priority: .userInitiated)
         .onExitCommand { dismiss() }
     }
 
