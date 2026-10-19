@@ -194,7 +194,7 @@ struct PlaybackView: View {
 
     private func suspendPlaybackForBackground() {
 #if canImport(TVVLCKit)
-        finishSceneSearch(restoreFocus: false)
+        finishSceneSearch(restoreFocus: false, preparePlayback: false)
 #endif
         isQualityOverlayPresented = false
         guard hasStarted else { return }
@@ -228,7 +228,7 @@ struct PlaybackView: View {
 #endif
         flushPosition()
 #if canImport(TVVLCKit)
-        finishSceneSearch(restoreFocus: false)
+        finishSceneSearch(restoreFocus: false, preparePlayback: false)
 #endif
         visiblePanel = nil
         isQualityOverlayPresented = false
@@ -706,10 +706,11 @@ struct PlaybackView: View {
         isSceneSearchPresented = true
     }
 
-    private func finishSceneSearch(at seconds: Double? = nil, restoreFocus: Bool = true) {
+    private func finishSceneSearch(at seconds: Double? = nil, restoreFocus: Bool = true,
+                                   preparePlayback: Bool = true) {
         guard isSceneSearchPresented else { return }
         isSceneSearchPresented = false
-        recordingController.endSceneSearch(at: seconds)
+        recordingController.endSceneSearch(at: seconds, preparePlayback: preparePlayback)
         if restoreFocus, failure == nil {
             lastReadyPlaybackFocus = .scenes
             if !isLoading { playbackFocus = .scenes }

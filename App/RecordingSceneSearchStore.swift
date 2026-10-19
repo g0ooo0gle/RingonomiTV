@@ -43,6 +43,7 @@ final class RecordingSceneSearchStore: ObservableObject {
         do {
             let recording = try await client.recordingSceneRecording(id: recordingID)
             try Task.checkCancellation()
+            guard generation == expected else { return }
             guard fileID == nil || recording.recordedVideo.id == fileID else {
                 message = "録画情報が更新されています。録画一覧から開き直してください。"
                 return
@@ -55,8 +56,7 @@ final class RecordingSceneSearchStore: ObservableObject {
                 message = "シーン画像はまだ用意されていません。通常のシーク操作をご利用ください。"
                 return
             }
-            let next = try RecordingSceneTimeline(durationSeconds: recording.recordedVideo.duration,
-                                                   thumbnailInfo: info, sceneIntervalSeconds: Double(interval))
+            let next = try makeTimeline(duration: recording.recordedVideo.duration, info: info)
             let data = try await client.recordingSceneImage(recordingID: recordingID)
             try Task.checkCancellation()
             let decode = Task.detached(priority: .userInitiated) {
@@ -106,6 +106,21 @@ final class RecordingSceneSearchStore: ObservableObject {
         } catch {
             message = "この間隔では表示できません。別の間隔を選んでください。"
         }
+    }
+
+    /// Dense sampling must not make a long recording impossible to browse.
+    private func makeTimeline(duration: Double, info: RecordingThumbnailInfo) throws -> RecordingSceneTimeline {
+        for candidate in [interval, 60, 120, 300, 600].filter({ $0 >= interval }) {
+            do {
+                let next = try RecordingSceneTimeline(durationSeconds: duration,
+                    thumbnailInfo: info, sceneIntervalSeconds: Double(candidate))
+                interval = candidate
+                return next
+            } catch RecordingSceneError.tooManyScenes {
+                continue
+            }
+        }
+        throw RecordingSceneError.tooManyScenes
     }
 
     func focusScene(_ id: Int) {

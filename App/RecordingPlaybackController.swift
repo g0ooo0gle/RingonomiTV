@@ -33,6 +33,7 @@ final class RecordingPlaybackController: ObservableObject {
     private var isChangingQuality = false
     private var wantsPause = false
     private var sceneSearchShouldResume: Bool?
+    private var pendingSceneSeek: Double?
     private var targetSeconds: Double = 0
     private var preparing = false
     private var prerolled = false
@@ -568,6 +569,14 @@ final class RecordingPlaybackController: ObservableObject {
               failure == nil, preparing, prerolled,
               player.currentItem?.status == .readyToPlay,
               videoLayer?.isReadyForDisplay == true else { return }
+        if let seconds = pendingSceneSeek {
+            pendingSceneSeek = nil
+            let maximum = durationSeconds.map { max(0, $0 - 0.1) } ?? seconds
+            commercialSkipPolicy.resetAfterManualSeek()
+            clearCommercialSkipNotice()
+            prepareExistingPosition(min(maximum, max(0, seconds)))
+            return
+        }
         if wantsPause {
             // A user-paused item is ready as soon as preroll and the first
             // frame are available. It must not wait for an actual playing
@@ -705,14 +714,18 @@ final class RecordingPlaybackController: ObservableObject {
         return true
     }
 
-    func endSceneSearch(at seconds: Double? = nil) {
+    func endSceneSearch(at seconds: Double? = nil, preparePlayback: Bool = true) {
         guard let shouldResume = sceneSearchShouldResume else { return }
         sceneSearchShouldResume = nil
         wantsPause = !shouldResume
-        guard !isStopped, !isSuspendedForBackground, failure == nil else { return }
-        if let seconds, seconds.isFinite, !isLoading {
-            seek(to: seconds)
-        } else if shouldResume, !isLoading {
+        guard !isStopped, preparePlayback, failure == nil else { return }
+        if let seconds, seconds.isFinite {
+            if isLoading || isSuspendedForBackground {
+                pendingSceneSeek = max(0, seconds)
+            } else {
+                seek(to: seconds)
+            }
+        } else if shouldResume, !isLoading, !isSuspendedForBackground {
             prepareExistingPosition(safeTime())
         }
     }
