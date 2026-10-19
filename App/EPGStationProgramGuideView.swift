@@ -166,6 +166,7 @@ struct EPGStationProgramGuideView: View {
                     .lineLimit(2)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .trailing)
         .padding(.horizontal, 80)
         .padding(.bottom, 18)
     }
@@ -186,6 +187,7 @@ struct EPGStationProgramGuideView: View {
                 }
                 .pickerStyle(.menu)
 
+                Spacer(minLength: 20)
                 Button("前の日") { changeDay(-1) }
                     .disabled(dayOffset == 0 || store.loading)
                 Text(epgStationGuideDay(day)).monospacedDigit()
