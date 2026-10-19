@@ -60,6 +60,10 @@ struct RequestState {
     std::atomic_bool parsing{false};
     std::atomic_bool stopScheduled{false};
 
+    std::mutex stopMutex;
+    std::condition_variable stopCondition;
+    bool stopPending = false;
+
     std::mutex parseMutex;
     std::condition_variable parseCondition;
     bool parseTerminal = false;
@@ -110,6 +114,19 @@ struct RequestState {
         std::lock_guard<std::mutex> lock(credentialMutex);
         ClearTransient(username);
         ClearTransient(password);
+    }
+
+    void waitForStop() {
+        std::unique_lock<std::mutex> lock(stopMutex);
+        stopCondition.wait(lock, [this] { return !stopPending; });
+    }
+
+    void finishStop() {
+        {
+            std::lock_guard<std::mutex> lock(stopMutex);
+            stopPending = false;
+        }
+        stopCondition.notify_all();
     }
 
     bool copyCredentials(std::string &outUsername, std::string &outPassword) {
@@ -249,6 +266,22 @@ void SilentLog(void *, int, const libvlc_log_t *, const char *, va_list) {
     // usernames, or protocol diagnostics supplied by a remote peer.
 }
 
+libvlc_instance_t *CreateListingInstance() {
+    libvlc_instance_t *instance = libvlc_new(0, nullptr);
+    if (instance != nullptr) {
+        libvlc_log_set(instance, &SilentLog, nullptr);
+    }
+    return instance;
+}
+
+void ReleaseListingInstance(libvlc_instance_t *instance) {
+    if (instance == nullptr) {
+        return;
+    }
+    libvlc_log_unset(instance);
+    libvlc_release(instance);
+}
+
 #if DEBUG
 void DebugSMBEvent(const char *event,
                    int parseStatus,
@@ -365,15 +398,26 @@ void StopParsing(const std::shared_ptr<RequestState> &state, bool timeout) {
     // the caller's thread. The retained reference keeps the media alive until
     // the stop call and its matching release have completed, even if the
     // worker proceeds to detach/release its own reference.
-    bool alreadyScheduled =
-        state->stopScheduled.exchange(true, std::memory_order_acq_rel);
+    bool alreadyScheduled = false;
+    {
+        std::lock_guard<std::mutex> lock(state->stopMutex);
+        alreadyScheduled =
+            state->stopScheduled.exchange(true, std::memory_order_acq_rel);
+        if (!alreadyScheduled) {
+            state->stopPending = true;
+        }
+    }
     if (!alreadyScheduled) {
         libvlc_media_t *media = state->retainedMediaForStop();
-        if (media != nullptr && state->parsing.load(std::memory_order_acquire)) {
+        if (media != nullptr) {
+            std::shared_ptr<RequestState> stopState = state;
             dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
                 libvlc_media_parse_stop(media);
                 libvlc_media_release(media);
+                stopState->finishStop();
             });
+        } else {
+            state->finishStop();
         }
     }
     state->signalParse(libvlc_media_parsed_status_timeout, true);
@@ -520,6 +564,23 @@ NSError *RunListing(libvlc_instance_t *instance,
         return BridgeError(RNGSMBDirectoryBridgeErrorUnavailable);
     }
     state->setMedia(media);
+
+    // Pass credentials through LibVLC's documented per-media options before
+    // parsing. The option strings are copied by LibVLC, so clear every local
+    // copy immediately after the calls. The dialog callback remains disabled
+    // for storage and is only a bounded fallback for an authentication prompt.
+    std::string username;
+    std::string password;
+    if (state->copyCredentials(username, password)) {
+        std::string usernameOption = ":smb-user=" + username;
+        std::string passwordOption = ":smb-pwd=" + password;
+        libvlc_media_add_option(media, usernameOption.c_str());
+        libvlc_media_add_option(media, passwordOption.c_str());
+        ClearTransient(usernameOption);
+        ClearTransient(passwordOption);
+    }
+    ClearTransient(username);
+    ClearTransient(password);
 
     libvlc_event_manager_t *eventManager = libvlc_media_event_manager(media);
     bool attached = eventManager != nullptr &&
@@ -699,7 +760,7 @@ NSError *RunListing(libvlc_instance_t *instance,
 
 @implementation RNGSMBDirectoryBridge {
     dispatch_queue_t _queue;
-    libvlc_instance_t *_instance;
+    dispatch_queue_t _cleanupQueue;
     NSLock *_requestLock;
     NSMutableSet<RNGSMBDirectoryRequest *> *_requests;
 }
@@ -710,22 +771,11 @@ NSError *RunListing(libvlc_instance_t *instance,
         return nil;
     }
     _queue = dispatch_queue_create("tv.ringonomi.smb-directory", DISPATCH_QUEUE_SERIAL);
+    _cleanupQueue = dispatch_queue_create(
+        "tv.ringonomi.smb-directory.cleanup", DISPATCH_QUEUE_SERIAL);
     _requestLock = [[NSLock alloc] init];
     _requests = [NSMutableSet set];
-    _instance = nullptr;
     return self;
-}
-
-- (BOOL)ensureInstance {
-    if (_instance != nullptr) {
-        return YES;
-    }
-    _instance = libvlc_new(0, nullptr);
-    if (_instance == nullptr) {
-        return NO;
-    }
-    libvlc_log_set(_instance, &SilentLog, nullptr);
-    return YES;
 }
 
 - (void)removeRequest:(RNGSMBDirectoryRequest *)request {
@@ -776,7 +826,7 @@ NSError *RunListing(libvlc_instance_t *instance,
     }
 
     NSString *urlString = validatedURL.absoluteString;
-    __strong RNGSMBDirectoryBridge *owner = self;
+    dispatch_queue_t cleanupQueue = _cleanupQueue;
     // Start the deadline when the request is accepted, including time spent
     // waiting behind an earlier operation on the serial worker queue.
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
@@ -790,14 +840,21 @@ NSError *RunListing(libvlc_instance_t *instance,
         @autoreleasepool {
             NSArray<RNGSMBDirectoryItem *> *items = nil;
             NSError *error = nil;
+            libvlc_instance_t *instance = nullptr;
             if (state->cancelled.load(std::memory_order_acquire)) {
                 error = BridgeError(RNGSMBDirectoryBridgeErrorCancelled);
             } else if (state->timedOut.load(std::memory_order_acquire)) {
                 error = BridgeError(RNGSMBDirectoryBridgeErrorTimeout);
-            } else if ([owner ensureInstance]) {
-                error = RunListing(owner->_instance, state, urlString, &items);
             } else {
-                error = BridgeError(RNGSMBDirectoryBridgeErrorUnavailable);
+                instance = CreateListingInstance();
+                if (instance == nullptr) {
+                    error = BridgeError(RNGSMBDirectoryBridgeErrorUnavailable);
+                } else {
+                    error = RunListing(instance, state, urlString, &items);
+                    // Cleanup is deliberately enqueued after completion is
+                    // prepared below. The UI and request worker never wait
+                    // for a potentially slow LibVLC release.
+                }
             }
             // Also covers a cancellation or timeout observed before the
             // worker creates a media descriptor, where RunListing returns
@@ -811,6 +868,13 @@ NSError *RunListing(libvlc_instance_t *instance,
                 }
                 [weakSelf removeRequest:request];
             });
+
+            if (instance != nullptr) {
+                dispatch_async(cleanupQueue, ^{
+                    state->waitForStop();
+                    ReleaseListingInstance(instance);
+                });
+            }
         }
     });
     return request;
@@ -828,15 +892,6 @@ NSError *RunListing(libvlc_instance_t *instance,
 
 - (void)dealloc {
     [self cancelAllRequests];
-    libvlc_instance_t *instance = _instance;
-    _instance = nullptr;
-    dispatch_queue_t queue = _queue;
-    if (instance != nullptr && queue != nil) {
-        dispatch_async(queue, ^{
-            libvlc_log_unset(instance);
-            libvlc_release(instance);
-        });
-    }
 }
 
 @end
