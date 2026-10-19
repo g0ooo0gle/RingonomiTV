@@ -196,7 +196,9 @@ struct EPGStationLivePlaybackView: View {
             }
         }
         .onChange(of: store.isLoading, initial: true) { _, loading in
-            if loading {
+            if effectiveFailure != nil {
+                focus = .retry
+            } else if loading {
                 qualityCardRequested = false
                 menuVisible = false
                 focus = .loadingClose
@@ -204,7 +206,7 @@ struct EPGStationLivePlaybackView: View {
                 qualityCardRequested = false
                 menuVisible = false
                 focus = .qualityPrompt
-            } else if effectiveFailure == nil, playerHasStream {
+            } else if !effectiveLoading, playerHasStream {
                 focus = .surface
             }
             updateContinuousDisplay()
@@ -262,7 +264,11 @@ struct EPGStationLivePlaybackView: View {
             }
 #endif
             controllerSuspended = false
-            if oldURL != stream.url || wasControllerSuspended {
+            if effectiveLoading {
+                focus = .loadingClose
+            } else if effectiveFailure != nil {
+                focus = .retry
+            } else if oldURL != stream.url || wasControllerSuspended {
                 focus = .surface
             }
             updateContinuousDisplay()
@@ -278,7 +284,7 @@ struct EPGStationLivePlaybackView: View {
                 qualityCardRequested = false
                 menuVisible = false
                 focus = .loadingClose
-            } else if effectiveFailure == nil, playerHasStream {
+            } else if !effectiveLoading, playerHasStream {
                 focus = .surface
             }
             updateContinuousDisplay()
@@ -291,7 +297,7 @@ struct EPGStationLivePlaybackView: View {
             store.stopKeepAlive()
             qualityCardRequested = false
             menuVisible = false
-            focus = .retry
+            focus = effectiveFailure == nil ? .loadingClose : .retry
             updateContinuousDisplay()
         }
         .onChange(of: controller.isPaused) { _, _ in
@@ -467,7 +473,6 @@ struct EPGStationLivePlaybackView: View {
                     }
 #endif
                     store.retry()
-                    focus = .retry
                 }
                 .focused($focus, equals: .retry)
                 Button("閉じる", action: close)
@@ -588,7 +593,7 @@ struct EPGStationLivePlaybackView: View {
         }
 #endif
         store.selectQuality(quality)
-        focus = .surface
+        focus = store.isLoading ? .loadingClose : .surface
     }
 
 #if canImport(TVVLCKit)
