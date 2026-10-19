@@ -21,8 +21,11 @@ enum PlaybackAccessibilityDiagnostics {
         observers.append(NotificationCenter.default.addObserver(
             forName: UIAccessibility.elementFocusedNotification, object: nil, queue: .main
         ) { notification in
+            // Delivery and consumption are synchronous on the main queue. The
+            // UIKit element must not be transferred to a task or another queue.
+            nonisolated(unsafe) let element = notification.userInfo?[UIAccessibility.focusedElementUserInfoKey]
             MainActor.assumeIsolated {
-                reportFocus(notification.userInfo?[UIAccessibility.focusedElementUserInfoKey])
+                reportFocus(element)
             }
         })
         // Some tvOS controls change the UIKit focus without posting this notification.
