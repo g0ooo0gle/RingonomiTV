@@ -420,6 +420,8 @@ private struct EPGStationProgramGuideDetailView: View {
     let onReserve: () -> Void
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var mutation = EPGStationMutationStore.shared
+    @FocusState private var focusedAction: Action?
+    private enum Action: Hashable { case reserve, close }
 
     var body: some View {
         NavigationStack {
@@ -428,8 +430,10 @@ private struct EPGStationProgramGuideDetailView: View {
                     if canReserve {
                         Button("録画予約", action: onReserve)
                             .disabled(mutation.busy || mutation.pending != nil)
+                            .focused($focusedAction, equals: .reserve)
                     }
                     Button("閉じる") { dismiss() }
+                        .focused($focusedAction, equals: .close)
                 }
                 List {
                     Section("番組") {
@@ -481,6 +485,9 @@ private struct EPGStationProgramGuideDetailView: View {
             }
             .navigationTitle("")
         }
+        .defaultFocus($focusedAction,
+                      canReserve && !mutation.busy && mutation.pending == nil ? .reserve : .close,
+                      priority: .userInitiated)
         .onExitCommand { dismiss() }
     }
 
