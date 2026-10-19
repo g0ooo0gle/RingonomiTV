@@ -117,6 +117,7 @@ struct EPGStationProgramGuideView: View {
             let expectedDay = day
             let expectedBroadcast = broadcast
             guard !Task.isCancelled else { return }
+            guard store.loadedRequestKey != expectedRequestKey else { return }
             guard !expectedAddress.isEmpty else {
                 store.cancel(clear: true)
                 return
@@ -421,63 +422,65 @@ private struct EPGStationProgramGuideDetailView: View {
     @ObservedObject private var mutation = EPGStationMutationStore.shared
 
     var body: some View {
-        VStack(spacing: 0) {
-            EPGStationListHeader("番組詳細") {
-                if canReserve {
-                    Button("録画予約", action: onReserve)
-                        .disabled(mutation.busy || mutation.pending != nil)
-                }
-                Button("閉じる") { dismiss() }
-            }
-            List {
-                Section("番組") {
-                    Text(selection.sourceProgram.name)
-                        .font(.title3)
-                        .focusable()
-                    Text(selection.channel.name)
-                        .font(.headline)
-                        .focusable()
-                    Text(epgStationSchedule(
-                        start: selection.sourceProgram.startAt,
-                        end: selection.sourceProgram.endAt
-                    ))
-                    .focusable()
-                    Text(selection.sourceProgram.isFree ? "無料放送" : "有料放送")
-                        .foregroundStyle(selection.sourceProgram.isFree ? Color.secondary : Color.orange)
-                        .focusable()
-                }
-                if let description = selection.sourceProgram.description, !description.isEmpty {
-                    Section("説明") {
-                        Text(description).focusable()
+        NavigationStack {
+            VStack(spacing: 0) {
+                EPGStationListHeader("番組詳細") {
+                    if canReserve {
+                        Button("録画予約", action: onReserve)
+                            .disabled(mutation.busy || mutation.pending != nil)
                     }
+                    Button("閉じる") { dismiss() }
                 }
-                if let extended = selection.sourceProgram.extended, !extended.isEmpty {
-                    Section("番組詳細") {
-                        Text(extended).focusable()
-                    }
-                }
-                if let rawExtended = selection.sourceProgram.rawExtended, !rawExtended.isEmpty {
-                    Section("番組情報") {
-                        ForEach(rawExtended.keys.sorted(), id: \.self) { heading in
-                            VStack(alignment: .leading, spacing: 6) {
-                                if !heading.isEmpty { Text(heading).font(.subheadline) }
-                                Text(rawExtended[heading] ?? "")
-                            }
+                List {
+                    Section("番組") {
+                        Text(selection.sourceProgram.name)
+                            .font(.title3)
                             .focusable()
+                        Text(selection.channel.name)
+                            .font(.headline)
+                            .focusable()
+                        Text(epgStationSchedule(
+                            start: selection.sourceProgram.startAt,
+                            end: selection.sourceProgram.endAt
+                        ))
+                        .focusable()
+                        Text(selection.sourceProgram.isFree ? "無料放送" : "有料放送")
+                            .foregroundStyle(selection.sourceProgram.isFree ? Color.secondary : Color.orange)
+                            .focusable()
+                    }
+                    if let description = selection.sourceProgram.description, !description.isEmpty {
+                        Section("説明") {
+                            Text(description).focusable()
+                        }
+                    }
+                    if let extended = selection.sourceProgram.extended, !extended.isEmpty {
+                        Section("番組詳細") {
+                            Text(extended).focusable()
+                        }
+                    }
+                    if let rawExtended = selection.sourceProgram.rawExtended, !rawExtended.isEmpty {
+                        Section("番組情報") {
+                            ForEach(rawExtended.keys.sorted(), id: \.self) { heading in
+                                VStack(alignment: .leading, spacing: 6) {
+                                    if !heading.isEmpty { Text(heading).font(.subheadline) }
+                                    Text(rawExtended[heading] ?? "")
+                                }
+                                .focusable()
+                            }
+                        }
+                    }
+                    if mutation.pending != nil {
+                        Section {
+                            Text("前の予約操作の結果が未確認です。予約一覧で結果を確認してから、次の予約操作を行ってください。")
+                                .foregroundStyle(.orange)
+                                .focusable()
                         }
                     }
                 }
-                if mutation.pending != nil {
-                    Section {
-                        Text("前の予約操作の結果が未確認です。予約一覧で結果を確認してから、次の予約操作を行ってください。")
-                            .foregroundStyle(.orange)
-                            .focusable()
-                    }
-                }
+                .listStyle(.plain)
             }
-            .listStyle(.plain)
+            .navigationTitle("")
         }
-        .navigationTitle("")
         .onExitCommand { dismiss() }
     }
 
