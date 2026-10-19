@@ -328,9 +328,13 @@ struct LiveChannelLibraryView: View {
     }
 
     private var emptyMessage: String {
-        if favoritesOnly { return "お気に入りのチャンネルがありません。" }
+        if channels.isEmpty { return "チャンネルがありません。更新して再試行してください。" }
+        if favoritesOnly && favorites.favoriteIDs.isEmpty {
+            return "お気に入りのチャンネルがありません。"
+        }
         if !committedSearch.isEmpty { return "検索結果がありません。検索語を変えてください。" }
         if broadcast != .all { return "選択した放送波のチャンネルがありません。" }
+        if favoritesOnly { return "視聴できるお気に入りのチャンネルがありません。" }
         return "チャンネルがありません。更新して再試行してください。"
     }
 
