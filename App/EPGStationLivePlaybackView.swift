@@ -257,6 +257,9 @@ struct EPGStationLivePlaybackView: View {
                 // intentional during ordinary SwiftUI updates.
                 controller.retry()
             }
+            if controller.isPaused {
+                store.stopKeepAlive()
+            }
 #endif
             controllerSuspended = false
             if oldURL != stream.url || wasControllerSuspended {
@@ -474,6 +477,13 @@ struct EPGStationLivePlaybackView: View {
     }
 
     private var qualityCard: some View {
+        GeometryReader { geometry in
+            qualityCardContents(scrollHeight: max(100, min(560, geometry.size.height - 320)))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private func qualityCardContents(scrollHeight: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("画質")
                 .font(.title2)
@@ -505,7 +515,7 @@ struct EPGStationLivePlaybackView: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(maxHeight: 560)
+                .frame(maxHeight: scrollHeight)
                 .scrollIndicators(.hidden)
                 .onAppear {
                     proxy.scrollTo(selectedQualityIndex, anchor: .center)
@@ -578,7 +588,7 @@ struct EPGStationLivePlaybackView: View {
 
 #if canImport(TVVLCKit)
     private func togglePause() {
-        guard effectiveFailure == nil, displayedURL != nil else { return }
+        guard !effectiveLoading, effectiveFailure == nil, displayedURL != nil else { return }
         if controller.isPaused,
            let selectedQuality = store.selectedQuality,
            selectedQuality.format == .hls {
