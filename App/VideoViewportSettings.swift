@@ -273,14 +273,16 @@ struct VideoViewportSettingsView: View {
         Button(action: perform) {
             Text(title)
                 .font(.body.weight(.medium))
+                .foregroundStyle(focusedAction == action ? Color.black : Color.white)
                 .frame(minWidth: 86, minHeight: 42)
                 .padding(.horizontal, 8)
                 .background(
                     RoundedRectangle(cornerRadius: 10)
-                        .fill(focusedAction == action ? Color.white.opacity(0.24) : Color.white.opacity(0.10))
+                        .fill(focusedAction == action ? Color.white : Color.white.opacity(0.10))
                 )
         }
         .buttonStyle(.plain)
+        .focusEffectDisabled()
         .focused($focusedAction, equals: action)
         .disabled(isDisabled)
         .opacity(isDisabled ? 0.42 : 1)
