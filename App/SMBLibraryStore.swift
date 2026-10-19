@@ -289,7 +289,7 @@ final class SMBLibraryStore: ObservableObject {
             error = storeError.localizedDescription
             throw storeError
         } catch {
-            error = SMBLibraryStoreError.saveFailed.localizedDescription
+            self.error = SMBLibraryStoreError.saveFailed.localizedDescription
             throw SMBLibraryStoreError.saveFailed
         }
     }
