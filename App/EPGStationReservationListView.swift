@@ -345,7 +345,8 @@ private struct EPGStationReservationDetailView: View {
     private func reload() { store.load(address: address, id: reservationID) }
 
     private func goBack() {
-        guard !submitting, !mutation.busy else { return }
+        guard !submitting, !mutation.busy,
+              editing == nil, !confirmCancel, !showingFailure else { return }
 #if DEBUG
         print("RingonomiEPGStationReservationDetail: back")
 #endif
