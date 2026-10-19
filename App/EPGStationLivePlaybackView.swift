@@ -19,6 +19,7 @@ private enum EPGStationLivePlaybackFocus: Hashable {
     case surface
     case playPause
     case quality
+    case viewport
     case menuClose
     case loadingClose
     case retry
@@ -48,6 +49,7 @@ struct EPGStationLivePlaybackView: View {
     @State private var isClosing = false
     @State private var isBackgrounded = false
     @State private var controllerSuspended = false
+    @StateObject private var viewportSettings = VideoViewportSettings()
 #if canImport(TVVLCKit)
     @StateObject private var controller = PlaybackController()
 #endif
@@ -56,7 +58,8 @@ struct EPGStationLivePlaybackView: View {
         qualityCardRequested &&
         !effectiveLoading &&
         effectiveFailure == nil &&
-        !store.qualities.isEmpty
+        !store.qualities.isEmpty &&
+        !viewportSettings.isPresented
     }
 
     private var effectiveLoading: Bool {
@@ -86,6 +89,7 @@ struct EPGStationLivePlaybackView: View {
 
     private var menuIsVisible: Bool {
         menuVisible && !qualityCardVisible && playerHasStream && !effectiveLoading && effectiveFailure == nil
+            && !viewportSettings.isPresented
     }
 
     private var needsContinuousDisplay: Bool {
@@ -107,7 +111,9 @@ struct EPGStationLivePlaybackView: View {
         ZStack {
 #if canImport(TVVLCKit)
             if let displayedURL {
-                VLCVideo(url: displayedURL, controller: controller)
+                VideoViewportMedia(crop: viewportSettings.crop, videoRect: controller.videoRect) {
+                    VLCVideo(url: displayedURL, controller: controller)
+                }
                     .ignoresSafeArea()
             } else {
                 Color.black.ignoresSafeArea()
@@ -129,9 +135,9 @@ struct EPGStationLivePlaybackView: View {
 
             qualityPrompt
                 .opacity(store.awaitingQualitySelection && !qualityCardVisible ? 1 : 0)
-                .disabled(!store.awaitingQualitySelection || qualityCardVisible)
-                .allowsHitTesting(store.awaitingQualitySelection && !qualityCardVisible)
-                .accessibilityHidden(!store.awaitingQualitySelection || qualityCardVisible)
+                .disabled(!store.awaitingQualitySelection || qualityCardVisible || viewportSettings.isPresented)
+                .allowsHitTesting(store.awaitingQualitySelection && !qualityCardVisible && !viewportSettings.isPresented)
+                .accessibilityHidden(!store.awaitingQualitySelection || qualityCardVisible || viewportSettings.isPresented)
                 .zIndex(2)
 
             if effectiveLoading {
@@ -149,6 +155,17 @@ struct EPGStationLivePlaybackView: View {
                 .allowsHitTesting(qualityCardVisible)
                 .accessibilityHidden(!qualityCardVisible)
                 .zIndex(4)
+
+            if viewportSettings.isPresented,
+               !effectiveLoading,
+               effectiveFailure == nil,
+               !isBackgrounded,
+               playerHasStream {
+                VideoViewportSettingsView(settings: viewportSettings) {
+                    closeViewportPanel(returnToMenu: menuVisible)
+                }
+                .zIndex(5)
+            }
         }
         .background(.black)
         .onAppear {
@@ -163,6 +180,7 @@ struct EPGStationLivePlaybackView: View {
         }
         .onDisappear {
             hasAppeared = false
+            viewportSettings.close()
             onContinuousDisplayChanged(false)
             if !isBackgrounded && !isClosing {
                 store.stop()
@@ -197,12 +215,15 @@ struct EPGStationLivePlaybackView: View {
         }
         .onChange(of: store.isLoading, initial: true) { _, loading in
             if effectiveFailure != nil {
+                viewportSettings.close()
                 focus = .retry
             } else if loading {
+                viewportSettings.close()
                 qualityCardRequested = false
                 menuVisible = false
                 focus = .loadingClose
             } else if store.awaitingQualitySelection {
+                viewportSettings.close()
                 qualityCardRequested = false
                 menuVisible = false
                 focus = .qualityPrompt
@@ -213,6 +234,7 @@ struct EPGStationLivePlaybackView: View {
         }
         .onChange(of: store.error) { _, newError in
             guard newError != nil else { return }
+            viewportSettings.close()
             qualityCardRequested = false
             menuVisible = false
 #if canImport(TVVLCKit)
@@ -228,6 +250,7 @@ struct EPGStationLivePlaybackView: View {
         }
         .onChange(of: store.stream) { _, newStream in
             guard newStream == nil else { return }
+            viewportSettings.close()
             // A new address/load has no playable stream.  Do not leave the
             // old native surface visible behind a connection error.
             guard displayedURL != nil else { return }
@@ -239,6 +262,7 @@ struct EPGStationLivePlaybackView: View {
         }
         .onChange(of: store.streamRevision) { _, _ in
             guard let stream = store.stream else { return }
+            viewportSettings.close()
             let oldURL = displayedURL
             let wasControllerSuspended = controllerSuspended
             displayedURL = stream.url
@@ -276,11 +300,13 @@ struct EPGStationLivePlaybackView: View {
 #if canImport(TVVLCKit)
         .onChange(of: controller.isLoading, initial: true) { _, loading in
             if effectiveFailure != nil {
+                viewportSettings.close()
                 // Suspending a failed decoder can publish loading after
                 // the error actions have appeared.  Keep their focus rather
                 // than targeting a loading button that is no longer shown.
                 focus = .retry
             } else if loading {
+                viewportSettings.close()
                 qualityCardRequested = false
                 menuVisible = false
                 focus = .loadingClose
@@ -294,6 +320,7 @@ struct EPGStationLivePlaybackView: View {
                 updateContinuousDisplay()
                 return
             }
+            viewportSettings.close()
             store.stopKeepAlive()
             qualityCardRequested = false
             menuVisible = false
@@ -304,6 +331,12 @@ struct EPGStationLivePlaybackView: View {
             updateContinuousDisplay()
         }
 #endif
+        .onChange(of: item.id) { _, _ in
+            viewportSettings.reset()
+            menuVisible = false
+            qualityCardRequested = false
+            focus = nil
+        }
         .onChange(of: qualityCardRequested) { _, requested in
             guard requested, !effectiveLoading, effectiveFailure == nil else { return }
             focus = .qualityChoice(selectedQualityIndex)
@@ -313,7 +346,9 @@ struct EPGStationLivePlaybackView: View {
         }
 #if canImport(TVVLCKit)
         .onPlayPauseCommand {
-            guard effectiveFailure == nil, displayedURL != nil else { return }
+            guard !viewportSettings.isPresented,
+                  effectiveFailure == nil,
+                  displayedURL != nil else { return }
             togglePause()
         }
 #endif
@@ -334,16 +369,19 @@ struct EPGStationLivePlaybackView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .ignoresSafeArea()
             .focusable(
-                playerHasStream && !effectiveLoading && effectiveFailure == nil && !menuIsVisible && !qualityCardVisible,
+                playerHasStream && !effectiveLoading && effectiveFailure == nil && !menuIsVisible && !qualityCardVisible && !viewportSettings.isPresented,
                 interactions: .activate
             )
             .focusEffectDisabled()
             .focused($focus, equals: .surface)
-            .allowsHitTesting(playerHasStream && !effectiveLoading && effectiveFailure == nil && !menuIsVisible && !qualityCardVisible)
-            .accessibilityHidden(!playerHasStream || effectiveLoading || effectiveFailure != nil || menuIsVisible || qualityCardVisible)
+            .allowsHitTesting(playerHasStream && !effectiveLoading && effectiveFailure == nil && !menuIsVisible && !qualityCardVisible && !viewportSettings.isPresented)
+            .accessibilityHidden(!playerHasStream || effectiveLoading || effectiveFailure != nil || menuIsVisible || qualityCardVisible || viewportSettings.isPresented)
             .accessibilityLabel("EPGStationライブ再生")
             .onMoveCommand { direction in
-                guard playerHasStream, !effectiveLoading, effectiveFailure == nil else { return }
+                guard playerHasStream,
+                      !effectiveLoading,
+                      effectiveFailure == nil,
+                      !viewportSettings.isPresented else { return }
                 switch direction {
                 case .up, .down:
                     showMenu()
@@ -389,6 +427,10 @@ struct EPGStationLivePlaybackView: View {
                     .disabled(effectiveLoading || effectiveFailure != nil)
                     .accessibilityLabel("画質を選択")
                 }
+
+                Button("画面", action: openViewportPanel)
+                    .focused($focus, equals: .viewport)
+                    .disabled(effectiveLoading || effectiveFailure != nil || !playerHasStream)
 
                 Button("閉じる", action: close)
                     .focused($focus, equals: .menuClose)
@@ -552,7 +594,10 @@ struct EPGStationLivePlaybackView: View {
     }
 
     private func showMenu() {
-        guard playerHasStream, !effectiveLoading, effectiveFailure == nil else { return }
+        guard playerHasStream,
+              !effectiveLoading,
+              effectiveFailure == nil,
+              !viewportSettings.isPresented else { return }
         qualityCardRequested = false
         menuVisible = true
 #if canImport(TVVLCKit)
@@ -570,7 +615,8 @@ struct EPGStationLivePlaybackView: View {
     private func showQualityCard() {
         guard !store.qualities.isEmpty,
               !effectiveLoading,
-              effectiveFailure == nil else { return }
+              effectiveFailure == nil,
+              !viewportSettings.isPresented else { return }
         focus = nil
         qualityCardRequested = true
     }
@@ -580,11 +626,34 @@ struct EPGStationLivePlaybackView: View {
         focus = store.awaitingQualitySelection ? .qualityPrompt : .quality
     }
 
+    private func openViewportPanel() {
+        guard menuIsVisible,
+              playerHasStream,
+              !effectiveLoading,
+              effectiveFailure == nil else { return }
+        qualityCardRequested = false
+        viewportSettings.open()
+        focus = nil
+    }
+
+    private func closeViewportPanel(returnToMenu: Bool) {
+        viewportSettings.close()
+        guard returnToMenu,
+              playerHasStream,
+              !effectiveLoading,
+              effectiveFailure == nil else {
+            focus = .surface
+            return
+        }
+        focus = .viewport
+    }
+
     private func selectQuality(_ quality: EPGStationLiveQuality) {
         if store.selectedQuality?.id == quality.id, store.stream != nil, store.error == nil {
             closeQualityCard()
             return
         }
+        viewportSettings.close()
         qualityCardRequested = false
         menuVisible = false
 #if canImport(TVVLCKit)
@@ -622,7 +691,9 @@ struct EPGStationLivePlaybackView: View {
     private func handleExitCommand() {
         // One Menu press performs exactly one transition: card -> panel,
         // panel -> surface, surface -> dismiss.
-        if qualityCardVisible {
+        if viewportSettings.isPresented {
+            closeViewportPanel(returnToMenu: menuVisible)
+        } else if qualityCardVisible {
             closeQualityCard()
         } else if menuIsVisible {
             hideMenu()
@@ -638,6 +709,7 @@ struct EPGStationLivePlaybackView: View {
         isClosing = true
         qualityCardRequested = false
         menuVisible = false
+        viewportSettings.close()
         onContinuousDisplayChanged(false)
         store.stop()
 #if canImport(TVVLCKit)
@@ -653,6 +725,7 @@ struct EPGStationLivePlaybackView: View {
     private func suspendPlaybackForBackground() {
         guard hasAppeared, !isClosing, !isBackgrounded else { return }
         isBackgrounded = true
+        viewportSettings.close()
         qualityCardRequested = false
         menuVisible = false
         let canSuspendController = displayedURL != nil && effectiveFailure == nil

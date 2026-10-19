@@ -16,6 +16,7 @@ enum PlaybackControlFocus: String, Hashable {
     case comments
     case audio
     case quality
+    case viewport
     case close
     case panelClose
     case retry
@@ -44,6 +45,7 @@ struct PlaybackTopControls: View {
     let selectedAudioID: String?
     let selectAudio: (String) -> Void
     let close: () -> Void
+    let openViewport: () -> Void
     @FocusState.Binding var focus: PlaybackControlFocus?
     @Binding var isQualityOverlayPresented: Bool
 
@@ -114,6 +116,11 @@ struct PlaybackTopControls: View {
             }
             .focused($focus, equals: .quality)
             .disabled(isLoading)
+
+            Button("画面", action: openViewport)
+                .focused($focus, equals: .viewport)
+                .disabled(isLoading || failure != nil)
+                .accessibilityLabel("映像のクロップを調整")
 
             Button("閉じる", action: close)
                 .focused($focus, equals: .panelClose)

@@ -11,6 +11,7 @@ private enum FilePlaybackFocus: Hashable {
     case forward
     case playPause
     case audio
+    case viewport
     case topClose
     case retry
     case loadingClose
@@ -35,6 +36,7 @@ struct FilePlaybackView: View {
     @State private var visiblePanel: FilePlaybackPanel?
     @State private var isSeeking = false
     @State private var seekDraft = 0.0
+    @StateObject private var viewportSettings = VideoViewportSettings()
     @FocusState private var playbackFocus: FilePlaybackFocus?
 
 #if canImport(TVVLCKit)
@@ -76,6 +78,7 @@ struct FilePlaybackView: View {
             }
 #endif
             .onChange(of: item) { _, newItem in
+                viewportSettings.reset()
                 controller.start(
                     item: newItem,
                     onContinuousDisplayChanged: onContinuousDisplayChanged,
@@ -96,6 +99,7 @@ struct FilePlaybackView: View {
             }
             .onDisappear {
                 hasAppeared = false
+                viewportSettings.close()
                 onContinuousDisplayChanged(false)
                 controller.stop()
             }
@@ -112,8 +116,10 @@ struct FilePlaybackView: View {
 #if canImport(TVVLCKit)
     private var playerBody: some View {
         ZStack {
-            NativeFilePlaybackVideo(url: item.url, controller: controller)
-                .ignoresSafeArea()
+            VideoViewportMedia(crop: viewportSettings.crop, videoRect: controller.videoRect) {
+                NativeFilePlaybackVideo(url: item.url, controller: controller)
+                    .ignoresSafeArea()
+            }
 
             // The surface is a focus target only while the controls are
             // hidden and playback is ready.  It is not a full-screen Button;
@@ -160,6 +166,14 @@ struct FilePlaybackView: View {
                 .allowsHitTesting(panelIsVisible(.bottom))
                 .accessibilityHidden(!panelIsVisible(.bottom))
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+
+            if viewportSettings.isPresented {
+                VideoViewportSettingsView(
+                    settings: viewportSettings,
+                    onClose: closeViewport
+                )
+                .zIndex(5)
+            }
         }
         .defaultFocus($playbackFocus, .surface)
         .onExitCommand {
@@ -168,9 +182,13 @@ struct FilePlaybackView: View {
 #endif
             handleExitCommand()
         }
-        .onPlayPauseCommand { controller.togglePause() }
+        .onPlayPauseCommand {
+            guard !viewportSettings.isPresented else { return }
+            controller.togglePause()
+        }
         .onChange(of: controller.isLoading, initial: true) { _, loading in
             if loading {
+                viewportSettings.close()
                 isSeeking = false
                 visiblePanel = nil
                 playbackFocus = controller.failure == nil ? .loadingClose : .retry
@@ -186,6 +204,7 @@ struct FilePlaybackView: View {
         }
         .onChange(of: controller.failure, initial: true) { _, failure in
             if failure != nil {
+                viewportSettings.close()
                 isSeeking = false
                 visiblePanel = nil
                 playbackFocus = .retry
@@ -194,7 +213,9 @@ struct FilePlaybackView: View {
             }
         }
         .onChange(of: controller.isEnded, initial: true) { _, ended in
-            guard ended, !controller.isLoading, controller.failure == nil else { return }
+            guard ended,
+                  !controller.isLoading, controller.failure == nil else { return }
+            viewportSettings.close()
             isSeeking = false
             setPanel(.bottom)
             playbackFocus = .playPause
@@ -203,8 +224,16 @@ struct FilePlaybackView: View {
 #if DEBUG
             print("RingonomiFilePanel: panel=\(String(describing: panel)) focus=\(String(describing: playbackFocus)) loading=\(controller.isLoading) failure=\(controller.failure != nil)")
 #endif
-            guard let panel, !controller.isLoading, controller.failure == nil else { return }
+            guard let panel, !viewportSettings.isPresented,
+                  !controller.isLoading, controller.failure == nil else { return }
             playbackFocus = focusForPanel(panel)
+        }
+        .onChange(of: viewportSettings.isPresented) { _, isPresented in
+            if isPresented {
+                playbackFocus = nil
+            } else {
+                restoreFocusAfterViewport()
+            }
         }
         .onChange(of: playbackFocus) { _, focus in
 #if DEBUG
@@ -218,7 +247,8 @@ struct FilePlaybackView: View {
     }
 
     private var surfaceIsFocusable: Bool {
-        visiblePanel == nil && !controller.isLoading && controller.failure == nil
+        visiblePanel == nil && !viewportSettings.isPresented
+            && !controller.isLoading && controller.failure == nil
     }
 
     private var loadingOrFailureOverlay: some View {
@@ -266,6 +296,9 @@ struct FilePlaybackView: View {
                     .focused($playbackFocus, equals: .audio)
                     .disabled(controller.isLoading || controller.failure != nil)
                 }
+                Button("画面調整", action: openViewport)
+                    .focused($playbackFocus, equals: .viewport)
+                    .disabled(controller.isLoading || controller.failure != nil)
                 Button("閉じる", action: close)
                     .focused($playbackFocus, equals: .topClose)
             }
@@ -398,6 +431,7 @@ struct FilePlaybackView: View {
 
     private func suspendPlaybackForBackground() {
         guard hasAppeared else { return }
+        viewportSettings.close()
         controller.suspendForBackground()
     }
 
@@ -420,7 +454,8 @@ struct FilePlaybackView: View {
     }
 
     private func panelIsVisible(_ panel: FilePlaybackPanel) -> Bool {
-        visiblePanel == panel && !controller.isLoading && controller.failure == nil
+        visiblePanel == panel && !viewportSettings.isPresented
+            && !controller.isLoading && controller.failure == nil
     }
 
     private func revealTopPanel() {
@@ -459,6 +494,10 @@ struct FilePlaybackView: View {
     }
 
     private func handleExitCommand() {
+        if viewportSettings.isPresented {
+            closeViewport()
+            return
+        }
         if visiblePanel != nil {
             hidePanel()
         } else {
@@ -479,11 +518,34 @@ struct FilePlaybackView: View {
     }
 
     private func close() {
+        viewportSettings.close()
         onContinuousDisplayChanged(false)
         visiblePanel = nil
         isSeeking = false
         controller.stop()
         dismiss()
+    }
+
+    private func openViewport() {
+        guard !controller.isLoading, controller.failure == nil else { return }
+        viewportSettings.open()
+        playbackFocus = nil
+    }
+
+    private func closeViewport() {
+        viewportSettings.close()
+        restoreFocusAfterViewport()
+    }
+
+    private func restoreFocusAfterViewport() {
+        guard !controller.isLoading, controller.failure == nil else { return }
+        if controller.isEnded {
+            isSeeking = false
+            setPanel(.bottom)
+            playbackFocus = .playPause
+        } else if visiblePanel == .top {
+            playbackFocus = .viewport
+        }
     }
 
     private func timestamp(_ seconds: Double) -> String {

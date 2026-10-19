@@ -14,6 +14,7 @@ private enum MirakurunPlaybackFocus: Hashable {
     case surface
     case playPause
     case audio
+    case viewport
     case menuClose
     case loadingClose
     case failureClose
@@ -33,6 +34,7 @@ struct MirakurunPlaybackView: View {
     @FocusState private var focus: MirakurunPlaybackFocus?
     @State private var menuVisible = false
     @State private var hasAppeared = false
+    @StateObject private var viewportSettings = VideoViewportSettings()
 #if canImport(TVVLCKit)
     @StateObject private var controller = PlaybackController()
 #endif
@@ -51,13 +53,16 @@ struct MirakurunPlaybackView: View {
 
     private var isMenuVisible: Bool {
         menuVisible && !isLoading && failure == nil
+            && !viewportSettings.isPresented
     }
 
     var body: some View {
         ZStack {
 #if canImport(TVVLCKit)
-            VLCVideo(url: item.url, controller: controller)
-                .ignoresSafeArea()
+            VideoViewportMedia(crop: viewportSettings.crop, videoRect: controller.videoRect) {
+                VLCVideo(url: item.url, controller: controller)
+                    .ignoresSafeArea()
+            }
             surface
             controlsOverlay
                 .offset(y: isMenuVisible ? 0 : 320)
@@ -70,6 +75,13 @@ struct MirakurunPlaybackView: View {
                 loadingOverlay
             } else if let failure {
                 failureOverlay(message: failure)
+            }
+            if viewportSettings.isPresented {
+                VideoViewportSettingsView(
+                    settings: viewportSettings,
+                    onClose: closeViewport
+                )
+                .zIndex(5)
             }
 #else
             VStack(spacing: 24) {
@@ -89,6 +101,7 @@ struct MirakurunPlaybackView: View {
         }
         .onDisappear {
             hasAppeared = false
+            viewportSettings.close()
             onContinuousDisplayChanged(false)
         }
         .onExitCommand(perform: handleExitCommand)
@@ -108,6 +121,7 @@ struct MirakurunPlaybackView: View {
 #if canImport(TVVLCKit)
         .onChange(of: controller.isLoading, initial: true) { _, loading in
             if loading {
+                viewportSettings.close()
                 menuVisible = false
                 focus = .loadingClose
             } else if failure == nil {
@@ -116,6 +130,9 @@ struct MirakurunPlaybackView: View {
             updateContinuousDisplay()
         }
         .onChange(of: controller.failure) { _, newFailure in
+            if newFailure != nil {
+                viewportSettings.close()
+            }
             menuVisible = false
             focus = newFailure == nil ? .surface : .retry
             updateContinuousDisplay()
@@ -129,6 +146,10 @@ struct MirakurunPlaybackView: View {
             }
         }
 #endif
+        .onChange(of: item.id) { _, _ in
+            viewportSettings.reset()
+            viewportSettings.close()
+        }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active {
 #if canImport(UIKit)
@@ -141,7 +162,7 @@ struct MirakurunPlaybackView: View {
         }
 #if canImport(TVVLCKit)
         .onPlayPauseCommand {
-            guard failure == nil else { return }
+            guard failure == nil, !viewportSettings.isPresented else { return }
             controller.togglePause()
         }
 #endif
@@ -153,14 +174,21 @@ struct MirakurunPlaybackView: View {
             .contentShape(Rectangle())
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .ignoresSafeArea()
-            .focusable(!isLoading && failure == nil && !isMenuVisible, interactions: .activate)
+            .focusable(
+                !isLoading && failure == nil && !isMenuVisible && !viewportSettings.isPresented,
+                interactions: .activate
+            )
             .focusEffectDisabled()
             .focused($focus, equals: .surface)
-            .allowsHitTesting(!isLoading && failure == nil && !isMenuVisible)
-            .accessibilityHidden(isLoading || failure != nil || isMenuVisible)
+            .allowsHitTesting(
+                !isLoading && failure == nil && !isMenuVisible && !viewportSettings.isPresented
+            )
+            .accessibilityHidden(
+                isLoading || failure != nil || isMenuVisible || viewportSettings.isPresented
+            )
             .accessibilityLabel("Mirakurun再生メニュー")
             .onMoveCommand { direction in
-                guard !isLoading, failure == nil else { return }
+                guard !isLoading, failure == nil, !viewportSettings.isPresented else { return }
                 switch direction {
                 case .up, .down:
                     showMenu()
@@ -218,6 +246,10 @@ struct MirakurunPlaybackView: View {
                     .accessibilityLabel("音声を選択")
                 }
 
+                Button("画面調整", action: openViewport)
+                    .focused($focus, equals: .viewport)
+                    .disabled(isLoading || failure != nil)
+
                 Button("閉じる", action: close)
                     .focused($focus, equals: .menuClose)
             }
@@ -269,7 +301,7 @@ struct MirakurunPlaybackView: View {
     }
 
     private func showMenu() {
-        guard !isLoading, failure == nil else { return }
+        guard !isLoading, failure == nil, !viewportSettings.isPresented else { return }
         menuVisible = true
         focus = .playPause
     }
@@ -280,6 +312,10 @@ struct MirakurunPlaybackView: View {
     }
 
     private func handleExitCommand() {
+        if viewportSettings.isPresented {
+            closeViewport()
+            return
+        }
         if isMenuVisible {
             hideMenu()
         } else {
@@ -288,8 +324,23 @@ struct MirakurunPlaybackView: View {
     }
 
     private func close() {
+        viewportSettings.close()
         onContinuousDisplayChanged(false)
         dismiss()
+    }
+
+    private func openViewport() {
+        guard !isLoading, failure == nil else { return }
+        viewportSettings.open()
+        focus = nil
+    }
+
+    private func closeViewport() {
+        viewportSettings.close()
+        guard !isLoading, failure == nil else { return }
+        if menuVisible {
+            focus = .viewport
+        }
     }
 
     private func updateContinuousDisplay() {
@@ -298,6 +349,7 @@ struct MirakurunPlaybackView: View {
 
     private func suspendPlaybackForBackground() {
         guard hasAppeared else { return }
+        viewportSettings.close()
         controller.suspendForBackground()
     }
 

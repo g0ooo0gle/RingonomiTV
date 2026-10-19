@@ -65,6 +65,9 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
     @Published private(set) var audioOptions: [PlaybackAudioOption] = []
     @Published private(set) var selectedAudioID: String?
     @Published private(set) var audioSelectionError: String?
+    // Incremented after the background track metadata read completes so the
+    // video surface recomputes its aspect-correct rectangle.
+    @Published private(set) var videoGeometryRevision = 0
 
     private var selection: FilePlaybackSelection?
     private var currentURL: URL?
@@ -124,6 +127,9 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
     private var audioBaselineDecoded = 0
     private var audioBaselinePlayed = 0
     private var audioNeedsFreshBuffers = true
+    private var cachedVideoSampleAspectRatio: RingonomiVLCVideoSampleAspectRatio?
+    private var videoGeometryReadToken = UUID()
+    private var videoGeometryReadScheduled = false
 
     private struct PendingAudioSelection {
         let id: String
@@ -166,9 +172,61 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
             && (selection?.smbConnection == nil || durationSeconds != nil)
     }
 
+    var videoRect: CGRect {
+        guard let bounds = videoSurface?.bounds else { return .zero }
+        return RingonomiVLCVideoGeometry.fittedRect(
+            in: bounds, codedSize: player.videoSize,
+            sampleAspectRatio: cachedVideoSampleAspectRatio)
+    }
+
     func attachSurface(_ view: UIView) {
         videoSurface = view
         player.drawable = view
+    }
+
+    private func resetVideoGeometryCache(notifyUI: Bool = true) {
+        videoGeometryReadToken = UUID()
+        videoGeometryReadScheduled = false
+        cachedVideoSampleAspectRatio = nil
+        if notifyUI { videoGeometryRevision &+= 1 }
+    }
+
+    /// `VLCMedia.tracksInformation` may synchronously parse the media. Read
+    /// it once after the readiness gate opens, away from the main actor, and
+    /// publish only a generation-scoped result.
+    private func scheduleVideoGeometryReadIfNeeded(codedSize: CGSize) {
+        guard !isStopped, !isSuspendedForBackground, !isLoading,
+              failure == nil, !videoGeometryReadScheduled,
+              let media = player.media,
+              codedSize.width.isFinite, codedSize.height.isFinite,
+              codedSize.width > 0, codedSize.height > 0 else { return }
+
+        let activeTrackID = player.currentVideoTrackIndex >= 0
+            ? Int(player.currentVideoTrackIndex) : nil
+        let token = videoGeometryReadToken
+        videoGeometryReadScheduled = true
+        DispatchQueue.global(qos: .utility).async {
+            let aspectRatio = RingonomiVLCVideoGeometry.sampleAspectRatio(
+                from: media.tracksInformation,
+                activeTrackID: activeTrackID,
+                codedSize: codedSize
+            )
+            Task { @MainActor [weak self] in
+                guard let self, self.videoGeometryReadToken == token,
+                      !self.isStopped, !self.isSuspendedForBackground else { return }
+                self.cachedVideoSampleAspectRatio = aspectRatio
+                self.videoGeometryRevision &+= 1
+#if DEBUG
+                let activeTrackDescription = activeTrackID.map(String.init) ?? "nil"
+                let codedSizeDescription = "\(codedSize.width)x\(codedSize.height)"
+                if let aspectRatio {
+                    print("RingonomiVLCGeometry: sar=\(aspectRatio.numerator)/\(aspectRatio.denominator) coded=\(codedSizeDescription) activeTrack=\(activeTrackDescription)")
+                } else {
+                    print("RingonomiVLCGeometry: sar=none coded=\(codedSizeDescription) activeTrack=\(activeTrackDescription)")
+                }
+#endif
+            }
+        }
     }
 
     /// Starts or updates the selected file.  Repeated SwiftUI updates with
@@ -422,6 +480,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         pendingPositionIsInitial = false
         currentURL = nil
         selection = nil
+        resetVideoGeometryCache(notifyUI: false)
         monitor?.cancel()
         monitor = nil
         stopTask?.cancel()
@@ -465,6 +524,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         player.delegate = nil
         currentURL = url
         generation &+= 1
+        resetVideoGeometryCache()
         endGate.reset()
         pendingLoadGeneration = generation
         pendingLoadURL = url
@@ -596,6 +656,10 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         freshPlayer.delegate = self
         if let videoSurface { freshPlayer.drawable = videoSurface }
         freshPlayer.audio?.isMuted = true
+        // The fresh player has a different media/track set. Invalidate any
+        // background metadata read belonging to the retired instance before
+        // exposing the new one to the readiness loop.
+        resetVideoGeometryCache()
         player = freshPlayer
         smbAuthentication = freshAuthentication
         stopRequested = false
@@ -673,6 +737,9 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
 
         let size = player.videoSize
         let hasVideo = player.hasVideoOut && size.width > 0 && size.height > 0
+        if hasVideo, !isLoading {
+            scheduleVideoGeometryReadIfNeeded(codedSize: size)
+        }
         if canReadPlaybackStatistics, let media = player.media {
             let stats = media.statistics
             let totalPictures = max(0, Int(stats.displayedPictures))

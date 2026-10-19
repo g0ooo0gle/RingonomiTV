@@ -17,6 +17,9 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
     @Published private(set) var audioOptions: [PlaybackAudioOption] = []
     @Published private(set) var selectedAudioID: String?
     @Published private(set) var audioSelectionError: String?
+    // Incremented after the background track metadata read completes so
+    // SwiftUI re-evaluates `videoRect` without parsing from the getter.
+    @Published private(set) var videoGeometryRevision = 0
     private var currentURL: URL?
     // A cancelled monitor/delegate callback can still be queued on the main
     // actor while SwiftUI is dismantling the representable.  Teardown must
@@ -35,18 +38,61 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
     private weak var videoSurface: UIView?
     var videoRect: CGRect {
         guard let bounds = videoSurface?.bounds else { return .zero }
-        let size = player.videoSize
-        guard size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0 else { return bounds }
-        let scale = min(bounds.width / size.width, bounds.height / size.height)
-        return CGRect(x: (bounds.width - size.width * scale) / 2,
-                      y: (bounds.height - size.height * scale) / 2,
-                      width: size.width * scale, height: size.height * scale)
+        return RingonomiVLCVideoGeometry.fittedRect(
+            in: bounds, codedSize: player.videoSize,
+            sampleAspectRatio: cachedVideoSampleAspectRatio)
     }
 
     func attachSurface(_ view: UIView) {
         videoSurface = view
         player.drawable = view
     }
+
+    private func resetVideoGeometryCache(notifyUI: Bool = true) {
+        videoGeometryReadToken = UUID()
+        videoGeometryReadScheduled = false
+        cachedVideoSampleAspectRatio = nil
+        if notifyUI { videoGeometryRevision &+= 1 }
+    }
+
+    /// `VLCMedia.tracksInformation` may synchronously parse the media. Read
+    /// it once after the readiness gate opens, away from the main actor, and
+    /// publish only a generation-scoped result.
+    private func scheduleVideoGeometryReadIfNeeded(codedSize: CGSize) {
+        guard !isStopped, !isSuspendedForBackground, !isLoading,
+              failure == nil, !videoGeometryReadScheduled,
+              let media = player.media,
+              codedSize.width.isFinite, codedSize.height.isFinite,
+              codedSize.width > 0, codedSize.height > 0 else { return }
+
+        let activeTrackID = player.currentVideoTrackIndex >= 0
+            ? Int(player.currentVideoTrackIndex) : nil
+        let token = videoGeometryReadToken
+        videoGeometryReadScheduled = true
+        DispatchQueue.global(qos: .utility).async {
+            let aspectRatio = RingonomiVLCVideoGeometry.sampleAspectRatio(
+                from: media.tracksInformation,
+                activeTrackID: activeTrackID,
+                codedSize: codedSize
+            )
+            Task { @MainActor [weak self] in
+                guard let self, self.videoGeometryReadToken == token,
+                      !self.isStopped, !self.isSuspendedForBackground else { return }
+                self.cachedVideoSampleAspectRatio = aspectRatio
+                self.videoGeometryRevision &+= 1
+#if DEBUG
+                let activeTrackDescription = activeTrackID.map(String.init) ?? "nil"
+                let codedSizeDescription = "\(codedSize.width)x\(codedSize.height)"
+                if let aspectRatio {
+                    print("RingonomiVLCGeometry: sar=\(aspectRatio.numerator)/\(aspectRatio.denominator) coded=\(codedSizeDescription) activeTrack=\(activeTrackDescription)")
+                } else {
+                    print("RingonomiVLCGeometry: sar=none coded=\(codedSizeDescription) activeTrack=\(activeTrackDescription)")
+                }
+#endif
+            }
+        }
+    }
+
     private var gate = PlaybackReadinessGate()
     private var monitor: Task<Void, Never>?
     private var stopTask: Task<Void, Never>?
@@ -93,6 +139,9 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         let startedAt: Date
     }
     private var pendingAudioSelection: PendingAudioSelection?
+    private var cachedVideoSampleAspectRatio: RingonomiVLCVideoSampleAspectRatio?
+    private var videoGeometryReadToken = UUID()
+    private var videoGeometryReadScheduled = false
     override init() { super.init(); player.delegate = self }
 
     deinit {
@@ -122,6 +171,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         isChangingQuality = true
         monitor?.cancel()
         monitor = nil
+        resetVideoGeometryCache()
         isLoading = true
         waitingSince = Date()
         player.audio?.isMuted = true
@@ -142,6 +192,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         pendingLoadURL = url
         pendingLoadGeneration = expectedLoadGeneration
         monitor?.cancel()
+        resetVideoGeometryCache()
         resetAudioCatalog()
         // Calling stop() for an already-stopped player still dispatches
         // libvlc_media_player_stop_async. Do not enqueue that extra stop just
@@ -269,6 +320,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         gate.reset()
         lastFrameDate = .distantPast
         lastPictures = 0
+        resetVideoGeometryCache()
         player.audio?.isMuted = true
         player.delegate = nil
         player.drawable = nil
@@ -305,6 +357,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         loadGeneration &+= 1
         currentURL = nil
         player.delegate = nil
+        resetVideoGeometryCache(notifyUI: false)
         clearAudioCatalog(notifyUI: false)
         player.audio?.isMuted = true
         player.drawable = nil
@@ -688,6 +741,10 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
             // Keep polling so the normal loading timeout remains reachable.
         }
         refreshAudioTracks()
+        let codedVideoSize = player.videoSize
+        if !isLoading, player.hasVideoOut {
+            scheduleVideoGeometryReadIfNeeded(codedSize: codedVideoSize)
+        }
         if isLoading { player.audio?.isMuted = true }
         if player.time.intValue > 0, let stats = currentNativeStatistics {
             let pictures = stats.displayedPictures

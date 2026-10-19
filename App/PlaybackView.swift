@@ -53,6 +53,7 @@ struct PlaybackView: View {
     @State private var session = UUID().uuidString
     @State private var maintenanceError: String?
     @State private var hasStarted = false
+    @StateObject private var viewportSettings = VideoViewportSettings()
     @State private var visiblePanel: PlaybackPanel?
     @State private var isQualityOverlayPresented = false
     @State private var isSceneSearchPresented = false
@@ -89,7 +90,7 @@ struct PlaybackView: View {
     private var audioOptions: [PlaybackAudioOption] { isRecording ? recordingController.audioOptions : controller.audioOptions }
     private var selectedAudioID: String? { isRecording ? recordingController.selectedAudioID : controller.selectedAudioID }
     private var audioSelectionError: String? { isRecording ? recordingController.audioSelectionError : controller.audioSelectionError }
-    private var surfaceIsFocusable: Bool { visiblePanel == nil && !isLoading && failure == nil && !isSceneSearchPresented }
+    private var surfaceIsFocusable: Bool { visiblePanel == nil && !isLoading && failure == nil && !isSceneSearchPresented && !viewportSettings.isPresented }
 #endif
     private var needsContinuousDisplay: Bool {
 #if canImport(TVVLCKit)
@@ -193,6 +194,7 @@ struct PlaybackView: View {
     }
 
     private func suspendPlaybackForBackground() {
+        closeViewport(restoreFocus: false)
 #if canImport(TVVLCKit)
         finishSceneSearch(restoreFocus: false, preparePlayback: false)
 #endif
@@ -222,6 +224,7 @@ struct PlaybackView: View {
     }
 
     private func close() {
+        closeViewport(restoreFocus: false)
         onContinuousDisplayChanged(false)
 #if DEBUG
         print("RingonomiPlaybackClose: panel=\(visiblePanel.map { $0 == .top ? "top" : "bottom" } ?? "hidden")")
@@ -239,13 +242,41 @@ struct PlaybackView: View {
     private var playerBody: some View {
         ZStack {
 #if canImport(TVVLCKit)
-            if isRecording {
-                NativeRecordingVideo(url: streamURL, controller: recordingController)
-                    .ignoresSafeArea()
-            } else {
-                VLCVideo(url: streamURL, controller: controller)
-                    .ignoresSafeArea()
+            VideoViewportMedia(crop: viewportSettings.crop,
+                               videoRect: isRecording ? recordingController.videoRect : controller.videoRect) {
+                ZStack {
+                    if isRecording {
+                        NativeRecordingVideo(url: streamURL, controller: recordingController)
+                            .ignoresSafeArea()
+                    } else {
+                        VLCVideo(url: streamURL, controller: controller)
+                            .ignoresSafeArea()
+                    }
+                    if isRecording, recordingCommentsEnabled {
+                        PlaybackCommentOverlay(comments: commentStore.comments,
+                                                clock: { recordingController.currentSeconds },
+                                                videoRect: recordingController.videoRect,
+                                                isPaused: recordingController.isPaused,
+                                                isVisible: !isLoading && failure == nil, topReservedSpace: 480)
+                            .ignoresSafeArea()
+                    }
+                    if !isRecording, liveCommentsEnabled {
+                        PlaybackCommentOverlay(comments: liveCommentStore.comments,
+                                               clock: { liveCommentStore.currentSeconds },
+                                               videoRect: controller.videoRect,
+                                               isPaused: controller.isPaused || isLoading,
+                                               isVisible: !isLoading && failure == nil)
+                            .ignoresSafeArea()
+                    }
+                    if isRecording, recordingCaptionsEnabled {
+                        RecordingCaptionOverlay(controller: recordingController.captions,
+                                                videoRect: recordingController.videoRect,
+                                                isVisible: !isLoading && failure == nil)
+                            .ignoresSafeArea()
+                    }
+                }
             }
+            .ignoresSafeArea()
             // Keep focus effects and remote input away from the native video
             // layer. Returning from a panel must not refocus AVPlayer/VLC views.
             Color.clear
@@ -260,28 +291,6 @@ struct PlaybackView: View {
                 .onTapGesture { revealBottomPanel() }
                 .accessibilityLabel("再生メニュー")
                 .accessibilityHidden(!surfaceIsFocusable)
-            if isRecording, recordingCommentsEnabled {
-                PlaybackCommentOverlay(comments: commentStore.comments,
-                                        clock: { recordingController.currentSeconds },
-                                        videoRect: recordingController.videoRect,
-                                        isPaused: recordingController.isPaused,
-                                        isVisible: !isLoading && failure == nil, topReservedSpace: 480)
-                    .ignoresSafeArea()
-            }
-            if !isRecording, liveCommentsEnabled {
-                PlaybackCommentOverlay(comments: liveCommentStore.comments,
-                                       clock: { liveCommentStore.currentSeconds },
-                                       videoRect: controller.videoRect,
-                                       isPaused: controller.isPaused || isLoading,
-                                       isVisible: !isLoading && failure == nil)
-                    .ignoresSafeArea()
-            }
-            if isRecording, recordingCaptionsEnabled {
-                RecordingCaptionOverlay(controller: recordingController.captions,
-                                        videoRect: recordingController.videoRect,
-                                        isVisible: !isLoading && failure == nil)
-                    .ignoresSafeArea()
-            }
             if isLoading || failure != nil {
                 Color.black.ignoresSafeArea()
                 VStack(spacing: 24) {
@@ -343,6 +352,10 @@ struct PlaybackView: View {
                     onClose: { finishSceneSearch() })
                     .zIndex(3)
             }
+            if viewportSettings.isPresented {
+                VideoViewportSettingsView(settings: viewportSettings, onClose: { closeViewport() })
+                    .zIndex(5)
+            }
             if visiblePanel == nil, let maintenanceError {
                 Text(maintenanceError)
                     .font(.caption)
@@ -377,6 +390,7 @@ struct PlaybackView: View {
         .onChange(of: isLoading, initial: true) { _, loading in
             updateLiveCommentClock()
             if loading {
+                closeViewport(restoreFocus: false)
                 finishSceneSearch(restoreFocus: false)
                 isQualityOverlayPresented = false
                 if panelBeforeLoading == nil, let visiblePanel {
@@ -415,6 +429,7 @@ struct PlaybackView: View {
         .onChange(of: failure) { _, failure in
             updateLiveCommentClock()
             if failure != nil {
+                closeViewport(restoreFocus: false)
                 finishSceneSearch(restoreFocus: false)
                 isQualityOverlayPresented = false
                 panelBeforeLoading = nil
@@ -433,6 +448,15 @@ struct PlaybackView: View {
                 playbackFocus = failure == nil && !isLoading ? .surface : (failure == nil ? .close : .retry)
             }
         }
+        .onChange(of: item.id) { _, _ in
+            viewportSettings.close()
+            viewportSettings.reset()
+        }
+        .onChange(of: viewportSettings.crop) { _, crop in
+#if DEBUG
+            print("RingonomiViewport: left=\(crop.left) top=\(crop.top) right=\(crop.right) bottom=\(crop.bottom)")
+#endif
+        }
         .onChange(of: liveCommentDelay) { _, _ in updateLiveCommentClock() }
         .task(id: recordingCaptionsEnabled) {
             recordingController.captions.setEnabled(recordingCaptionsEnabled)
@@ -441,7 +465,7 @@ struct PlaybackView: View {
 #if DEBUG
             print("RingonomiPlaybackCommand: playPause")
 #endif
-            guard !isSceneSearchPresented else { return }
+            guard !isSceneSearchPresented, !viewportSettings.isPresented else { return }
             if isRecording { recordingController.togglePause() } else { controller.togglePause() }
         }
         .task(id: CommentRequestID(server: item.client.baseURL, recordingID: item.recordingID,
@@ -548,6 +572,7 @@ struct PlaybackView: View {
                     else { controller.selectAudioTrack(id: id) }
                 },
                 close: close,
+                openViewport: presentViewport,
                 focus: $playbackFocus,
                 isQualityOverlayPresented: $isQualityOverlayPresented
             )
@@ -654,7 +679,7 @@ struct PlaybackView: View {
     }
 
     private func panelIsVisible(_ panel: PlaybackPanel) -> Bool {
-        visiblePanel == panel && !isLoading && failure == nil && !isSceneSearchPresented
+        visiblePanel == panel && !isLoading && failure == nil && !isSceneSearchPresented && !viewportSettings.isPresented
     }
 
     private func focusForPanel(_ panel: PlaybackPanel,
@@ -677,7 +702,7 @@ struct PlaybackView: View {
         switch panel {
         case .top:
             switch focus {
-            case .captions, .comments, .quality, .panelClose:
+            case .captions, .comments, .quality, .viewport, .panelClose:
                 return true
             case .audio:
                 return audioOptions.count > 1
@@ -696,6 +721,19 @@ struct PlaybackView: View {
                 return false
             }
         }
+    }
+
+    private func presentViewport() {
+        guard !isLoading, failure == nil, !isSceneSearchPresented else { return }
+        isQualityOverlayPresented = false
+        playbackFocus = nil
+        viewportSettings.open()
+    }
+
+    private func closeViewport(restoreFocus: Bool = true) {
+        guard viewportSettings.isPresented else { return }
+        viewportSettings.close()
+        if restoreFocus, panelIsVisible(.top) { playbackFocus = .viewport }
     }
 
     private func presentSceneSearch() {
@@ -796,7 +834,9 @@ struct PlaybackView: View {
         print("RingonomiPlaybackExit: card=\(isQualityOverlayPresented) panel=\(visiblePanel.map { $0 == .top ? "top" : "bottom" } ?? "hidden") focus=\(playbackFocus?.rawValue ?? "none")")
 #endif
 #if canImport(TVVLCKit)
-        if isSceneSearchPresented {
+        if viewportSettings.isPresented {
+            closeViewport()
+        } else if isSceneSearchPresented {
             finishSceneSearch()
         } else if isQualityOverlayPresented {
             dismissQualityOverlay(restoreFocus: true)
