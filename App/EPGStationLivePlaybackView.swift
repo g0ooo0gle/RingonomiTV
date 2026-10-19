@@ -269,7 +269,12 @@ struct EPGStationLivePlaybackView: View {
         }
 #if canImport(TVVLCKit)
         .onChange(of: controller.isLoading, initial: true) { _, loading in
-            if loading {
+            if effectiveFailure != nil {
+                // Suspending a failed decoder can publish loading after
+                // the error actions have appeared.  Keep their focus rather
+                // than targeting a loading button that is no longer shown.
+                focus = .retry
+            } else if loading {
                 qualityCardRequested = false
                 menuVisible = false
                 focus = .loadingClose
