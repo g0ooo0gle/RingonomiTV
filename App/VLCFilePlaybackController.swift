@@ -555,6 +555,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         oldAuthentication?.invalidate()
         let freshPlayer: VLCMediaPlayer
         let freshAuthentication: RNGSMBPlaybackAuthentication?
+        let freshMedia = VLCMedia(url: url)
         do {
             if let connection = selection?.smbConnection {
                 _ = try connection.relativePath(for: url)
@@ -569,6 +570,15 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
                     "--quiet", "--verbose=-1", "--no-ts-seek-percent", "--ts-trust-pcr"
                 ])
                 freshPlayer.libraryInstance.loggers = nil
+                if let credentials {
+                    // Supply credentials before opening the file so SMB does
+                    // not need an anonymous probe before requesting a login.
+                    // The fresh player's instance owns any in-memory cache.
+                    freshMedia.addOptions([
+                        "smb-user": credentials.username,
+                        "smb-pwd": credentials.password
+                    ])
+                }
                 freshAuthentication = RNGSMBPlaybackAuthentication(
                     library: freshPlayer.libraryInstance,
                     username: credentials?.username, password: credentials?.password)
@@ -587,7 +597,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         player = freshPlayer
         smbAuthentication = freshAuthentication
         stopRequested = false
-        freshPlayer.media = VLCMedia(url: url)
+        freshPlayer.media = freshMedia
         freshPlayer.audio?.isMuted = true
         if pendingPositionSeconds != nil, pendingPositionStartedAt == nil {
             pendingPositionStartedAt = Date()
