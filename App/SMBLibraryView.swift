@@ -1,6 +1,13 @@
 import SwiftUI
 import RingonomiCore
 
+private struct SMBEditCredentialsContext: Identifiable {
+    let connection: SMBConnection
+    let credentials: SMBCredentials?
+
+    var id: SMBConnection.ID { connection.id }
+}
+
 /// SMB share browser. Credentials are loaded only for the duration of a
 /// directory request and are never included in navigation values or labels.
 struct SMBLibraryView: View {
@@ -8,8 +15,7 @@ struct SMBLibraryView: View {
 
     @StateObject private var library: SMBLibraryStore
     @State private var showingAdd = false
-    @State private var editingConnection: SMBConnection?
-    @State private var editingCredentials: SMBCredentials?
+    @State private var editingContext: SMBEditCredentialsContext?
     @State private var pendingDelete: SMBConnection?
     @State private var message: String?
 #if DEBUG
@@ -142,15 +148,15 @@ struct SMBLibraryView: View {
                     }
                 }
             }
-            .sheet(item: $editingConnection, onDismiss: {
-                editingCredentials = nil
-            }) { connection in
+            .sheet(item: $editingContext, onDismiss: {
+                editingContext = nil
+            }) { context in
                 NavigationStack {
                     SMBEditCredentialsForm(
-                        connection: connection,
-                        initialCredentials: editingCredentials
+                        connection: context.connection,
+                        initialCredentials: context.credentials
                     ) { credentials in
-                        updateCredentials(credentials, for: connection)
+                        updateCredentials(credentials, for: context.connection)
                     }
                 }
             }
@@ -306,8 +312,11 @@ struct SMBLibraryView: View {
 
     private func beginCredentialEdit(_ connection: SMBConnection) {
         do {
-            editingCredentials = try keychain.load(for: connection)
-            editingConnection = connection
+            let credentials = try keychain.load(for: connection)
+            editingContext = SMBEditCredentialsContext(
+                connection: connection,
+                credentials: credentials
+            )
         } catch {
             message = "SMBの認証情報を読み込めませんでした。"
         }
@@ -316,8 +325,7 @@ struct SMBLibraryView: View {
     private func updateCredentials(_ credentials: SMBCredentials?, for connection: SMBConnection) -> String? {
         do {
             try keychain.save(credentials, for: connection)
-            editingConnection = nil
-            editingCredentials = nil
+            editingContext = nil
             return nil
         } catch {
             let text = credentials == nil
