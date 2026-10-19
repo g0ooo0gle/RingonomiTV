@@ -116,6 +116,7 @@ struct EPGStationProgramGuideView: View {
             let expectedAddress = effectiveAddress
             let expectedDay = day
             let expectedBroadcast = broadcast
+            guard !Task.isCancelled else { return }
             guard !expectedAddress.isEmpty else {
                 store.cancel(clear: true)
                 return
