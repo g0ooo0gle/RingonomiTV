@@ -13,6 +13,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
@@ -51,6 +52,7 @@ struct RequestState {
     std::atomic_bool timedOut{false};
     std::atomic_bool finished{false};
     std::atomic_bool loginPrompted{false};
+    std::atomic_bool authenticationFailed{false};
 
     std::mutex mediaMutex;
     libvlc_media_t *media = nullptr;
@@ -247,6 +249,24 @@ void SilentLog(void *, int, const libvlc_log_t *, const char *, va_list) {
     // usernames, or protocol diagnostics supplied by a remote peer.
 }
 
+#if DEBUG
+void DebugSMBEvent(const char *event,
+                   int parseStatus,
+                   bool hasError,
+                   bool loginAttempt) {
+    // Keep diagnostics fixed and numeric. Never include a URL, server name,
+    // username, password, or LibVLC-supplied text here.
+    std::fprintf(stderr,
+                 "RNGSMB_DEBUG event=%s parse_status=%d error=%d login_attempt=%d\n",
+                 event,
+                 parseStatus,
+                 hasError ? 1 : 0,
+                 loginAttempt ? 1 : 0);
+}
+#else
+void DebugSMBEvent(const char *, int, bool, bool) {}
+#endif
+
 void DismissDialog(void *, libvlc_dialog_id *dialog) {
     if (dialog != nullptr) {
         (void)libvlc_dialog_dismiss(dialog);
@@ -281,12 +301,28 @@ void DisplayLogin(void *data,
         return;
     }
 
-    state->loginPrompted.store(true, std::memory_order_release);
+    bool firstPrompt = !state->loginPrompted.exchange(
+        true, std::memory_order_acq_rel);
+    DebugSMBEvent("login", 0, !firstPrompt, true);
+    if (!firstPrompt) {
+        // LibVLC may ask again after a rejected credential. Do not resend the
+        // same secret indefinitely; dismiss the dialog and terminate this
+        // request as a generic authentication failure.
+        state->authenticationFailed.store(true, std::memory_order_release);
+        DismissDialog(nullptr, dialog);
+        state->signalParse(libvlc_media_parsed_status_failed, true);
+        return;
+    }
+
     std::string username;
     std::string password;
     if (state->cancelled.load(std::memory_order_acquire) ||
         state->timedOut.load(std::memory_order_acquire) ||
         !state->copyCredentials(username, password)) {
+        if (!state->cancelled.load(std::memory_order_acquire) &&
+            !state->timedOut.load(std::memory_order_acquire)) {
+            state->authenticationFailed.store(true, std::memory_order_release);
+        }
         DismissDialog(nullptr, dialog);
         return;
     }
@@ -371,7 +407,8 @@ NSError *ParseStatusError(const std::shared_ptr<RequestState> &state,
         status == libvlc_media_parsed_status_timeout) {
         return BridgeError(RNGSMBDirectoryBridgeErrorTimeout);
     }
-    if (state->loginPrompted.load(std::memory_order_acquire)) {
+    if (state->authenticationFailed.load(std::memory_order_acquire) ||
+        state->loginPrompted.load(std::memory_order_acquire)) {
         return BridgeError(RNGSMBDirectoryBridgeErrorAuthentication);
     }
     return BridgeError(RNGSMBDirectoryBridgeErrorUnavailable);
@@ -542,6 +579,7 @@ NSError *RunListing(libvlc_instance_t *instance,
             status = libvlc_media_parsed_status_timeout;
         }
         if (state->cancelled.load() || state->timedOut.load() ||
+            state->authenticationFailed.load(std::memory_order_acquire) ||
             status != libvlc_media_parsed_status_done) {
             error = ParseStatusError(state, status);
         }
@@ -583,6 +621,10 @@ NSError *RunListing(libvlc_instance_t *instance,
     }
 
     state->clearCredentials();
+    DebugSMBEvent("completion",
+                  status,
+                  error != nil,
+                  state->loginPrompted.load(std::memory_order_acquire));
     if (error != nil) {
         return error;
     }
