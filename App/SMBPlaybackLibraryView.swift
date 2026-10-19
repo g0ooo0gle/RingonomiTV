@@ -19,7 +19,7 @@ struct SMBPlaybackLibraryView: View {
                     resumePosition: resume.position(for: key) ?? 0,
                     identity: key, smbConnection: connection)
             } catch {
-                error = "このファイルを開けませんでした。フォルダーを更新して再試行してください。"
+                self.error = "このファイルを開けませんでした。フォルダーを更新して再試行してください。"
             }
         }
         .fullScreenCover(item: $playback) { item in
