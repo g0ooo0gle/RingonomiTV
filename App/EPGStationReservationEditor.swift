@@ -31,44 +31,14 @@ struct EPGStationReservationEditor: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                if let original {
-                    Section {
-                        Text(original.name).font(.title3)
-                        Text(epgStationSchedule(start: original.startAt, end: original.endAt))
-                        Text("番組・日時・保存先・変換設定は現在の内容を保持します。")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    Section("録画設定") {
-                        Toggle("番組末尾の切れを許可", isOn: $allowEndLack)
-                    }
-                } else if store.loading {
-                    ProgressView("放送局と保存先を読み込んでいます…")
-                    Button("閉じる", action: close)
-                } else if let error = store.error {
-                    Text(error).foregroundStyle(.red)
-                    Button("再試行") { store.load(address: address) }
-                } else {
-                    creationFields
+            VStack(spacing: 0) {
+                EPGStationListHeader(original == nil ? "EPGStation予約を追加" : "EPGStation予約を変更") {
+                    EmptyView()
                 }
-                if let message {
-                    Section { Text(message).foregroundStyle(.red).focusable() }
-                }
-                if mutation.pending != nil, !submitting {
-                    Section {
-                        Text("前の操作結果が未確認です。予約一覧へ戻り、結果を確認してください。")
-                            .foregroundStyle(.orange)
-                    }
-                }
-                Section {
-                    if submitting { ProgressView("予約の処理結果を確認しています…") }
-                    Button(original == nil ? "内容を確認して予約" : "変更内容を確認") { prepareConfirmation() }
-                        .disabled(submitting || mutation.busy || mutation.pending != nil || (original == nil && (store.loading || store.error != nil)))
-                    Button("閉じる", action: close).disabled(submitting)
-                }
+                editorForm
             }
             .disabled(submitting)
-            .navigationTitle(original == nil ? "EPGStation予約を追加" : "EPGStation予約を変更")
+            .navigationTitle("")
             .interactiveDismissDisabled(submitting)
             .onExitCommand(perform: close)
             .confirmationDialog(original == nil ? "この内容で録画予約しますか？" : "録画設定の変更を保存しますか？", isPresented: $confirm, titleVisibility: .visible) {
@@ -96,6 +66,45 @@ struct EPGStationReservationEditor: View {
                 // by a confirmation or child-screen transition.
                 guard !submitting, !confirm, !showingFailure else { return }
                 submitTask?.cancel()
+            }
+        }
+    }
+
+    private var editorForm: some View {
+        Form {
+            if let original {
+                Section {
+                    Text(original.name).font(.title3)
+                    Text(epgStationSchedule(start: original.startAt, end: original.endAt))
+                    Text("番組・日時・保存先・変換設定は現在の内容を保持します。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Section("録画設定") {
+                    Toggle("番組末尾の切れを許可", isOn: $allowEndLack)
+                }
+            } else if store.loading {
+                ProgressView("放送局と保存先を読み込んでいます…")
+                Button("閉じる", action: close)
+            } else if let error = store.error {
+                Text(error).foregroundStyle(.red)
+                Button("再試行") { store.load(address: address) }
+            } else {
+                creationFields
+            }
+            if let message {
+                Section { Text(message).foregroundStyle(.red).focusable() }
+            }
+            if mutation.pending != nil, !submitting {
+                Section {
+                    Text("前の操作結果が未確認です。予約一覧へ戻り、結果を確認してください。")
+                        .foregroundStyle(.orange)
+                }
+            }
+            Section {
+                if submitting { ProgressView("予約の処理結果を確認しています…") }
+                Button(original == nil ? "内容を確認して予約" : "変更内容を確認") { prepareConfirmation() }
+                    .disabled(submitting || mutation.busy || mutation.pending != nil || (original == nil && (store.loading || store.error != nil)))
+                Button("閉じる", action: close).disabled(submitting)
             }
         }
     }

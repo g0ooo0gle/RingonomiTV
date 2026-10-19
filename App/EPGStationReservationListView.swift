@@ -240,6 +240,53 @@ private struct EPGStationReservationDetailView: View {
     @State private var cancelTask: Task<Void, Never>?
 
     var body: some View {
+        VStack(spacing: 0) {
+            EPGStationListHeader("EPGStation予約の詳細") {
+                EmptyView()
+            }
+            detailList
+        }
+        .navigationTitle("")
+        .interactiveDismissDisabled(submitting)
+        .onAppear {
+            if store.cancelled || (store.item == nil && !store.loading && store.error == nil) {
+                reload()
+            }
+        }
+        .onChange(of: address) { _, _ in reload() }
+        .onChange(of: reservationID) { _, _ in reload() }
+        .onExitCommand(perform: goBack)
+        .sheet(item: $editing) { context in
+            EPGStationReservationEditor(address: context.address, original: context.original) { reload() }
+        }
+        .confirmationDialog("この予約を取り消しますか？", isPresented: $confirmCancel, titleVisibility: .visible) {
+            Button(confirmedAfterStart ? "録画への影響を確認して取り消す" : "予約を取り消す", role: .destructive) {
+                if let item = store.item {
+                    beginCancel(item: item, confirmedAfterStart: confirmedAfterStart)
+                }
+            }
+            Button("戻る", role: .cancel) {}
+        } message: {
+            if let item = store.item {
+                Text(item.name + (item.ruleID == nil ? "\n手動予約を取り消します。" : "\nこの回を除外します。ルールは残ります。") + (confirmedAfterStart ? "\n録画開始時刻を過ぎています。進行中の録画が停止する場合があります。" : ""))
+            }
+        }
+        .alert("予約操作の結果を確認してください", isPresented: $showingFailure) {
+            Button("閉じる", role: .cancel) {}
+        } message: {
+            Text(mutationMessage ?? "予約操作の結果を確認できませんでした。予約一覧を確認してください。")
+        }
+        .onDisappear {
+            // A detail view can disappear while its editor or confirmation
+            // dialog is presented.  Keep those child operations alive; only
+            // cancel a read/task when the detail itself is really leaving.
+            guard !submitting, !showingFailure, editing == nil, !confirmCancel else { return }
+            store.cancel()
+            cancelTask?.cancel()
+        }
+    }
+
+    private var detailList: some View {
         List {
             if store.loading {
                 ProgressView("予約の詳細を読み込んでいます…")
@@ -301,44 +348,6 @@ private struct EPGStationReservationDetailView: View {
             }
             if submitting || mutation.busy { ProgressView("予約の処理結果を確認しています…") }
             if let mutationMessage { Text(mutationMessage).foregroundStyle(.orange).focusable() }
-        }
-        .navigationTitle("EPGStation予約の詳細")
-        .interactiveDismissDisabled(submitting)
-        .onAppear {
-            if store.cancelled || (store.item == nil && !store.loading && store.error == nil) {
-                reload()
-            }
-        }
-        .onChange(of: address) { _, _ in reload() }
-        .onChange(of: reservationID) { _, _ in reload() }
-        .onExitCommand(perform: goBack)
-        .sheet(item: $editing) { context in
-            EPGStationReservationEditor(address: context.address, original: context.original) { reload() }
-        }
-        .confirmationDialog("この予約を取り消しますか？", isPresented: $confirmCancel, titleVisibility: .visible) {
-            Button(confirmedAfterStart ? "録画への影響を確認して取り消す" : "予約を取り消す", role: .destructive) {
-                if let item = store.item {
-                    beginCancel(item: item, confirmedAfterStart: confirmedAfterStart)
-                }
-            }
-            Button("戻る", role: .cancel) {}
-        } message: {
-            if let item = store.item {
-                Text(item.name + (item.ruleID == nil ? "\n手動予約を取り消します。" : "\nこの回を除外します。ルールは残ります。") + (confirmedAfterStart ? "\n録画開始時刻を過ぎています。進行中の録画が停止する場合があります。" : ""))
-            }
-        }
-        .alert("予約操作の結果を確認してください", isPresented: $showingFailure) {
-            Button("閉じる", role: .cancel) {}
-        } message: {
-            Text(mutationMessage ?? "予約操作の結果を確認できませんでした。予約一覧を確認してください。")
-        }
-        .onDisappear {
-            // A detail view can disappear while its editor or confirmation
-            // dialog is presented.  Keep those child operations alive; only
-            // cancel a read/task when the detail itself is really leaving.
-            guard !submitting, !showingFailure, editing == nil, !confirmCancel else { return }
-            store.cancel()
-            cancelTask?.cancel()
         }
     }
 

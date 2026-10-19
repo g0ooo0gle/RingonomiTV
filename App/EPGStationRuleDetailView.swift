@@ -24,6 +24,61 @@ struct EPGStationRuleDetailView: View {
     }
 
     var body: some View {
+        VStack(spacing: 0) {
+            EPGStationListHeader("EPGStationルール詳細") {
+                Button("更新", action: reload).disabled(store.loading || submitting)
+            }
+            detailList
+        }
+        .navigationTitle("")
+        .sheet(item: $editor, onDismiss: reload) { context in
+            EPGStationRuleEditor(address: context.address, original: context.original) {
+                message = "ルールの保存を確認しました。録画予約の再計算は続いている場合があります。"
+            }
+        }
+        .confirmationDialog(confirmation == .delete ? "このルールを削除しますか？" : "ルールの有効状態を変更しますか？", isPresented: Binding(get: { confirmation != nil }, set: { if !$0 { confirmation = nil } }), titleVisibility: .visible) {
+            if let action = confirmation, let item = store.item {
+                Button(action == .delete ? "ルールを削除する" : item.options.enabled == true ? "無効にする" : "有効にする", role: action == .delete ? .destructive : nil) {
+                    beginApply(action, item: item)
+                }
+            }
+            Button("戻る", role: .cancel) {}
+        } message: {
+            Text(confirmation == .delete
+                 ? "関連する録画予約が取り消されます。録画済みの動画ファイルは削除されません。"
+                 : "関連する録画予約が追加・変更・取り消される場合があります。処理には時間がかかることがあります。")
+        }
+        .alert("操作結果を確認してください", isPresented: $showingFailure) {
+            Button("閉じる", role: .cancel) {}
+        } message: {
+            Text(message ?? "操作結果を確認できませんでした。詳細画面を確認してください。")
+        }
+        .onAppear { if store.item == nil || store.cancelled { reload() } }
+        .task(id: focusTaskID) {
+            guard let pendingFocus, !store.loading, !submitting else { return }
+            do {
+                try await Task.sleep(for: .milliseconds(150))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled, self.pendingFocus == pendingFocus, !store.loading, !submitting else { return }
+            self.pendingFocus = nil
+            if store.error != nil, pendingFocus == .toggle {
+                focusedTarget = .loadError
+            } else {
+                focusedTarget = pendingFocus
+            }
+        }
+        .onDisappear {
+            guard !submitting, !showingFailure, confirmation == nil, editor == nil else { return }
+            pendingFocus = nil
+            store.cancel()
+            operation?.cancel()
+        }
+        .onExitCommand { if !submitting { dismiss() } }
+    }
+
+    private var detailList: some View {
         List {
             if store.loading {
                 ProgressView("ルールと関連する予約を読み込んでいます…")
@@ -77,53 +132,6 @@ struct EPGStationRuleDetailView: View {
             if submitting { ProgressView("ルールの処理結果を確認しています…") }
             Button("一覧へ戻る") { if !submitting { dismiss() } }.disabled(submitting)
         }
-        .navigationTitle("EPGStationルール詳細")
-        .toolbar { Button("更新", action: reload).disabled(store.loading || submitting) }
-        .sheet(item: $editor, onDismiss: reload) { context in
-            EPGStationRuleEditor(address: context.address, original: context.original) {
-                message = "ルールの保存を確認しました。録画予約の再計算は続いている場合があります。"
-            }
-        }
-        .confirmationDialog(confirmation == .delete ? "このルールを削除しますか？" : "ルールの有効状態を変更しますか？", isPresented: Binding(get: { confirmation != nil }, set: { if !$0 { confirmation = nil } }), titleVisibility: .visible) {
-            if let action = confirmation, let item = store.item {
-                Button(action == .delete ? "ルールを削除する" : item.options.enabled == true ? "無効にする" : "有効にする", role: action == .delete ? .destructive : nil) {
-                    beginApply(action, item: item)
-                }
-            }
-            Button("戻る", role: .cancel) {}
-        } message: {
-            Text(confirmation == .delete
-                 ? "関連する録画予約が取り消されます。録画済みの動画ファイルは削除されません。"
-                 : "関連する録画予約が追加・変更・取り消される場合があります。処理には時間がかかることがあります。")
-        }
-        .alert("操作結果を確認してください", isPresented: $showingFailure) {
-            Button("閉じる", role: .cancel) {}
-        } message: {
-            Text(message ?? "操作結果を確認できませんでした。詳細画面を確認してください。")
-        }
-        .onAppear { if store.item == nil || store.cancelled { reload() } }
-        .task(id: focusTaskID) {
-            guard let pendingFocus, !store.loading, !submitting else { return }
-            do {
-                try await Task.sleep(for: .milliseconds(150))
-            } catch {
-                return
-            }
-            guard !Task.isCancelled, self.pendingFocus == pendingFocus, !store.loading, !submitting else { return }
-            self.pendingFocus = nil
-            if store.error != nil, pendingFocus == .toggle {
-                focusedTarget = .loadError
-            } else {
-                focusedTarget = pendingFocus
-            }
-        }
-        .onDisappear {
-            guard !submitting, !showingFailure, confirmation == nil, editor == nil else { return }
-            pendingFocus = nil
-            store.cancel()
-            operation?.cancel()
-        }
-        .onExitCommand { if !submitting { dismiss() } }
     }
 
     private func reload() { store.load(address: address, id: id) }
