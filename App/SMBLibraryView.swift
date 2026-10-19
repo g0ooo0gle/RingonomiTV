@@ -215,41 +215,50 @@ struct SMBLibraryView: View {
 
     @ViewBuilder
     private func connectionRow(_ connection: SMBConnection) -> some View {
-        HStack(spacing: 16) {
-            NavigationLink {
-                SMBFolderView(
-                    connection: connection,
-                    path: .root,
-                    library: library,
-                    onOpen: onOpen
-                )
-            } label: {
-                VStack(alignment: .leading, spacing: 4) {
+        NavigationLink {
+            SMBFolderView(
+                connection: connection,
+                path: .root,
+                library: library,
+                onOpen: onOpen
+            )
+        } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(connection.displayName)
+                    .font(.headline)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(connectionLocation(connection))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+
+        Menu {
+            Button("認証情報を変更") {
+                beginCredentialEdit(connection)
+            }
+            Button("共有を削除", role: .destructive) {
+                pendingDelete = connection
+            }
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "ellipsis.circle")
+                    .font(.title3)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("共有の操作")
                     Text(connection.displayName)
-                        .font(.headline)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Text(connectionLocation(connection))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
-
-            Menu {
-                Button("認証情報を変更") {
-                    beginCredentialEdit(connection)
-                }
-                Button("共有を削除", role: .destructive) {
-                    pendingDelete = connection
-                }
-            } label: {
-                Image(systemName: "ellipsis.circle")
-                    .font(.title3)
-                    .accessibilityLabel("共有の操作")
-            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityLabel("共有の操作 \(connection.displayName)")
         }
     }
 
