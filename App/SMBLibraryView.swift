@@ -827,7 +827,6 @@ private struct SMBFolderSearchForm: View {
                 .bold()
 
             TextField("ファイル名・フォルダー名", text: $draft)
-                .textFieldStyle(.roundedBorder)
 
             HStack(spacing: 20) {
                 Button("検索") {
