@@ -188,7 +188,6 @@ struct VideoViewportSettingsView: View {
             }
 
             HStack(spacing: 12) {
-                Spacer()
                 actionButton(
                     title: "元に戻す",
                     action: .reset,
@@ -203,6 +202,7 @@ struct VideoViewportSettingsView: View {
                     accessibilityLabel: "クロップ設定を閉じる",
                     perform: close
                 )
+                Spacer()
             }
         }
         .padding(.horizontal, 28)
@@ -227,7 +227,6 @@ struct VideoViewportSettingsView: View {
                 .frame(width: 62, alignment: .trailing)
                 .accessibilityLabel("\(edge.title)側")
                 .accessibilityValue(percent(for: edge))
-            Spacer(minLength: 12)
             actionButton(
                 title: "−1%",
                 action: .adjust(edge, -1),
@@ -244,6 +243,7 @@ struct VideoViewportSettingsView: View {
             ) {
                 settings.adjust(edge: edge, by: 0.01)
             }
+            Spacer(minLength: 12)
         }
     }
 
