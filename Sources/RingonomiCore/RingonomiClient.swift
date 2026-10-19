@@ -151,9 +151,11 @@ public struct RecordedVideo: Decodable, Sendable {
     /// Server-generated commercial intervals in seconds from video start.
     /// The field is omitted or null until analysis produces usable metadata.
     public let cmSections: [CommercialSection]?
+    /// Optional server-generated scene atlas. Invalid optional metadata must not prevent playback.
+    public let thumbnailInfo: RecordingThumbnailInfo?
 
     private enum CodingKeys: String, CodingKey {
-        case id, duration, status, cmSections
+        case id, duration, status, cmSections, thumbnailInfo
     }
 
     public init(from decoder: Decoder) throws {
@@ -170,6 +172,7 @@ public struct RecordedVideo: Decodable, Sendable {
         duration = try container.decode(Double.self, forKey: .duration)
         status = try container.decodeIfPresent(String.self, forKey: .status)
         cmSections = Self.decodeCommercialSections(from: container)
+        thumbnailInfo = try? container.decodeIfPresent(RecordingThumbnailInfo.self, forKey: .thumbnailInfo)
     }
 
     private static func decodeCommercialSections(

@@ -10,6 +10,7 @@ enum PlaybackControlFocus: String, Hashable {
     case backward
     case forward
     case chapters
+    case scenes
     case playPause
     case captions
     case comments

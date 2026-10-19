@@ -32,6 +32,7 @@ final class RecordingPlaybackController: ObservableObject {
     private var isSuspendedForBackground = false
     private var isChangingQuality = false
     private var wantsPause = false
+    private var sceneSearchShouldResume: Bool?
     private var targetSeconds: Double = 0
     private var preparing = false
     private var prerolled = false
@@ -694,6 +695,28 @@ final class RecordingPlaybackController: ObservableObject {
             prepareExistingPosition(safeTime())
         }
     }
+    /// Freeze the recording while the user browses scene thumbnails. The
+    /// stored intent is restored through the same frame/preroll gate as seek.
+    func beginSceneSearch() -> Bool {
+        guard !isStopped, !isSuspendedForBackground, !isLoading,
+              failure == nil, sceneSearchShouldResume == nil else { return false }
+        sceneSearchShouldResume = !wantsPause
+        if !wantsPause { togglePause() }
+        return true
+    }
+
+    func endSceneSearch(at seconds: Double? = nil) {
+        guard let shouldResume = sceneSearchShouldResume else { return }
+        sceneSearchShouldResume = nil
+        wantsPause = !shouldResume
+        guard !isStopped, !isSuspendedForBackground, failure == nil else { return }
+        if let seconds, seconds.isFinite, !isLoading {
+            seek(to: seconds)
+        } else if shouldResume, !isLoading {
+            prepareExistingPosition(safeTime())
+        }
+    }
+
     func configureCommercialTimeline(_ timeline: RecordingChapterTimeline?, isComplete: Bool) {
         guard !isStopped else { return }
         commercialTimeline = timeline
