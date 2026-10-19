@@ -4,6 +4,7 @@ import RingonomiCore
 struct EPGStationReservationEditor: View {
     let address: String
     let original: EPGStationReservation?
+    let initialProgram: EPGStationScheduleProgram?
     let onSaved: () -> Void
     @Environment(\.dismiss) private var dismiss
     @StateObject private var store = EPGStationReservationEditorStore()
@@ -27,6 +28,14 @@ struct EPGStationReservationEditor: View {
     private enum CreationMode: String, CaseIterable {
         case program = "番組を選ぶ"
         case time = "時刻を指定"
+    }
+
+    init(address: String, original: EPGStationReservation?,
+         initialProgram: EPGStationScheduleProgram? = nil, onSaved: @escaping () -> Void) {
+        self.address = address
+        self.original = original
+        self.initialProgram = initialProgram
+        self.onSaved = onSaved
     }
 
     var body: some View {
@@ -54,7 +63,14 @@ struct EPGStationReservationEditor: View {
                 guard !prepared else { return }
                 prepared = true
                 if let original { allowEndLack = original.allowEndLack }
-                else { store.load(address: address) }
+                else {
+                    if let initialProgram {
+                        channelID = initialProgram.channelID
+                        program = initialProgram
+                        programDay = epgStationCalendar.startOfDay(for: Date(timeIntervalSince1970: initialProgram.startAt / 1000))
+                    }
+                    store.load(address: address)
+                }
             }
             .onChange(of: store.channels) { _, values in
                 if channelID == nil { channelID = values.first?.id }
@@ -204,7 +220,8 @@ struct EPGStationReservationEditor: View {
         guard let channelID else { throw ReservationUIError("放送局を選択してください。") }
         let save = directory.isEmpty ? nil : EPGStationReservationSaveOption(parentDirectoryName: directory)
         if mode == .program {
-            guard let program, program.endAt > Date().timeIntervalSince1970 * 1000 else {
+            guard let program, program.channelID == channelID,
+                  program.endAt > Date().timeIntervalSince1970 * 1000 else {
                 throw ReservationUIError("これから録画できる番組を選択してください。")
             }
             return EPGStationCreationDraft(program: program, time: nil, options: .init(allowEndLack: allowEndLack, saveOption: save))

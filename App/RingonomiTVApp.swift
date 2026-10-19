@@ -104,6 +104,7 @@ struct LibraryView: View {
                             .foregroundStyle(.secondary)
                     }
                     Section("EPGStation") {
+                        NavigationLink("EPGStationの番組表") { EPGStationProgramGuideView() }
                         NavigationLink("EPGStationの録画") {
                             EPGStationLibraryView()
                         }
@@ -129,6 +130,8 @@ struct LibraryView: View {
                         EPGStationReservationListView()
                     case .epgstationRules:
                         EPGStationRuleListView()
+                    case .epgstationGuide:
+                        EPGStationProgramGuideView()
                     }
                 }
             }
@@ -153,6 +156,10 @@ struct LibraryView: View {
             if arguments.contains("--show-epgstation-rules") || arguments.contains("--epgstation-rule") {
                 selectedTab = 4
                 settingsPath = [.epgstationRules]
+            }
+            if arguments.contains("--show-epgstation-guide") {
+                selectedTab = 4
+                settingsPath = [.epgstationGuide]
             }
 #endif
         }
@@ -295,4 +302,5 @@ private enum SettingsDestination: Hashable {
     case epgstation
     case epgstationReservations
     case epgstationRules
+    case epgstationGuide
 }
