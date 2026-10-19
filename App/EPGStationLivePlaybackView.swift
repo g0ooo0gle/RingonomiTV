@@ -168,6 +168,8 @@ struct EPGStationLivePlaybackView: View {
             }
         }
         .background(.black)
+        .environment(\.colorScheme, .dark)
+        .tint(.cyan)
         .onAppear {
             guard !hasAppeared else { return }
             hasAppeared = true

@@ -95,6 +95,8 @@ struct MirakurunPlaybackView: View {
 #endif
         }
         .background(.black)
+        .environment(\.colorScheme, .dark)
+        .tint(.cyan)
         .onAppear {
             hasAppeared = true
             updateContinuousDisplay()

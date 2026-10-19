@@ -59,6 +59,8 @@ struct FilePlaybackView: View {
     var body: some View {
 #if canImport(TVVLCKit)
         playerBody
+            .environment(\.colorScheme, .dark)
+            .tint(.cyan)
             .onAppear {
                 hasAppeared = true
                 startPlayback()
@@ -110,6 +112,7 @@ struct FilePlaybackView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(.black)
+        .environment(\.colorScheme, .dark)
 #endif
     }
 

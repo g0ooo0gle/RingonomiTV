@@ -13,6 +13,9 @@ struct RingonomiTVApp: App {
 }
 struct LibraryView: View {
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.colorScheme) private var systemColorScheme
+    @AppStorage("appAppearanceMode") private var appearanceValue = AppAppearanceMode.system.rawValue
+    @AppStorage("appColorStyle") private var colorStyleValue = AppColorStyle.standard.rawValue
     @AppStorage("serverAddress") private var address = ""
     @State private var draftAddress = ""
     @State private var loadedAddressDraft = false
@@ -52,6 +55,15 @@ struct LibraryView: View {
     }
     private var connectionKey: ConnectionLoadKey {
         ConnectionLoadKey(address: effectiveAddress, revision: account.revision)
+    }
+    private var appearanceMode: AppAppearanceMode {
+        AppAppearanceMode(rawValue: appearanceValue) ?? .system
+    }
+    private var colorStyle: AppColorStyle {
+        AppColorStyle(rawValue: colorStyleValue) ?? .standard
+    }
+    private var palette: AppColorPalette {
+        colorStyle.palette(for: appearanceMode.preferredColorScheme ?? systemColorScheme)
     }
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -97,6 +109,7 @@ struct LibraryView: View {
                     if loading { ProgressView() }
                     if let error { Text(error).foregroundStyle(.red) }
                     if let channelError { Text(channelError).foregroundStyle(.red) }
+                    AppearanceSettingsFields(modeValue: $appearanceValue, styleValue: $colorStyleValue)
                     Section("Mirakurun") {
                         NavigationLink("Mirakurunの番組表") { MirakurunProgramGuideView() }
                         NavigationLink("Mirakurun直接視聴") {
@@ -259,6 +272,11 @@ struct LibraryView: View {
         .alert("接続エラー", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
             Button("閉じる") { error = nil }
         } message: { Text(error ?? "") }
+        .preferredColorScheme(appearanceMode.preferredColorScheme)
+        .environment(\.appColorStyle, colorStyle)
+        .tint(palette.accent)
+        .scrollContentBackground(.hidden)
+        .background(palette.background.ignoresSafeArea())
     }
     @MainActor private func refresh() async {
         let expected = UUID()

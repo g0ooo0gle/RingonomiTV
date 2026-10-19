@@ -126,6 +126,8 @@ struct PlaybackView: View {
                 Color.black.ignoresSafeArea()
             }
         }
+        .environment(\.colorScheme, .dark)
+        .tint(.cyan)
         .onAppear {
             if !hasStarted, item.savedPosition == nil { beginPlayback(at: 0) }
         }
