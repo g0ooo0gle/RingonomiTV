@@ -10,6 +10,7 @@ NS_ASSUME_NONNULL_BEGIN
 /// Calling `invalidate` disables further responses and clears the in-memory
 /// credential copy.  A nil username represents guest access.  SMB domain
 /// authentication is intentionally not part of this transient API.
+NS_SWIFT_SENDABLE
 @interface RNGSMBPlaybackAuthentication : NSObject
 
 - (nullable instancetype)initWithLibrary:(VLCLibrary *)library

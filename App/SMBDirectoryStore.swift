@@ -71,6 +71,11 @@ final class SMBDirectoryStore: ObservableObject {
         }
     }
 
+    func reportCredentialFailure() {
+        cancel(clear: true)
+        error = "保存した認証情報を読み込めませんでした。共有の認証設定を確認して再試行してください。"
+    }
+
     private static func validated(
         _ items: [RNGSMBDirectoryItem], connection: SMBConnection, parent: SMBRelativePath
     ) throws -> (entries: [SMBLibraryEntry], skipped: Int) {

@@ -418,11 +418,9 @@ private struct SMBConnectionForm: View {
         if let result {
             message = result
         } else {
+            password = ""
             dismiss()
         }
-        // The parent dismisses this sheet after a successful save. Clearing
-        // the local copy here also avoids retaining the password unnecessarily.
-        password = ""
     }
 }
 
@@ -476,7 +474,7 @@ private struct SMBEditCredentialsForm: View {
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                         SecureField("新しいパスワード", text: $password)
-                        Text("保存済みパスワードは表示しません。変更時は入力してください。")
+                        Text("保存済みパスワードは表示しません。空欄で保存すると空のパスワードに変更します。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -502,9 +500,9 @@ private struct SMBEditCredentialsForm: View {
         if let result = onSave(credentials) {
             message = result
         } else {
+            password = ""
             dismiss()
         }
-        password = ""
     }
 }
 
@@ -784,7 +782,7 @@ struct SMBFolderView: View {
             let loaded = try keychain.load(for: connection)
             directory.load(connection: connection, path: currentPath, credentials: loaded)
         } catch {
-            message = "SMBの認証情報を読み込めませんでした。"
+            directory.reportCredentialFailure()
         }
     }
 
