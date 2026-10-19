@@ -392,11 +392,23 @@ public struct EPGStationScheduleProgram: Codable, Equatable, Sendable, Identifia
     public let name: String
     public let description: String?
     public let extended: String?
+    /// Structured metadata returned when the schedule request asks for the
+    /// raw extended fields.  Unknown fields are deliberately ignored by the
+    /// decoder; this value only retains the server's string pairs.
+    public let rawExtended: [String: String]?
+    public let genre1: Int?
+    public let subGenre1: Int?
+    public let genre2: Int?
+    public let subGenre2: Int?
+    public let genre3: Int?
+    public let subGenre3: Int?
 
     private enum CodingKeys: String, CodingKey {
         case id
         case channelID = "channelId"
         case startAt, endAt, isFree, name, description, extended
+        case rawExtended
+        case genre1, subGenre1, genre2, subGenre2, genre3, subGenre3
     }
 
     public init(
@@ -407,7 +419,14 @@ public struct EPGStationScheduleProgram: Codable, Equatable, Sendable, Identifia
         isFree: Bool,
         name: String,
         description: String? = nil,
-        extended: String? = nil
+        extended: String? = nil,
+        rawExtended: [String: String]? = nil,
+        genre1: Int? = nil,
+        subGenre1: Int? = nil,
+        genre2: Int? = nil,
+        subGenre2: Int? = nil,
+        genre3: Int? = nil,
+        subGenre3: Int? = nil
     ) throws {
         guard EPGStationValueRules.isPositiveIdentifier(id),
               EPGStationValueRules.isPositiveIdentifier(channelID),
@@ -418,7 +437,14 @@ public struct EPGStationScheduleProgram: Codable, Equatable, Sendable, Identifia
               endAt <= Double(EPGStationValueRules.maximumSafeJSONInteger),
               EPGStationValueRules.isSafeText(name, maximumBytes: 16 * 1024, allowEmpty: false),
               description.map({ EPGStationValueRules.isSafeHumanText($0, maximumBytes: 64 * 1024) }) ?? true,
-              extended.map({ EPGStationValueRules.isSafeHumanText($0, maximumBytes: 64 * 1024) }) ?? true else {
+              extended.map({ EPGStationValueRules.isSafeHumanText($0, maximumBytes: 64 * 1024) }) ?? true,
+              rawExtended.map(Self.isValidRawExtended) ?? true,
+              Self.isValidGenre(genre1),
+              Self.isValidGenre(subGenre1),
+              Self.isValidGenre(genre2),
+              Self.isValidGenre(subGenre2),
+              Self.isValidGenre(genre3),
+              Self.isValidGenre(subGenre3) else {
             throw EPGStationError.invalidResponse
         }
         self.id = id
@@ -429,6 +455,13 @@ public struct EPGStationScheduleProgram: Codable, Equatable, Sendable, Identifia
         self.name = name
         self.description = description
         self.extended = extended
+        self.rawExtended = rawExtended
+        self.genre1 = genre1
+        self.subGenre1 = subGenre1
+        self.genre2 = genre2
+        self.subGenre2 = subGenre2
+        self.genre3 = genre3
+        self.subGenre3 = subGenre3
     }
 
     public init(from decoder: Decoder) throws {
@@ -441,8 +474,48 @@ public struct EPGStationScheduleProgram: Codable, Equatable, Sendable, Identifia
             isFree: container.decode(Bool.self, forKey: .isFree),
             name: container.decode(String.self, forKey: .name),
             description: container.decodeIfPresent(String.self, forKey: .description),
-            extended: container.decodeIfPresent(String.self, forKey: .extended)
+            extended: container.decodeIfPresent(String.self, forKey: .extended),
+            rawExtended: container.decodeIfPresent([String: String].self, forKey: .rawExtended),
+            genre1: container.decodeIfPresent(Int.self, forKey: .genre1),
+            subGenre1: container.decodeIfPresent(Int.self, forKey: .subGenre1),
+            genre2: container.decodeIfPresent(Int.self, forKey: .genre2),
+            subGenre2: container.decodeIfPresent(Int.self, forKey: .subGenre2),
+            genre3: container.decodeIfPresent(Int.self, forKey: .genre3),
+            subGenre3: container.decodeIfPresent(Int.self, forKey: .subGenre3)
         )
+    }
+
+    private static func isValidGenre(_ value: Int?) -> Bool {
+        value.map { (0...15).contains($0) } ?? true
+    }
+
+    private static func isValidRawExtended(_ value: [String: String]) -> Bool {
+        // The endpoint is already bounded to 4 MiB.  These per-field and
+        // aggregate limits additionally prevent an unexpectedly large
+        // dictionary from making the UI or diagnostics expensive while
+        // allowing normal EPG text.
+        guard value.count <= 256 else { return false }
+        let maximumTotalBytes = 512 * 1024
+        var totalBytes = 0
+        for (heading, text) in value {
+            guard EPGStationValueRules.isSafeText(
+                heading,
+                maximumBytes: 16 * 1024,
+                allowEmpty: true
+            ),
+            EPGStationValueRules.isSafeHumanText(
+                text,
+                maximumBytes: 64 * 1024
+            ) else {
+                return false
+            }
+            let fieldBytes = heading.utf8.count + text.utf8.count
+            guard fieldBytes <= maximumTotalBytes - totalBytes else {
+                return false
+            }
+            totalBytes += fieldBytes
+        }
+        return true
     }
 }
 
