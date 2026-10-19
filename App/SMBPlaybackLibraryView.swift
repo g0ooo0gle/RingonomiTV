@@ -10,7 +10,7 @@ struct SMBPlaybackLibraryView: View {
     @StateObject private var idleTimer = PlaybackIdleTimer()
 
     var body: some View {
-        SMBLibraryView { connection, entry in
+        SMBLibraryView(playbackActive: playback != nil) { connection, entry in
             do {
                 let identity = connection.stableKey(for: entry.path)
                 let key = SHA256.hash(data: Data(identity.utf8))

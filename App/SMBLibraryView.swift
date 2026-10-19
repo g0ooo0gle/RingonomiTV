@@ -12,6 +12,7 @@ private struct SMBEditCredentialsContext: Identifiable {
 /// directory request and are never included in navigation values or labels.
 struct SMBLibraryView: View {
     let onOpen: (SMBConnection, SMBLibraryEntry) -> Void
+    let playbackActive: Bool
 
     @StateObject private var library: SMBLibraryStore
     @State private var showingAdd = false
@@ -36,8 +37,12 @@ struct SMBLibraryView: View {
 #endif
     }
 
-    init(onOpen: @escaping (SMBConnection, SMBLibraryEntry) -> Void = { _, _ in }) {
+    init(
+        playbackActive: Bool = false,
+        onOpen: @escaping (SMBConnection, SMBLibraryEntry) -> Void = { _, _ in }
+    ) {
         self.onOpen = onOpen
+        self.playbackActive = playbackActive
         _library = StateObject(wrappedValue: SMBLibraryStore())
     }
 
@@ -52,6 +57,7 @@ struct SMBLibraryView: View {
                             path: .root,
                             library: library,
                             allowsPinning: false,
+                            playbackActive: playbackActive,
                             onOpen: onOpen
                         )
                     } label: {
@@ -85,6 +91,7 @@ struct SMBLibraryView: View {
                                         connection: connection,
                                         path: pin.path,
                                         library: library,
+                                        playbackActive: playbackActive,
                                         onOpen: onOpen
                                     )
                                 } label: {
@@ -226,6 +233,7 @@ struct SMBLibraryView: View {
                 connection: connection,
                 path: .root,
                 library: library,
+                playbackActive: playbackActive,
                 onOpen: onOpen
             )
         } label: {
@@ -531,6 +539,7 @@ struct SMBFolderView: View {
     let connection: SMBConnection
     @ObservedObject var library: SMBLibraryStore
     let allowsPinning: Bool
+    let playbackActive: Bool
     let onOpen: (SMBConnection, SMBLibraryEntry) -> Void
 
     @Environment(\.scenePhase) private var scenePhase
@@ -549,11 +558,13 @@ struct SMBFolderView: View {
         path: SMBRelativePath,
         library: SMBLibraryStore,
         allowsPinning: Bool = true,
+        playbackActive: Bool = false,
         onOpen: @escaping (SMBConnection, SMBLibraryEntry) -> Void = { _, _ in }
     ) {
         self.connection = connection
         self.library = library
         self.allowsPinning = allowsPinning
+        self.playbackActive = playbackActive
         self.onOpen = onOpen
         _directory = StateObject(wrappedValue: SMBDirectoryStore())
         _currentPath = State(initialValue: path)
@@ -651,18 +662,26 @@ struct SMBFolderView: View {
         }
         .onAppear {
             isVisible = true
-            if needsReload { reload() }
+            if !playbackActive, scenePhase == .active, needsReload { reload() }
         }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
             case .active:
-                if isVisible, needsReload { reload() }
+                if isVisible, !playbackActive, needsReload { reload() }
             case .inactive, .background:
                 needsReload = true
                 directory.cancel()
             @unknown default:
                 needsReload = true
                 directory.cancel()
+            }
+        }
+        .onChange(of: playbackActive) { _, active in
+            if active {
+                needsReload = true
+                directory.cancel()
+            } else if isVisible, scenePhase == .active, needsReload {
+                reload()
             }
         }
         .onDisappear {
@@ -812,7 +831,9 @@ struct SMBFolderView: View {
     }
 
     private func reload() {
-        guard scenePhase != .inactive, scenePhase != .background else { return }
+        guard !playbackActive,
+              scenePhase != .inactive,
+              scenePhase != .background else { return }
         needsReload = false
         directory.cancel(clear: true)
         do {
