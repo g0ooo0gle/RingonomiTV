@@ -28,44 +28,15 @@ struct EPGStationRuleListView: View {
     }
 
     var body: some View {
-        List {
-            pendingSection
-            Section("EPGStation接続") {
-                TextField("EPGStation URL（例：http://ホスト:8888）", text: $draftAddress)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
-                Button("接続してルールを読み込む", action: connect).disabled(store.loading || mutation.busy)
-                if let inputError { Text(inputError).foregroundStyle(.red) }
-            }
-            if effectiveAddress.isEmpty {
-                Text("EPGStationの接続先を入力してください。")
-            } else {
-                Section("ルールの検索") {
-                    TextField("登録済みルールのキーワード", text: $keyword)
-                    Button("検索") { offset = 0; appliedKeyword = keyword; reload() }.disabled(store.loading)
-                    if !appliedKeyword.isEmpty {
-                        Button("検索を解除") { keyword = ""; appliedKeyword = ""; offset = 0; reload() }
-                    }
-                }
-                ruleSection
-                if !store.loading, store.error == nil, !store.cancelled, store.total > 0 {
-                    Section {
-                        Text("\(offset / 30 + 1) / \(max(1, (store.total - 1) / 30 + 1)) ページ · \(store.total)件")
-                        HStack(spacing: 24) {
-                            Button("前のページ") { offset = max(0, offset - 30); reload() }.disabled(offset == 0)
-                            Button("次のページ") { offset += 30; reload() }.disabled(offset + 30 >= store.total)
-                        }
-                    }
-                }
-            }
-        }
-        .navigationTitle("EPGStationキーワード予約")
-        .toolbar {
-            ToolbarItemGroup(placement: .topBarTrailing) {
+        VStack(spacing: 0) {
+            EPGStationListHeader("EPGStationキーワード予約") {
                 Button("ルールを追加") { creation = .init(address: effectiveAddress, original: nil) }
                     .disabled(effectiveAddress.isEmpty || mutation.busy || mutation.pending != nil)
                 Button("更新", action: reload).disabled(effectiveAddress.isEmpty || store.loading)
             }
+            ruleList
         }
+        .navigationTitle("")
         .sheet(item: $creation, onDismiss: { restoreRowFocus = true; reload() }) { context in
             EPGStationRuleEditor(address: context.address, original: context.original) { offset = 0; selectedID = nil }
         }
@@ -121,6 +92,39 @@ struct EPGStationRuleListView: View {
             restoreRowFocus = false
         }
         .onDisappear { store.cancel() }
+    }
+
+    private var ruleList: some View {
+        List {
+            pendingSection
+            Section("EPGStation接続") {
+                TextField("EPGStation URL（例：http://ホスト:8888）", text: $draftAddress)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                Button("接続してルールを読み込む", action: connect).disabled(store.loading || mutation.busy)
+                if let inputError { Text(inputError).foregroundStyle(.red) }
+            }
+            if effectiveAddress.isEmpty {
+                Text("EPGStationの接続先を入力してください。")
+            } else {
+                Section("ルールの検索") {
+                    TextField("登録済みルールのキーワード", text: $keyword)
+                    Button("検索") { offset = 0; appliedKeyword = keyword; reload() }.disabled(store.loading)
+                    if !appliedKeyword.isEmpty {
+                        Button("検索を解除") { keyword = ""; appliedKeyword = ""; offset = 0; reload() }
+                    }
+                }
+                ruleSection
+                if !store.loading, store.error == nil, !store.cancelled, store.total > 0 {
+                    Section {
+                        Text("\(offset / 30 + 1) / \(max(1, (store.total - 1) / 30 + 1)) ページ · \(store.total)件")
+                        HStack(spacing: 24) {
+                            Button("前のページ") { offset = max(0, offset - 30); reload() }.disabled(offset == 0)
+                            Button("次のページ") { offset += 30; reload() }.disabled(offset + 30 >= store.total)
+                        }
+                    }
+                }
+            }
+        }
     }
 
     @ViewBuilder private var pendingSection: some View {

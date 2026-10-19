@@ -33,6 +33,83 @@ struct EPGStationReservationListView: View {
     }
 
     var body: some View {
+        VStack(spacing: 0) {
+            EPGStationListHeader("EPGStation予約") {
+                NavigationLink("キーワード予約") { EPGStationRuleListView() }
+                Button("予約を追加") {
+                    creation = EPGStationReservationEditorConnection(address: effectiveAddress, original: nil)
+                }.disabled(effectiveAddress.isEmpty || mutation.busy || mutation.pending != nil)
+                Button("更新", action: reload)
+                    .disabled(effectiveAddress.isEmpty || store.loading)
+            }
+            reservationList
+        }
+        .navigationTitle("")
+        .sheet(item: $creation) { context in
+            EPGStationReservationEditor(address: context.address, original: context.original) {
+                offset = 0
+                reload()
+            }
+        }
+        .confirmationDialog("前の操作結果を確認しましたか？", isPresented: $acknowledgePending, titleVisibility: .visible) {
+            Button("確認済み・操作を再開") { mutation.acknowledgeAfterReview(address: effectiveAddress, readAt: store.lastReadAt) }
+            Button("まだ確認していない", role: .cancel) {}
+        } message: {
+            Text("結果が分からないまま追加し直すと、同じ録画予約が重複する場合があります。")
+        }
+        .navigationDestination(isPresented: $showingDetail) {
+            if let selectedID, let detailAddress {
+                EPGStationReservationDetailView(address: detailAddress, reservationID: selectedID)
+            }
+        }
+        .onAppear {
+            if !preparedDraft {
+                preparedDraft = true
+                draftAddress = effectiveAddress
+                if !effectiveAddress.isEmpty { reload() }
+            } else if !effectiveAddress.isEmpty, store.cancelled || mutation.pending != nil {
+                reload()
+            }
+#if DEBUG
+            let arguments = ProcessInfo.processInfo.arguments
+            if !handledDebugSelection,
+               let index = arguments.firstIndex(of: "--epgstation-reservation"),
+               index + 1 < arguments.count, let id = Int(arguments[index + 1]), id > 0 {
+                handledDebugSelection = true
+                selectedID = id
+                detailAddress = effectiveAddress
+                showingDetail = true
+            }
+#endif
+        }
+        .onChange(of: effectiveAddress) { _, next in
+            creation = nil
+            showingDetail = false
+            selectedID = nil
+            detailAddress = nil
+            draftAddress = next
+            offset = 0
+            store.cancel(clear: true)
+            if !next.isEmpty { reload() }
+        }
+        .onChange(of: showingDetail) { wasShowing, isShowing in
+            guard wasShowing, !isShowing else { return }
+            let dismissedAddress = detailAddress
+            selectedID = nil
+            detailAddress = nil
+            guard dismissedAddress == effectiveAddress, !effectiveAddress.isEmpty else { return }
+            reload()
+        }
+        .onChange(of: mutation.busy) { wasBusy, isBusy in
+            if wasBusy, !isBusy, mutation.pending != nil {
+                offset = 0
+                if filter != .all { filter = .all } else { reload() }
+            }
+        }
+        .onDisappear { store.cancel() }
+    }
+
+    private var reservationList: some View {
         List {
             if let pending = mutation.pending {
                 Section("前の操作結果を確認してください") {
@@ -127,79 +204,6 @@ struct EPGStationReservationListView: View {
                 }
             }
         }
-        .navigationTitle("EPGStation予約")
-        .toolbar {
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                NavigationLink("キーワード予約") { EPGStationRuleListView() }
-                Button("予約を追加") {
-                    creation = EPGStationReservationEditorConnection(address: effectiveAddress, original: nil)
-                }.disabled(effectiveAddress.isEmpty || mutation.busy || mutation.pending != nil)
-                Button("更新", action: reload)
-                    .disabled(effectiveAddress.isEmpty || store.loading)
-            }
-        }
-        .sheet(item: $creation) { context in
-            EPGStationReservationEditor(address: context.address, original: context.original) {
-                offset = 0
-                reload()
-            }
-        }
-        .confirmationDialog("前の操作結果を確認しましたか？", isPresented: $acknowledgePending, titleVisibility: .visible) {
-            Button("確認済み・操作を再開") { mutation.acknowledgeAfterReview(address: effectiveAddress, readAt: store.lastReadAt) }
-            Button("まだ確認していない", role: .cancel) {}
-        } message: {
-            Text("結果が分からないまま追加し直すと、同じ録画予約が重複する場合があります。")
-        }
-        .navigationDestination(isPresented: $showingDetail) {
-            if let selectedID, let detailAddress {
-                EPGStationReservationDetailView(address: detailAddress, reservationID: selectedID)
-            }
-        }
-        .onAppear {
-            if !preparedDraft {
-                preparedDraft = true
-                draftAddress = effectiveAddress
-                if !effectiveAddress.isEmpty { reload() }
-            } else if !effectiveAddress.isEmpty, store.cancelled || mutation.pending != nil {
-                reload()
-            }
-#if DEBUG
-            let arguments = ProcessInfo.processInfo.arguments
-            if !handledDebugSelection,
-               let index = arguments.firstIndex(of: "--epgstation-reservation"),
-               index + 1 < arguments.count, let id = Int(arguments[index + 1]), id > 0 {
-                handledDebugSelection = true
-                selectedID = id
-                detailAddress = effectiveAddress
-                showingDetail = true
-            }
-#endif
-        }
-        .onChange(of: effectiveAddress) { _, next in
-            creation = nil
-            showingDetail = false
-            selectedID = nil
-            detailAddress = nil
-            draftAddress = next
-            offset = 0
-            store.cancel(clear: true)
-            if !next.isEmpty { reload() }
-        }
-        .onChange(of: showingDetail) { wasShowing, isShowing in
-            guard wasShowing, !isShowing else { return }
-            let dismissedAddress = detailAddress
-            selectedID = nil
-            detailAddress = nil
-            guard dismissedAddress == effectiveAddress, !effectiveAddress.isEmpty else { return }
-            reload()
-        }
-        .onChange(of: mutation.busy) { wasBusy, isBusy in
-            if wasBusy, !isBusy, mutation.pending != nil {
-                offset = 0
-                if filter != .all { filter = .all } else { reload() }
-            }
-        }
-        .onDisappear { store.cancel() }
     }
 
     private func connect() {
