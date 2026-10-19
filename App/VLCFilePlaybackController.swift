@@ -156,7 +156,13 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
     }
 
     var canSeek: Bool {
-        !isStopped && !isLoading && failure == nil && isSeekable && durationSeconds != nil
+        canSeekRelative && durationSeconds != nil
+    }
+
+    /// A time-based jump does not need a duration. A proportional scrubber
+    /// still requires one, because its position would otherwise be a guess.
+    var canSeekRelative: Bool {
+        !isStopped && !isLoading && failure == nil && isSeekable
     }
 
     func attachSurface(_ view: UIView) {
@@ -248,14 +254,13 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
     }
 
     func seek(seconds: Double) {
-        guard seconds.isFinite else { return }
+        guard canSeekRelative, seconds.isFinite else { return }
         seek(to: safeCurrentSeconds + seconds)
     }
 
     func seek(to seconds: Double) {
-        guard canSeek, seconds.isFinite,
-              let duration = durationSeconds,
-              let target = clamp(seconds, duration: duration) else { return }
+        guard canSeekRelative, seconds.isFinite,
+              let target = clamp(seconds, duration: durationSeconds) else { return }
 
         // The rightmost seek-bar position means the end of a completed
         // recording. Asking the TS decoder to seek into its final fraction
@@ -709,7 +714,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
                 let remainingSeconds = remainingMilliseconds >= 0 ? remainingMilliseconds / 1000 : -1
                 let mediaLengthMilliseconds = media.length.value?.doubleValue ?? -1
                 let mediaLengthSeconds = mediaLengthMilliseconds >= 0 ? mediaLengthMilliseconds / 1000 : -1
-                print("RingonomiFileStats: rawSeconds=\(rawSeconds) position=\(player.position) remainingSeconds=\(remainingSeconds) mediaLengthSeconds=\(mediaLengthSeconds) readBytes=\(stats.readBytes) demuxReadBytes=\(stats.demuxReadBytes) inputBitrate=\(stats.inputBitrate) demuxBitrate=\(stats.demuxBitrate) pictures=\(totalPictures) delta=\(pictures) decodedAudio=\(decodedAudio) playedAudio=\(playedAudio) loading=\(isLoading) muted=\(player.audio?.isMuted == true) state=\(player.state.rawValue)")
+                print("RingonomiFileStats: rawSeconds=\(rawSeconds) position=\(player.position) remainingSeconds=\(remainingSeconds) mediaLengthSeconds=\(mediaLengthSeconds) seekable=\(player.isSeekable) parsedStatus=\(media.parsedStatus.rawValue) readBytes=\(stats.readBytes) demuxReadBytes=\(stats.demuxReadBytes) inputBitrate=\(stats.inputBitrate) demuxBitrate=\(stats.demuxBitrate) pictures=\(totalPictures) delta=\(pictures) decodedAudio=\(decodedAudio) playedAudio=\(playedAudio) loading=\(isLoading) muted=\(player.audio?.isMuted == true) state=\(player.state.rawValue)")
             }
 #endif
 

@@ -120,7 +120,8 @@ struct SMBLibraryView: View {
                     Button {
                         showingAdd = true
                     } label: {
-                        Label("共有を追加", systemImage: "plus")
+                        Image(systemName: "plus")
+                            .accessibilityLabel("共有を追加")
                     }
                 }
             }
@@ -522,6 +523,7 @@ struct SMBFolderView: View {
     @State private var showingSearch = false
     @State private var message: String?
     @State private var needsReload = true
+    @State private var isVisible = false
 
     private let keychain = SMBCredentialsKeychain()
 
@@ -541,7 +543,9 @@ struct SMBFolderView: View {
     }
 
     private var title: String {
-        currentPath.components.last ?? connection.share
+        currentPath.components.last
+            ?? connection.baseDirectory.components.last
+            ?? connection.share
     }
 
     private var visibleEntries: [SMBLibraryEntry] {
@@ -583,20 +587,21 @@ struct SMBFolderView: View {
                 Button {
                     showingSearch = true
                 } label: {
-                    Label("検索", systemImage: "magnifyingglass")
+                    Image(systemName: "magnifyingglass")
+                        .accessibilityLabel("検索")
                 }
                 .disabled(directory.loading)
             }
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    togglePin()
-                } label: {
-                    Label(
-                        pin == nil ? "ピン留め" : "ピン留めを外す",
-                        systemImage: pin == nil ? "pin" : "pin.slash"
-                    )
+            if allowsPinning {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        togglePin()
+                    } label: {
+                        Image(systemName: pin == nil ? "pin" : "pin.slash")
+                            .accessibilityLabel(pin == nil ? "ピン留め" : "ピン留めを外す")
+                    }
+                    .disabled(directory.loading)
                 }
-                .disabled(directory.loading || !allowsPinning)
             }
             ToolbarItem(placement: .automatic) {
                 Button("更新") { reload() }
@@ -628,12 +633,13 @@ struct SMBFolderView: View {
             Text(message ?? "SMB操作に失敗しました。")
         }
         .onAppear {
+            isVisible = true
             if needsReload { reload() }
         }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
             case .active:
-                if needsReload { reload() }
+                if isVisible, needsReload { reload() }
             case .inactive, .background:
                 needsReload = true
                 directory.cancel()
@@ -643,6 +649,7 @@ struct SMBFolderView: View {
             }
         }
         .onDisappear {
+            isVisible = false
             needsReload = true
             directory.cancel()
         }

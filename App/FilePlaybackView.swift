@@ -329,8 +329,9 @@ struct FilePlaybackView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                Text("再生時間を取得しています…")
+                Text("\(timestamp(controller.currentSeconds)) / 総時間不明")
                     .font(.caption)
+                    .monospacedDigit()
                     .foregroundStyle(.secondary)
             }
 
@@ -346,10 +347,10 @@ struct FilePlaybackView: View {
         HStack(spacing: 22) {
             Button("1分戻る") { controller.seek(seconds: -60) }
                 .focused($playbackFocus, equals: .backward)
-                .disabled(!controller.canSeek)
+                .disabled(!controller.canSeekRelative)
             Button("3分進む") { controller.seek(seconds: 180) }
                 .focused($playbackFocus, equals: .forward)
-                .disabled(!controller.canSeek)
+                .disabled(!controller.canSeekRelative)
             Button(controller.isEnded ? "最初から再生" : (controller.isPaused ? "再生" : "一時停止")) {
                 controller.togglePause()
             }
