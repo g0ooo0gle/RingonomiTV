@@ -568,7 +568,9 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
                 guard credentials?.domain.isEmpty != false else {
                     throw SMBError.invalidConnection
                 }
-                freshPlayer = VLCMediaPlayer(options: ["--quiet", "--verbose=-1"])
+                freshPlayer = VLCMediaPlayer(options: [
+                    "--quiet", "--verbose=-1", "--keystore=memory"
+                ])
                 freshPlayer.libraryInstance.loggers = nil
                 if let credentials {
                     // Supply credentials before opening the file so SMB does

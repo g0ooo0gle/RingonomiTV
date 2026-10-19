@@ -271,7 +271,10 @@ void SilentLog(void *, int, const libvlc_log_t *, const char *, va_list) {
 }
 
 libvlc_instance_t *CreateListingInstance() {
-    libvlc_instance_t *instance = libvlc_new(0, nullptr);
+    // Keep all VLC-side credential lookup in this request's memory store.
+    // The app's explicit Keychain item is the only persistent source.
+    const char *options[] = {"--quiet", "--verbose=-1", "--keystore=memory"};
+    libvlc_instance_t *instance = libvlc_new(3, options);
     if (instance != nullptr) {
         libvlc_log_set(instance, &SilentLog, nullptr);
     }
