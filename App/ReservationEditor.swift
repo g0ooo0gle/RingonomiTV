@@ -30,7 +30,7 @@ struct ReservationEditor: View {
                     Text(channel.name + " · " + reservationDate(program.startDate) + " – " + reservationTime(program.endDate))
                     if original?.isRecordingInProgress == true { Text("録画中です。設定変更や削除は進行中の録画に影響します。").foregroundStyle(.orange) }
                 }
-                RecordingSettingsFields(draft: $draft)
+                RecordingSettingsFields(draft: $draft, address: address)
                 if let message { Section { Text(message).foregroundStyle(.red) } }
                 Section {
                     if busy { ProgressView("サーバーの処理結果を確認しています…") }

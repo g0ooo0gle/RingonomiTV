@@ -56,7 +56,7 @@ struct KeywordReservationEditor: View {
                     TextField("重複チェックの対象日数", text: $duplicateDays)
                 }
                 previewSection
-                RecordingSettingsFields(draft: $recording)
+                RecordingSettingsFields(draft: $recording, address: address)
                 Section {
                     if busy { ProgressView("サーバーの処理結果を確認しています…") }
                     Button(original == nil ? "条件を追加" : "変更を保存") { confirmation = true }
