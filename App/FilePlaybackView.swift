@@ -59,6 +59,7 @@ struct FilePlaybackView: View {
     var body: some View {
 #if canImport(TVVLCKit)
         playerBody
+            .background(Color.black.ignoresSafeArea())
             .environment(\.colorScheme, .dark)
             .tint(.cyan)
             .onAppear {
@@ -111,7 +112,7 @@ struct FilePlaybackView: View {
             Text(item.title).lineLimit(2)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(.black)
+        .background(Color.black.ignoresSafeArea())
         .environment(\.colorScheme, .dark)
 #endif
     }
@@ -121,8 +122,8 @@ struct FilePlaybackView: View {
         ZStack {
             VideoViewportMedia(crop: viewportSettings.crop, videoRect: controller.videoRect) {
                 NativeFilePlaybackVideo(url: item.url, controller: controller)
-                    .ignoresSafeArea()
             }
+            .ignoresSafeArea()
 
             // The surface is a focus target only while the controls are
             // hidden and playback is ready.  It is not a full-screen Button;
