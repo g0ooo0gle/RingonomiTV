@@ -396,7 +396,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
               failure == nil else { return }
         refreshDurationAndSeekability()
         if player.state == .error {
-            fail("録画を再生できませんでした。接続先とファイル状態を確認してください。")
+            fail(mediaOpenFailureMessage)
             return
         }
         var preservingTrustedPosition = false
@@ -709,6 +709,13 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         }
     }
 
+    private var mediaOpenFailureMessage: String {
+        if selection?.smbConnection != nil {
+            return "共有ファイルを再生できませんでした。接続先、ログイン情報とファイルの状態を確認して再試行してください。"
+        }
+        return "録画を再生できませんでした。接続先とファイル状態を確認してください。"
+    }
+
     private func updateStatus() {
         guard !isStopped, !isSuspendedForBackground, failure == nil,
               currentURL != nil, !isEnded else { return }
@@ -732,7 +739,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
             if pendingPositionSeconds != nil {
                 failPositionRequest()
             } else {
-                fail("録画を再生できませんでした。接続先とファイル状態を確認してください。")
+                fail(mediaOpenFailureMessage)
             }
             return
         case .ended:
@@ -751,7 +758,9 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
             return
         case .stopped:
             if !isLoading {
-                fail("録画の再生が停止しました。再試行してください。")
+                fail(selection?.smbConnection == nil
+                     ? "録画の再生が停止しました。再試行してください。"
+                     : "共有ファイルの再生が停止しました。接続を確認して再試行してください。")
                 return
             }
         default:

@@ -151,13 +151,13 @@ NSError *BridgeError(RNGSMBDirectoryBridgeErrorCode code) {
             description = @"SMBドメイン認証には対応していません。";
             break;
         case RNGSMBDirectoryBridgeErrorUnavailable:
-            description = @"SMB共有に接続できませんでした。";
+            description = @"SMB共有に接続できませんでした。接続先とログイン情報を確認して再試行してください。";
             break;
         case RNGSMBDirectoryBridgeErrorAuthentication:
-            description = @"SMB認証に失敗しました。";
+            description = @"SMB認証に失敗しました。共有の設定からログイン情報を確認してください。";
             break;
         case RNGSMBDirectoryBridgeErrorTimeout:
-            description = @"SMBフォルダーの読み込みがタイムアウトしました。";
+            description = @"SMB共有から応答がありません。接続先とログイン情報を確認して再試行してください。";
             break;
         case RNGSMBDirectoryBridgeErrorCancelled:
             description = @"SMBフォルダーの読み込みをキャンセルしました。";
