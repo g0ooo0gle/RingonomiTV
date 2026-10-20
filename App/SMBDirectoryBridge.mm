@@ -157,7 +157,7 @@ NSError *BridgeError(RNGSMBDirectoryBridgeErrorCode code) {
             description = @"SMB認証に失敗しました。共有の設定からログイン情報を確認してください。";
             break;
         case RNGSMBDirectoryBridgeErrorTimeout:
-            description = @"SMB共有から応答がありません。接続先とログイン情報を確認して再試行してください。";
+            description = @"SMBフォルダーの読み込みがタイムアウトしました。接続先とログイン情報を確認して再試行してください。";
             break;
         case RNGSMBDirectoryBridgeErrorCancelled:
             description = @"SMBフォルダーの読み込みをキャンセルしました。";
