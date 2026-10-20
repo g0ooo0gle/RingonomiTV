@@ -639,6 +639,7 @@ struct SMBFolderView: View {
                     .disabled(directory.loading)
             }
         }
+        .toolbarBackground(.visible, for: .navigationBar)
         .sheet(isPresented: $showingSearch) {
             SMBFolderSearchForm(initialQuery: query) { value in
                 query = value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -724,6 +725,7 @@ struct SMBFolderView: View {
                     }
                 }
             }
+            .safeAreaPadding(.vertical)
             .task(id: focusRestoreRevision) {
                 guard focusRestoreRevision > 0 else { return }
                 await restoreFocus(using: proxy, revision: focusRestoreRevision)
