@@ -540,22 +540,18 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
             audioRecoveryRawID = nil
         }
 
-        let preferredID = hasExplicitAudioSelection
-            ? PlaybackAudioCatalog.preferredID(named: preferredAudioName, in: audioOptions)
-            : nil
-        if let preferredID, let preferredRawID = optionMap[preferredID] {
+        let preference = PlaybackAudioCatalog.preferenceMatch(
+            named: hasExplicitAudioSelection ? preferredAudioName : nil, in: audioOptions)
+        if let preferredID = preference.selectedID, let preferredRawID = optionMap[preferredID] {
             if currentRawID == preferredRawID {
                 selectedAudioID = preferredID
             } else if lastPreferredAudioAttemptID != preferredID {
                 lastPreferredAudioAttemptID = preferredID
                 _ = applyAudioTrack(id: preferredID, rawID: preferredRawID, rememberPreference: false)
             }
-        } else if let preferredAudioName,
-                  hasExplicitAudioSelection,
-                  !audioOptions.contains(where: { $0.preferenceKey == preferredAudioName }),
-                  !didReportMissingAudioForSource {
+        } else if let notice = preference.notice, !didReportMissingAudioForSource, audioSelectionError == nil {
             didReportMissingAudioForSource = true
-            audioSelectionError = "選択していた音声はこの配信では利用できません。"
+            audioSelectionError = notice
         }
 
         if let currentRawID,

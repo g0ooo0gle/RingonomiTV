@@ -65,7 +65,7 @@ final class RecordingPlaybackController: ObservableObject {
     private var audioGroup: AVMediaSelectionGroup?
     private var audioOptionMap: [String: AVMediaSelectionOption] = [:]
     private var preferredAudioKey: String?
-    private var audioRestorePending = false
+    private var audioDiscoveryCompleted = false
     private var audioRestoreAttempted = false
 
     init() {
@@ -164,7 +164,7 @@ final class RecordingPlaybackController: ObservableObject {
             selectedAudioID = nil
             audioSelectionError = nil
         }
-        audioRestorePending = false
+        audioDiscoveryCompleted = false
         audioRestoreAttempted = false
         if clearPreferred { preferredAudioKey = nil }
     }
@@ -183,7 +183,7 @@ final class RecordingPlaybackController: ObservableObject {
         audioOptions = []
         selectedAudioID = nil
         audioSelectionError = nil
-        audioRestorePending = false
+        audioDiscoveryCompleted = false
         audioRestoreAttempted = false
         let asset = item.asset
 
@@ -232,6 +232,7 @@ final class RecordingPlaybackController: ObservableObject {
               audioGeneration == expectedGeneration,
               audioSourceID == sourceID,
               player.currentItem === item else { return }
+        audioDiscoveryCompleted = true
         guard let group, !group.options.isEmpty else {
             // Some streams have no selectable alternate audio.  That is a
             // valid engine default, not a playback error.
@@ -240,6 +241,7 @@ final class RecordingPlaybackController: ObservableObject {
             audioOptionMap.removeAll()
             selectedAudioID = nil
             audioSelectionError = nil
+            restorePreferredAudioIfReady()
 #if DEBUG
             print("RingonomiTVAudio: optionCount=0 selectedID=nil")
 #endif
@@ -251,6 +253,9 @@ final class RecordingPlaybackController: ObservableObject {
         }
         let options = PlaybackAudioCatalog.options(sourceID: sourceID, descriptors: descriptors)
         guard !options.isEmpty else {
+            // An oversized/rejected catalog is unknown, not proof that a
+            // previously selected track is missing.
+            audioDiscoveryCompleted = false
             audioGroup = group
             audioOptions = []
             audioOptionMap.removeAll()
@@ -267,7 +272,7 @@ final class RecordingPlaybackController: ObservableObject {
         guard options.count == group.options.count else {
             audioOptions = []
             audioOptionMap.removeAll()
-            audioRestorePending = false
+            audioDiscoveryCompleted = false
             audioSelectionError = nil
             return
         }
@@ -276,7 +281,6 @@ final class RecordingPlaybackController: ObservableObject {
         })
         audioSelectionError = nil
 
-        audioRestorePending = PlaybackAudioCatalog.preferredID(named: preferredAudioKey, in: options) != nil
         if let current = item.currentMediaSelection.selectedMediaOption(in: group),
            let currentIndex = group.options.firstIndex(where: { $0.isEqual(current) }),
            options.indices.contains(currentIndex) {
@@ -288,23 +292,22 @@ final class RecordingPlaybackController: ObservableObject {
 #endif
     }
 
-    /// Restores a named user choice once the initial video gate has opened.
-    /// A missing/ambiguous label intentionally falls back to the engine's
-    /// default and is still considered one completed attempt for this asset.
+    /// Restore only after discovery and the initial video gate are complete.
+    /// Missing/ambiguous choices leave the engine's audio in place and explain
+    /// why it could not be restored without guessing a track.
     private func restorePreferredAudioIfReady() {
         guard !isStopped,
               !audioRestoreAttempted,
               !isLoading,
               !preparing,
               failure == nil,
-              !audioOptions.isEmpty else { return }
+              audioDiscoveryCompleted else { return }
         audioRestoreAttempted = true
-        guard audioRestorePending,
-              let preferredID = PlaybackAudioCatalog.preferredID(named: preferredAudioKey, in: audioOptions) else {
-            audioRestorePending = false
+        let preference = PlaybackAudioCatalog.preferenceMatch(named: preferredAudioKey, in: audioOptions)
+        guard let preferredID = preference.selectedID else {
+            if let notice = preference.notice { audioSelectionError = notice }
             return
         }
-        audioRestorePending = false
         // The player is paused as part of the initial seek/preroll even when
         // the user did not request pause. Preserve only the explicit intent.
         selectAudioTrack(id: preferredID, forcedPause: wantsPause)
