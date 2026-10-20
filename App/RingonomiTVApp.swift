@@ -273,6 +273,7 @@ struct LibraryView: View {
             Button("閉じる") { error = nil }
         } message: { Text(error ?? "") }
         .preferredColorScheme(appearanceMode.preferredColorScheme)
+        .environment(\.appAppearanceMode, appearanceMode)
         .environment(\.appColorStyle, colorStyle)
         .tint(palette.accent)
         .background(palette.background.ignoresSafeArea())

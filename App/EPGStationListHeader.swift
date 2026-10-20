@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct EPGStationListHeader<Actions: View>: View {
+    @Environment(\.appAppearanceMode) private var appearanceMode
     private let title: String
     private let actions: Actions
 
@@ -25,5 +26,6 @@ struct EPGStationListHeader<Actions: View>: View {
         .padding(.horizontal, 80)
         .padding(.top, 12)
         .padding(.bottom, 24)
+        .preferredColorScheme(appearanceMode.preferredColorScheme)
     }
 }

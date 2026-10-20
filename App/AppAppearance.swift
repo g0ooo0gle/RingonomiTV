@@ -107,11 +107,20 @@ private extension Color {
     }
 }
 
+private struct AppAppearanceModeKey: EnvironmentKey {
+    static let defaultValue = AppAppearanceMode.system
+}
+
 private struct AppColorStyleKey: EnvironmentKey {
     static let defaultValue = AppColorStyle.standard
 }
 
 extension EnvironmentValues {
+    var appAppearanceMode: AppAppearanceMode {
+        get { self[AppAppearanceModeKey.self] }
+        set { self[AppAppearanceModeKey.self] = newValue }
+    }
+
     var appColorStyle: AppColorStyle {
         get { self[AppColorStyleKey.self] }
         set { self[AppColorStyleKey.self] = newValue }
@@ -147,12 +156,14 @@ struct AppSection<Content: View>: View {
 
 /// Keeps navigation titles readable while retaining native toolbar actions.
 private struct AppNavigationTitle: ViewModifier {
+    @Environment(\.appAppearanceMode) private var appearanceMode
     @Environment(\.colorScheme) private var colorScheme
     let title: Text
 
     func body(content: Content) -> some View {
         content
             .navigationTitle("")
+            .preferredColorScheme(appearanceMode.preferredColorScheme)
             .toolbarColorScheme(colorScheme, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .principal) {
