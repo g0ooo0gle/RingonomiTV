@@ -72,7 +72,6 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
     private var selection: FilePlaybackSelection?
     private var currentURL: URL?
     private var durationHint: Double?
-    private var nativeInputDurationSeconds: Double?
     private var targetSeconds = 0.0
     // A VLC time assignment is asynchronous. Keep the request separate from
     // the trusted playback position so an old/zero time cannot overwrite a
@@ -171,6 +170,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
     var canSeekRelative: Bool {
         !isStopped && !isSuspendedForBackground && !isLoading
             && failure == nil && isSeekable
+            && (selection?.smbConnection == nil || durationSeconds != nil)
             && (durationSeconds != nil || (!isEnded && rawPlaybackSeconds != nil))
     }
 
@@ -566,7 +566,6 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         isPaused = wantsPause
         isEnded = false
         durationSeconds = durationHint
-        nativeInputDurationSeconds = nil
         isSeekable = false
         status = "読み込み中…"
         waitingSince = Date()
@@ -811,7 +810,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
                 let remainingSeconds = remainingMilliseconds >= 0 ? remainingMilliseconds / 1000 : -1
                 let mediaLengthMilliseconds = media.length.value?.doubleValue ?? -1
                 let mediaLengthSeconds = mediaLengthMilliseconds >= 0 ? mediaLengthMilliseconds / 1000 : -1
-                print("RingonomiFileStats: rawSeconds=\(rawSeconds) position=\(player.position) remainingSeconds=\(remainingSeconds) mediaLengthSeconds=\(mediaLengthSeconds) inputLengthSeconds=\(nativeInputDurationSeconds ?? -1) seekable=\(player.isSeekable) parsedStatus=\(media.parsedStatus.rawValue) readBytes=\(stats.readBytes) demuxReadBytes=\(stats.demuxReadBytes) inputBitrate=\(stats.inputBitrate) demuxBitrate=\(stats.demuxBitrate) pictures=\(totalPictures) delta=\(pictures) decodedAudio=\(decodedAudio) playedAudio=\(playedAudio) loading=\(isLoading) muted=\(player.audio?.isMuted == true) state=\(player.state.rawValue)")
+                print("RingonomiFileStats: rawSeconds=\(rawSeconds) position=\(player.position) remainingSeconds=\(remainingSeconds) mediaLengthSeconds=\(mediaLengthSeconds) seekable=\(player.isSeekable) parsedStatus=\(media.parsedStatus.rawValue) readBytes=\(stats.readBytes) demuxReadBytes=\(stats.demuxReadBytes) inputBitrate=\(stats.inputBitrate) demuxBitrate=\(stats.demuxBitrate) pictures=\(totalPictures) delta=\(pictures) decodedAudio=\(decodedAudio) playedAudio=\(playedAudio) loading=\(isLoading) muted=\(player.audio?.isMuted == true) state=\(player.state.rawValue)")
             }
 #endif
 
@@ -1062,15 +1061,8 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
     }
 
     private func refreshDurationAndSeekability() {
-        // An unparsed SMB media descriptor can have no length even while its
-        // active input knows the duration. Read that authoritative clock rather
-        // than estimating a duration from normalized playback position.
-        nativeInputDurationSeconds = selection?.smbConnection != nil
-            ? validDuration(RNGVLCPlayerDurationSeconds(player)) : nil
-        if let inputDuration = nativeInputDurationSeconds {
-            durationSeconds = inputDuration
-        } else if let milliseconds = player.media?.length.value?.doubleValue,
-                  milliseconds.isFinite, milliseconds > 0 {
+        if let milliseconds = player.media?.length.value?.doubleValue,
+           milliseconds.isFinite, milliseconds > 0 {
             durationSeconds = milliseconds / 1000
         } else if durationSeconds == nil {
             durationSeconds = durationHint

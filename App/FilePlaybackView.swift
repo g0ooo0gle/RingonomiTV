@@ -372,7 +372,7 @@ struct FilePlaybackView: View {
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
                 if !controller.canSeekRelative {
-                    Text("このファイルはシークに対応していません")
+                    Text("再生時間を取得できないためシークできません")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
