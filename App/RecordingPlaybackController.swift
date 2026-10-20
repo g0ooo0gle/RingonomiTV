@@ -570,9 +570,11 @@ final class RecordingPlaybackController: ObservableObject {
                         }
                         self.prerolled = true
                         self.preparationInFlight = false
-                        if !self.videoOutputIsReady {
-                            // 一部のHLSはprerollだけでは最初の映像を出力しない。
-                            // 先読み後にミュートで描画を開始し、最初のフレームまで覆いを保つ。
+                        if !self.videoOutputIsReady || (!self.wantsPause && self.pictureInPicture.hasActiveVideoPresentation) {
+                            // Some HLS needs a muted draw to produce its first
+                            // inline frame. PiP also needs an explicit start
+                            // after rebuffering, without AVPlayer's extra
+                            // automatic wait. Never restart a user-paused PiP.
                             self.player.isMuted = true
                             self.playbackStartRequested = true
                             self.player.playImmediately(atRate: 1)
