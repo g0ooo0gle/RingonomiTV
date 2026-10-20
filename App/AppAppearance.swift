@@ -172,6 +172,7 @@ private struct AppNavigationTitle: ViewModifier {
                         .foregroundStyle(colorScheme == .dark ? Color.white : Color.black)
                         .lineLimit(1)
                         .truncationMode(.middle)
+                        .padding(.horizontal, 32)
                         .accessibilityAddTraits(.isHeader)
                 }
             }
