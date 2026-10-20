@@ -216,8 +216,12 @@ struct SMBLibraryView: View {
             return
         }
         do {
+            let idIndex = arguments.firstIndex(of: "--smb-connection-id")
+            let runtimeID = idIndex.flatMap { index in
+                index + 1 < arguments.count ? UUID(uuidString: arguments[index + 1]) : nil
+            } ?? UUID()
             runtimeConnection = try SMBConnection(
-                address: rawAddress,
+                address: rawAddress, id: runtimeID,
                 displayName: "起動時SMB共有"
             )
         } catch {
