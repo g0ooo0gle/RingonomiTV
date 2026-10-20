@@ -7,6 +7,8 @@ final class PlaybackPresentationStore: ObservableObject {
     @Published private(set) var current: Playback?
     @Published private(set) var closeRequest: UUID?
     @Published private(set) var restoreRequest: UUID?
+    @Published private(set) var togglePauseRequest: UUID?
+    @Published private(set) var transport = PlaybackTransportState()
     @Published private(set) var isDetached = false
     @Published private(set) var notice: String?
     private var pending: Playback?
@@ -34,6 +36,16 @@ final class PlaybackPresentationStore: ObservableObject {
         self.notice = notice
     }
 
+    func setTransport(_ state: PlaybackTransportState, for id: UUID) {
+        guard current?.id == id else { return }
+        transport = state
+    }
+
+    func togglePictureInPicturePause() {
+        guard current != nil, isDetached, closeRequest == nil, transport.canToggle else { return }
+        togglePauseRequest = UUID()
+    }
+
     func restoreInline() { restoreRequest = UUID() }
 
     func didClose(_ id: UUID, success: Bool) {
@@ -44,6 +56,8 @@ final class PlaybackPresentationStore: ObservableObject {
             isDetached = false
             restoreRequest = nil
             notice = nil
+            togglePauseRequest = nil
+            transport = PlaybackTransportState()
         }
         pending = nil
         hasPending = false
@@ -67,6 +81,11 @@ final class PlaybackPresentationStore: ObservableObject {
             }
         }
     }
+}
+
+struct PlaybackTransportState: Equatable {
+    var isPaused = false
+    var canToggle = false
 }
 
 struct PlaybackHandoff: Sendable {

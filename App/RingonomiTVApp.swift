@@ -265,8 +265,12 @@ struct LibraryView: View {
                     if let notice = playbackPresentation.notice {
                         Text(notice).font(.callout).foregroundStyle(.orange)
                     }
-                    HStack(spacing: 30) {
-                        Text(item.title).lineLimit(1).frame(maxWidth: 320, alignment: .leading)
+                    Text(item.title).font(.callout).lineLimit(1)
+                    HStack(spacing: 24) {
+                        Button(playbackPresentation.transport.isPaused ? "再生" : "一時停止") {
+                            playbackPresentation.togglePictureInPicturePause()
+                        }
+                        .disabled(!playbackPresentation.transport.canToggle || playbackPresentation.closeRequest != nil)
                         Button("全画面へ戻る") { playbackPresentation.restoreInline() }
                         Button("再生を終了") { playbackPresentation.present(nil) }
                     }
@@ -283,9 +287,11 @@ struct LibraryView: View {
                 PlaybackView(item: item, resumeStore: resumeStore,
                              closeRequest: playbackPresentation.closeRequest,
                              restoreRequest: playbackPresentation.restoreRequest,
+                             togglePauseRequest: playbackPresentation.togglePauseRequest,
                              onClose: { playbackPresentation.didClose(item.id, success: $0) },
                              onDetachedChanged: { playbackPresentation.setDetached($0, for: item.id) },
-                             onPictureInPictureNoticeChanged: { playbackPresentation.setNotice($0, for: item.id) }) { needsDisplay in
+                             onPictureInPictureNoticeChanged: { playbackPresentation.setNotice($0, for: item.id) },
+                             onTransportChanged: { playbackPresentation.setTransport($0, for: item.id) }) { needsDisplay in
                     guard playback?.id == item.id else { return }
                     playbackIdleTimer.setNeedsContinuousDisplay(needsDisplay)
                 }
@@ -298,6 +304,9 @@ struct LibraryView: View {
                 .accessibilityHidden(playbackPresentation.isDetached)
                 .ignoresSafeArea()
             }
+        }
+        .onPlayPauseCommand {
+            if playbackPresentation.isDetached { playbackPresentation.togglePictureInPicturePause() }
         }
         .environment(\.playbackHandoff, PlaybackHandoff(stopPrevious: { [weak playbackPresentation] in
             await playbackPresentation?.stopForAnotherPlayer() ?? true

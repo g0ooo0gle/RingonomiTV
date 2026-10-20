@@ -728,9 +728,15 @@ final class RecordingPlaybackController: ObservableObject {
     }
     func configureNowPlaying(title: String) { nowPlayingTitle = title }
 
+    var canControlPictureInPicture: Bool {
+        pictureInPicture.hasActiveVideoPresentation && !pictureInPicture.isTransitioning
+            && !isStopped && !isSuspendedForBackground && failure == nil && !reachedEnd
+    }
+
+    func togglePictureInPicturePause() { handleRemoteCommand(.toggle) }
+
     private func handleRemoteCommand(_ command: RecordingRemoteControls.Command) {
-        guard pictureInPicture.hasActiveVideoPresentation, !pictureInPicture.isTransitioning,
-              !isStopped, !isSuspendedForBackground, failure == nil, !reachedEnd else { return }
+        guard canControlPictureInPicture else { return }
         switch command {
         case .play: if wantsPause { togglePause() }
         case .pause: if !wantsPause { togglePause() }

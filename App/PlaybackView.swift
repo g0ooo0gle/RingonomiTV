@@ -48,9 +48,11 @@ struct PlaybackView: View {
     let onContinuousDisplayChanged: (Bool) -> Void
     let closeRequest: UUID?
     let restoreRequest: UUID?
+    let togglePauseRequest: UUID?
     let onClose: (Bool) -> Void
     let onDetachedChanged: (Bool) -> Void
     let onPictureInPictureNoticeChanged: (String?) -> Void
+    let onTransportChanged: (PlaybackTransportState) -> Void
     @State private var isClosing = false
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -77,18 +79,21 @@ struct PlaybackView: View {
     @State private var commentReload = 0
     @StateObject private var commentStore = RecordingCommentStore()
     init(item: Playback, resumeStore: RecordingResumeStore,
-         closeRequest: UUID?, restoreRequest: UUID?,
+         closeRequest: UUID?, restoreRequest: UUID?, togglePauseRequest: UUID?,
          onClose: @escaping (Bool) -> Void,
          onDetachedChanged: @escaping (Bool) -> Void,
          onPictureInPictureNoticeChanged: @escaping (String?) -> Void,
+         onTransportChanged: @escaping (PlaybackTransportState) -> Void,
          onContinuousDisplayChanged: @escaping (Bool) -> Void) {
         self.item = item
         self.resumeStore = resumeStore
         self.closeRequest = closeRequest
         self.restoreRequest = restoreRequest
+        self.togglePauseRequest = togglePauseRequest
         self.onClose = onClose
         self.onDetachedChanged = onDetachedChanged
         self.onPictureInPictureNoticeChanged = onPictureInPictureNoticeChanged
+        self.onTransportChanged = onTransportChanged
         self.onContinuousDisplayChanged = onContinuousDisplayChanged
         _quality = State(initialValue: item.initialQuality)
     }
@@ -114,6 +119,10 @@ struct PlaybackView: View {
         // buffering status visible in the library's playback banner too.
         return recordingController.pictureInPicture.notice ?? failure ?? maintenanceError
             ?? (recordingController.pictureInPicture.ownsPlayback && isLoading ? "録画を読み込んでいます…" : nil)
+    }
+    private var pictureInPictureTransport: PlaybackTransportState {
+        PlaybackTransportState(isPaused: recordingController.isPaused,
+                               canToggle: isRecording && !isClosing && recordingController.canControlPictureInPicture)
     }
     private var surfaceIsFocusable: Bool { acceptsInlineInput && visiblePanel == nil && !isLoading && failure == nil && !isSceneSearchPresented && !viewportSettings.isPresented }
 #endif
@@ -177,6 +186,13 @@ struct PlaybackView: View {
         }
         .onChange(of: recordingController.pictureInPicture.isTransitioning) { _, transitioning in
             playbackFocus = !transitioning && acceptsInlineInput ? readyFocus : nil
+        }
+        .onChange(of: pictureInPictureTransport, initial: true) { _, state in
+            onTransportChanged(state)
+        }
+        .onChange(of: togglePauseRequest) { _, request in
+            guard request != nil, isRecording, !isClosing else { return }
+            recordingController.togglePictureInPicturePause()
         }
         .onChange(of: restoreRequest) { _, request in
             if request != nil { recordingController.pictureInPicture.returnToInline() }
