@@ -162,7 +162,7 @@ struct PlaybackView: View {
             if request != nil { recordingController.pictureInPicture.returnToInline() }
         }
         .onChange(of: recordingController.pictureInPicture.endedWhileDetached) { _, ended in
-            if ended != nil { close() }
+            if ended != nil, failure == nil { close() }
         }
         .onChange(of: recordingController.pictureInPicture.ownsPlayback) { _, owned in
             if !owned, !isClosing {

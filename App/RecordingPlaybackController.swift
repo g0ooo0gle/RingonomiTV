@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import RingonomiCore
 @preconcurrency import AVFoundation
 
@@ -421,6 +422,7 @@ final class RecordingPlaybackController: ObservableObject {
                 self.isLoading = false
                 self.waitingSince = nil
                 self.reachedEnd = true
+                self.pictureInPicture.returnToInline()
                 self.checkpoint(force: true)
 #if DEBUG
                 print("RingonomiRecordingEnded: reached time=\(self.safeTime())")
