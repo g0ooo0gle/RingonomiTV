@@ -477,7 +477,7 @@ private struct EPGStationProgramGuideDetailView: View {
                         .focused($focusedAction, equals: .close)
                 }
                 List {
-                    Section("番組") {
+                    AppSection("番組") {
                         Text(selection.sourceProgram.name)
                             .font(.title3)
                             .focusable()
@@ -494,17 +494,17 @@ private struct EPGStationProgramGuideDetailView: View {
                             .focusable()
                     }
                     if let description = selection.sourceProgram.description, !description.isEmpty {
-                        Section("説明") {
+                        AppSection("説明") {
                             Text(description).focusable()
                         }
                     }
                     if let extended = selection.sourceProgram.extended, !extended.isEmpty {
-                        Section("番組詳細") {
+                        AppSection("番組詳細") {
                             Text(extended).focusable()
                         }
                     }
                     if let rawExtended = selection.sourceProgram.rawExtended, !rawExtended.isEmpty {
-                        Section("番組情報") {
+                        AppSection("番組情報") {
                             ForEach(rawExtended.keys.sorted(), id: \.self) { heading in
                                 VStack(alignment: .leading, spacing: 6) {
                                     if !heading.isEmpty { Text(heading).font(.subheadline) }

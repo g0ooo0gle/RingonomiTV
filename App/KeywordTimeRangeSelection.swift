@@ -19,7 +19,7 @@ struct KeywordTimeRangeSelection: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             if let ranges = selection {
-                Section("指定した日時範囲") {
+                AppSection("指定した日時範囲") {
                     ForEach(Array(ranges.enumerated()), id: \.offset) { index, range in
                         HStack(spacing: 24) {
                             Button {
@@ -90,12 +90,12 @@ private struct KeywordTimeRangeEditor: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("開始（日本時間）") {
+                AppSection("開始（日本時間）") {
                     weekdayPicker("開始曜日", selection: $draft.startDayOfWeek)
                     TextField("開始時刻（HH:mm）", text: $draft.startTime)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                 }
-                Section("終了（日本時間）") {
+                AppSection("終了（日本時間）") {
                     weekdayPicker("終了曜日", selection: $draft.endDayOfWeek)
                     TextField("終了時刻（HH:mm）", text: $draft.endTime)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()

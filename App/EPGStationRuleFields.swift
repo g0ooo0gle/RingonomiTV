@@ -28,7 +28,7 @@ struct EPGStationRuleFields: View {
     }
 
     private var searchTextFields: some View {
-        Section("キーワード") {
+        AppSection("キーワード") {
             TextField("検索キーワード", text: searchStringBinding("keyword"))
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
@@ -45,7 +45,7 @@ struct EPGStationRuleFields: View {
     }
 
     private var searchTargetFields: some View {
-        Section("検索対象・除外") {
+        AppSection("検索対象・除外") {
             Toggle("番組名を検索", isOn: searchBoolBinding("name"))
             Toggle("番組概要を検索", isOn: searchBoolBinding("description"))
             Toggle("拡張番組情報を検索", isOn: searchBoolBinding("extended"))
@@ -64,7 +64,7 @@ struct EPGStationRuleFields: View {
     }
 
     private var broadcastFields: some View {
-        Section("放送種別") {
+        AppSection("放送種別") {
             Toggle("地上波（GR）", isOn: searchBoolBinding("GR"))
             Toggle("BS", isOn: searchBoolBinding("BS"))
             Toggle("CS", isOn: searchBoolBinding("CS"))
@@ -80,7 +80,7 @@ struct EPGStationRuleFields: View {
     }
 
     private var channelFields: some View {
-        Section("対象チャンネル") {
+        AppSection("対象チャンネル") {
             NavigationLink(channelSelectionTitle) {
                 EPGStationRuleChannelSelection(
                     channels: channels,
@@ -100,7 +100,7 @@ struct EPGStationRuleFields: View {
     }
 
     private var complexSearchFields: some View {
-        Section("詳細な検索条件") {
+        AppSection("詳細な検索条件") {
             HStack {
                 Text("時間指定モード")
                 Spacer()
@@ -152,7 +152,7 @@ struct EPGStationRuleFields: View {
     }
 
     private var durationFields: some View {
-        Section("番組長") {
+        AppSection("番組長") {
             TextField("最短（分・空欄は指定なし）", text: searchIntegerBinding("durationMin"))
                 .textInputAutocapitalization(.never)
             TextField("最長（分・空欄は指定なし）", text: searchIntegerBinding("durationMax"))
@@ -165,7 +165,7 @@ struct EPGStationRuleFields: View {
     }
 
     private var reserveFields: some View {
-        Section("予約") {
+        AppSection("予約") {
             Toggle("予約を有効にする", isOn: reserveBoolBinding("enable", default: true))
             Toggle("終了時刻不足を許可", isOn: reserveBoolBinding("allowEndLack"))
             Toggle("重複を避ける", isOn: reserveBoolBinding("avoidDuplicate"))
@@ -190,7 +190,7 @@ struct EPGStationRuleFields: View {
     }
 
     private var saveFields: some View {
-        Section("保存先") {
+        AppSection("保存先") {
             NavigationLink(saveDirectoryTitle) {
                 EPGStationChoiceList(
                     title: "保存先",
@@ -231,7 +231,7 @@ struct EPGStationRuleFields: View {
     }
 
     private var encodeFields: some View {
-        Section("エンコード") {
+        AppSection("エンコード") {
             if let encodeOption {
                 ForEach(1...3, id: \.self) { index in
                     VStack(alignment: .leading, spacing: 4) {
@@ -280,7 +280,7 @@ struct EPGStationRuleFields: View {
     private var unknownFields: some View {
         let paths = unknownOptionPaths
         if !paths.isEmpty {
-            Section("サーバー由来の未対応項目") {
+            AppSection("サーバー由来の未対応項目") {
                 Text("サーバーが追加した設定を保持しています。編集時にも削除しません。")
                     .font(.caption)
                     .foregroundStyle(.secondary)

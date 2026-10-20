@@ -286,17 +286,17 @@ private struct MirakurunGuideDetailView: View {
                     Button("閉じる") { dismiss() }.focused($action, equals: .close)
                 }
                 List {
-                    Section("番組") {
+                    AppSection("番組") {
                         Text(selection.program.title).font(.title3).focusable()
                         Text(selection.channel.name).font(.headline).focusable()
                         Text(MirakurunGuideDate.schedule(selection.program)).focusable()
                         Text(selection.program.isFree ? "無料放送" : "有料放送").focusable()
                     }
                     if !selection.program.description.isEmpty {
-                        Section("説明") { Text(selection.program.description).focusable() }
+                        AppSection("説明") { Text(selection.program.description).focusable() }
                     }
                     if !selection.program.detail.isEmpty {
-                        Section("番組詳細") {
+                        AppSection("番組詳細") {
                             ForEach(selection.program.detail.keys.sorted(), id: \.self) { heading in
                                 VStack(alignment: .leading, spacing: 6) {
                                     if !heading.isEmpty { Text(heading).font(.subheadline) }

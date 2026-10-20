@@ -93,7 +93,7 @@ struct EPGStationLibraryView: View {
 
     var body: some View {
         List {
-            Section("EPGStation接続") {
+            AppSection("EPGStation接続") {
                 TextField("EPGStation URL（例：http://ホスト:8888）", text: $draftAddress)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
@@ -102,7 +102,7 @@ struct EPGStationLibraryView: View {
                 if let inputError { Text(inputError).foregroundStyle(.red) }
             }
             if !effectiveAddress.isEmpty {
-                Section("録画を探す") {
+                AppSection("録画を探す") {
                     TextField("番組名などで検索", text: $searchDraft)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
@@ -125,7 +125,7 @@ struct EPGStationLibraryView: View {
                         .disabled(store.loading)
                         .onChange(of: oldestFirst) { _, _ in offset = 0; reload() }
                 }
-                Section("録画") {
+                AppSection("録画") {
                     if store.loading {
                         ProgressView("録画を読み込んでいます…")
                         Button("読み込みを中止") { store.cancel() }
@@ -284,7 +284,7 @@ private struct EPGStationRecordingDetailView: View {
                     if let description = recording.description, !description.isEmpty { Text(description) }
                     if let extended = recording.extended, !extended.isEmpty { Text(extended).font(.caption) }
                 }
-                Section("再生するファイル") {
+                AppSection("再生するファイル") {
                     if recording.videoFiles.isEmpty {
                         Text("再生できるファイルがありません。")
                         Button("詳細を更新") { detailTask = Task { await load() } }

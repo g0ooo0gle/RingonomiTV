@@ -5,7 +5,7 @@ struct AppearanceSettingsFields: View {
     @Binding var styleValue: String
 
     var body: some View {
-        Section("表示") {
+        AppSection("表示") {
             Picker("外観", selection: Binding(
                 get: { AppAppearanceMode(rawValue: modeValue) ?? .system },
                 set: { modeValue = $0.rawValue }

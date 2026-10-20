@@ -112,7 +112,7 @@ struct EPGStationReservationListView: View {
     private var reservationList: some View {
         List {
             if let pending = mutation.pending {
-                Section("前の操作結果を確認してください") {
+                AppSection("前の操作結果を確認してください") {
                     Text(pending.title + " · " + pending.action)
                     if let schedule = pending.schedule { Text(schedule).font(.caption) }
                     Text(mutation.journalUnreadable ? "以前使用した接続先の予約一覧を確認してください。" : pending.address)
@@ -134,7 +134,7 @@ struct EPGStationReservationListView: View {
                     }
                 }
             }
-            Section("EPGStation接続") {
+            AppSection("EPGStation接続") {
                 TextField("EPGStation URL（例：http://ホスト:8888）", text: $draftAddress)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
@@ -146,7 +146,7 @@ struct EPGStationReservationListView: View {
                 Text("接続先を入力すると、EPGStationの録画予約を表示できます。")
                     .foregroundStyle(.secondary)
             } else {
-                Section("絞り込み") {
+                AppSection("絞り込み") {
                     Picker("予約の状態", selection: $filter) {
                         ForEach(EPGStationReservationFilter.allCases, id: \.self) { value in
                             Text(reservationFilterName(value)).tag(value)
@@ -155,7 +155,7 @@ struct EPGStationReservationListView: View {
                     .disabled(store.loading)
                     .onChange(of: filter) { _, _ in offset = 0; reload() }
                 }
-                Section("録画予約") {
+                AppSection("録画予約") {
                     if store.loading {
                         ProgressView("録画予約を読み込んでいます…")
                         Button("読み込みを中止") { store.cancel() }
@@ -312,16 +312,16 @@ private struct EPGStationReservationDetailView: View {
                     .accessibilityElement(children: .combine)
                 }
                 if let description = item.description, !description.isEmpty {
-                    Section("番組の内容") {
+                    AppSection("番組の内容") {
                         Text(description).focusable()
                     }
                 }
                 if let extended = item.extended, !extended.isEmpty {
-                    Section("詳しい情報") {
+                    AppSection("詳しい情報") {
                         Text(extended).focusable()
                     }
                 }
-                Section("録画の設定") {
+                AppSection("録画の設定") {
                     Text(item.allowEndLack ? "番組末尾の切れを許可" : "番組末尾の切れを許可しない")
                     Text(item.isDeleteOriginalAfterEncode ? "変換後に元の動画を削除" : "変換後も元の動画を保持")
                 }
@@ -331,7 +331,7 @@ private struct EPGStationReservationDetailView: View {
                     Button("一覧に戻る", action: goBack)
                         .disabled(submitting || mutation.busy)
                 }
-                Section("予約の操作") {
+                AppSection("予約の操作") {
                     if item.ruleID == nil {
                         Button("録画設定を変更") {
                             editing = EPGStationReservationEditorConnection(address: address, original: item)

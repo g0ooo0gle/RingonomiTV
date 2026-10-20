@@ -97,7 +97,7 @@ struct EPGStationRuleListView: View {
     private var ruleList: some View {
         List {
             pendingSection
-            Section("EPGStation接続") {
+            AppSection("EPGStation接続") {
                 TextField("EPGStation URL（例：http://ホスト:8888）", text: $draftAddress)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
                 Button("接続してルールを読み込む", action: connect).disabled(store.loading || mutation.busy)
@@ -106,7 +106,7 @@ struct EPGStationRuleListView: View {
             if effectiveAddress.isEmpty {
                 Text("EPGStationの接続先を入力してください。")
             } else {
-                Section("ルールの検索") {
+                AppSection("ルールの検索") {
                     TextField("登録済みルールのキーワード", text: $keyword)
                     Button("検索") { offset = 0; appliedKeyword = keyword; reload() }.disabled(store.loading)
                     if !appliedKeyword.isEmpty {
@@ -129,7 +129,7 @@ struct EPGStationRuleListView: View {
 
     @ViewBuilder private var pendingSection: some View {
         if let pending = mutation.pending {
-            Section("前の操作結果を確認してください") {
+            AppSection("前の操作結果を確認してください") {
                 Text(pending.title + " · " + pending.action)
                 Text(mutation.journalUnreadable ? "以前使用した接続先の一覧を確認してください。" : pending.address)
                     .font(.caption).foregroundStyle(.secondary)
@@ -149,7 +149,7 @@ struct EPGStationRuleListView: View {
     }
 
     private var ruleSection: some View {
-        Section("自動予約ルール") {
+        AppSection("自動予約ルール") {
             if store.loading {
                 ProgressView("ルールを読み込んでいます…")
                 Button("読み込みを中止") { store.cancel() }

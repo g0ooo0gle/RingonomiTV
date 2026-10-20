@@ -91,20 +91,20 @@ struct EPGStationRuleDetailView: View {
                 Button("再試行", action: reload).focused($focusedTarget, equals: .loadError)
             }
             if let item = store.item {
-                Section("ルール \(item.id)") {
+                AppSection("ルール \(item.id)") {
                     Text(epgStationRuleTitle(item.options)).font(.title3)
                     Text(item.options.enabled == true ? "有効" : "無効")
                     Text(item.options.isTimeSpecification == true ? "曜日・時刻を指定して予約" : "番組情報から予約")
                     let excluded = epgStationRuleString(item.options.searchValues["ignoreKeyword"])
                     if !excluded.isEmpty { Text("除外：" + excluded) }
                 }
-                Section("操作") {
+                AppSection("操作") {
                     Button("検索条件・録画設定を編集") { editor = .init(address: address, original: item) }
                     Button(item.options.enabled == true ? "ルールを無効にする" : "ルールを有効にする") { confirmation = .toggle }
                         .focused($focusedTarget, equals: .toggle)
                     Button("ルールを削除", role: .destructive) { confirmation = .delete }
                 }.disabled(submitting || mutation.busy || mutation.pending != nil || store.loading)
-                Section("関連する録画予約") {
+                AppSection("関連する録画予約") {
                     Text("ルールの保存・有効無効切替・削除により、関連する録画予約が再計算されます。更新して最新の状態を確認してください。")
                         .font(.caption).foregroundStyle(.secondary).focusable()
                     if let error = store.reservationError {

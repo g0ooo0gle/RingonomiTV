@@ -37,7 +37,7 @@ struct RecordingSettingsFields: View {
 
     var body: some View {
         Group {
-            Section("基本設定") {
+            AppSection("基本設定") {
                 Toggle("この予約を有効にする", isOn: $draft.settings.isEnabled)
                 Picker("優先度", selection: $draft.settings.priority) {
                     ForEach(1...5, id: \.self) { Text($0 == 3 ? "3（通常）" : String($0)).tag($0) }
@@ -57,7 +57,7 @@ struct RecordingSettingsFields: View {
                 Toggle("イベントリレーを追従", isOn: $draft.settings.isEventRelayFollowEnabled)
                 Toggle("ぴったり録画", isOn: $draft.settings.isExactRecordingEnabled)
             }
-            Section("詳細設定") {
+            AppSection("詳細設定") {
                 recordingModePicker("字幕", selection: $draft.settings.captionRecordingMode)
                 recordingModePicker("データ放送", selection: $draft.settings.dataBroadcastingRecordingMode)
                 Toggle("ワンセグを別ファイルへ保存", isOn: $draft.settings.isOnesegSeparateOutputEnabled)

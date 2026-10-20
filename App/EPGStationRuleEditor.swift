@@ -125,7 +125,7 @@ struct EPGStationRuleEditor: View {
     }
 
     private var previewSection: some View {
-        Section("検索プレビュー") {
+        AppSection("検索プレビュー") {
             if options.isTimeSpecification == true {
                 Text("時刻指定ルールの時間条件を保持しています。番組検索のプレビューには対応していません。")
                     .font(.caption).foregroundStyle(.secondary).focusable()

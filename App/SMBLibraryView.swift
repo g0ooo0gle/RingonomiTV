@@ -50,7 +50,7 @@ struct SMBLibraryView: View {
         List {
 #if DEBUG
             if let runtimeConnection {
-                Section("デバッグ共有（未保存）") {
+                AppSection("デバッグ共有（未保存）") {
                     NavigationLink {
                         SMBFolderView(
                             connection: runtimeConnection,
@@ -75,7 +75,7 @@ struct SMBLibraryView: View {
             }
 #endif
                 if !library.connections.isEmpty {
-                    Section("共有") {
+                    AppSection("共有") {
                         ForEach(library.connections) { connection in
                             connectionRow(connection)
                         }
@@ -83,7 +83,7 @@ struct SMBLibraryView: View {
                 }
 
                 if !pins.isEmpty {
-                    Section("ピン留め") {
+                    AppSection("ピン留め") {
                         ForEach(pins) { pin in
                             if let connection = library.connection(for: pin.connectionID) {
                                 NavigationLink {
@@ -398,14 +398,14 @@ private struct SMBConnectionForm: View {
             .padding(.horizontal, 36)
 
             Form {
-                Section("共有") {
+                AppSection("共有") {
                     TextField("smb://ホスト/共有", text: $address)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                     TextField("表示名（任意）", text: $displayName)
                         .lineLimit(1)
                 }
-                Section("認証") {
+                AppSection("認証") {
                     Toggle("ゲストとして接続", isOn: $guest)
                     if !guest {
                         TextField("ユーザー名", text: $username)
@@ -488,12 +488,12 @@ private struct SMBEditCredentialsForm: View {
             .padding(.horizontal, 36)
 
             Form {
-                Section("共有") {
+                AppSection("共有") {
                     Text(connection.displayName)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
-                Section("認証") {
+                AppSection("認証") {
                     Toggle("ゲストとして接続", isOn: $guest)
                     if !guest {
                         TextField("ユーザー名", text: $username)

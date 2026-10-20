@@ -94,7 +94,7 @@ struct MirakurunServiceView: View {
 
     var body: some View {
         Form {
-            Section("Mirakurun接続") {
+            AppSection("Mirakurun接続") {
                 TextField("Mirakurun URL（例： http://ホスト:40772）", text: $draftAddress)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
@@ -111,7 +111,7 @@ struct MirakurunServiceView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section("サービス") {
+            AppSection("サービス") {
                 NavigationLink("番組表から探す") { MirakurunProgramGuideView() }
                 if effectiveAddress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Text("接続先を入力して、サービスを読み込んでください。")
@@ -148,7 +148,7 @@ struct MirakurunServiceView: View {
             }
 
             if let inputError {
-                Section("接続エラー") {
+                AppSection("接続エラー") {
                     Text(inputError)
                         .foregroundStyle(.red)
                 }

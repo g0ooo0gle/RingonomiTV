@@ -117,3 +117,25 @@ extension EnvironmentValues {
         set { self[AppColorStyleKey.self] = newValue }
     }
 }
+
+/// A native section with a header that follows the selected appearance on tvOS.
+struct AppSection<Content: View>: View {
+    @Environment(\.colorScheme) private var colorScheme
+    private let title: LocalizedStringKey
+    private let content: Content
+
+    init(_ title: LocalizedStringKey, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.content = content()
+    }
+
+    var body: some View {
+        Section {
+            content
+        } header: {
+            Text(title)
+                .foregroundStyle(colorScheme == .dark
+                    ? Color.white.opacity(0.74) : Color.black.opacity(0.68))
+        }
+    }
+}

@@ -110,7 +110,7 @@ struct LibraryView: View {
                     if let error { Text(error).foregroundStyle(.red) }
                     if let channelError { Text(channelError).foregroundStyle(.red) }
                     AppearanceSettingsFields(modeValue: $appearanceValue, styleValue: $colorStyleValue)
-                    Section("Mirakurun") {
+                    AppSection("Mirakurun") {
                         NavigationLink("Mirakurunの番組表") { MirakurunProgramGuideView() }
                         NavigationLink("Mirakurun直接視聴") {
                             MirakurunServiceView()
@@ -119,7 +119,7 @@ struct LibraryView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                    Section("EPGStation") {
+                    AppSection("EPGStation") {
                         NavigationLink("EPGStationの番組表") { EPGStationProgramGuideView() }
                         NavigationLink("EPGStationの録画") {
                             EPGStationLibraryView()
@@ -132,7 +132,7 @@ struct LibraryView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                    Section("ファイルライブラリ") {
+                    AppSection("ファイルライブラリ") {
                         NavigationLink("SMB共有の動画") { SMBPlaybackLibraryView() }
                     }
                     AccountSettingsView(address: effectiveAddress, account: account)

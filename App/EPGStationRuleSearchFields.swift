@@ -42,7 +42,7 @@ struct EPGStationRuleChannelSelection: View {
             }
 
             if let selection {
-                Section("チャンネル") {
+                AppSection("チャンネル") {
                     if channels.isEmpty {
                         Text("チャンネル一覧を取得できないため、既存の選択値を保持しています。")
                             .font(.caption)
@@ -65,7 +65,7 @@ struct EPGStationRuleChannelSelection: View {
 
                 let unknownIDs = selection.filter { id in !channels.contains { $0.id == id } }
                 if !unknownIDs.isEmpty {
-                    Section("サーバーから取得できないチャンネル") {
+                    AppSection("サーバーから取得できないチャンネル") {
                         Text("既存のチャンネル設定を保持中（\(unknownIDs.map { String($0) }.joined(separator: "、"))）")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -127,7 +127,7 @@ struct EPGStationRuleGenreSelection: View {
             }
 
             if arrayValue != nil {
-                Section("大分類") {
+                AppSection("大分類") {
                     ForEach(0..<16, id: \.self) { major in
                         Toggle(epgStationGenreName(major), isOn: majorBinding(major))
                             .disabled(!editable)
@@ -141,7 +141,7 @@ struct EPGStationRuleGenreSelection: View {
                 }
 
                 if unknownGenreCount > 0 {
-                    Section("追加のジャンル設定") {
+                    AppSection("追加のジャンル設定") {
                         Text("\(unknownGenreCount)件の既存値を保持しています。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -266,7 +266,7 @@ struct EPGStationRuleTimeSelection: View {
             }
 
             if timeValues != nil {
-                Section("指定した曜日・時間帯") {
+                AppSection("指定した曜日・時間帯") {
                     ForEach(validEntries) { entry in
                         HStack(spacing: 16) {
                             Button {
@@ -519,7 +519,7 @@ private struct EPGStationRuleTimeEditor: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("曜日") {
+                AppSection("曜日") {
                     ForEach(weekNames.indices, id: \.self) { index in
                         Toggle(weekNames[index], isOn: weekdayBinding(index))
                     }
@@ -528,7 +528,7 @@ private struct EPGStationRuleTimeEditor: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Section("時間") {
+                AppSection("時間") {
                     Picker("開始時刻", selection: startBinding) {
                         Text("終日").tag(nil as Int?)
                         ForEach(0...23, id: \.self) { hour in

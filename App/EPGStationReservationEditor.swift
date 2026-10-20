@@ -95,7 +95,7 @@ struct EPGStationReservationEditor: View {
                     Text("番組・日時・保存先・変換設定は現在の内容を保持します。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                Section("録画設定") {
+                AppSection("録画設定") {
                     Toggle("番組末尾の切れを許可", isOn: $allowEndLack)
                 }
             } else if store.loading {
@@ -127,7 +127,7 @@ struct EPGStationReservationEditor: View {
 
     private var creationFields: some View {
         Group {
-            Section("録画する番組") {
+            AppSection("録画する番組") {
                 Picker("予約方法", selection: $mode) {
                     ForEach(CreationMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                 }
@@ -151,7 +151,7 @@ struct EPGStationReservationEditor: View {
                     EPGStationDateTimeField(title: "終了", date: $end)
                 }
             }
-            Section("録画設定") {
+            AppSection("録画設定") {
                 NavigationLink("保存先：" + (directory.isEmpty ? "サーバーの既定" : directory)) {
                     EPGStationChoiceList(title: "保存先", values: [("", "サーバーの既定")] + store.directories.map { ($0, $0) }, selection: directory) { directory = $0 }
                 }
