@@ -266,13 +266,15 @@ struct LibraryView: View {
                         Text(notice).font(.callout).foregroundStyle(.orange)
                     }
                     HStack(spacing: 30) {
-                        Text(item.title).lineLimit(1)
+                        Text(item.title).lineLimit(1).frame(maxWidth: 320, alignment: .leading)
                         Button("全画面へ戻る") { playbackPresentation.restoreInline() }
                         Button("再生を終了") { playbackPresentation.present(nil) }
                     }
                 }
+                // Keep actions left of the system's default lower-right PiP.
+                .frame(maxWidth: 1_100, alignment: .leading)
                 .padding(24)
-                .frame(maxWidth: .infinity)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .background(.ultraThinMaterial)
             }
         }
