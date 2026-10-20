@@ -108,6 +108,13 @@ struct PlaybackView: View {
         !isClosing && !recordingController.pictureInPicture.isDetached && !recordingController.pictureInPicture.isTransitioning
     }
     private var readyFocus: PlaybackControlFocus { failure != nil ? .retry : (isLoading ? .close : .surface) }
+    private var pictureInPictureNotice: String? {
+        guard isRecording else { return nil }
+        // The inline subtree is hidden during PiP. Keep connection and
+        // buffering status visible in the library's playback banner too.
+        return recordingController.pictureInPicture.notice ?? failure ?? maintenanceError
+            ?? (recordingController.pictureInPicture.ownsPlayback && isLoading ? "録画を読み込んでいます…" : nil)
+    }
     private var surfaceIsFocusable: Bool { acceptsInlineInput && visiblePanel == nil && !isLoading && failure == nil && !isSceneSearchPresented && !viewportSettings.isPresented }
 #endif
     private var needsContinuousDisplay: Bool {
@@ -165,7 +172,7 @@ struct PlaybackView: View {
                 playbackFocus = acceptsInlineInput ? readyFocus : nil
             }
         }
-        .onChange(of: recordingController.pictureInPicture.notice) { _, notice in
+        .onChange(of: pictureInPictureNotice, initial: true) { _, notice in
             onPictureInPictureNoticeChanged(notice)
         }
         .onChange(of: recordingController.pictureInPicture.isTransitioning) { _, transitioning in
