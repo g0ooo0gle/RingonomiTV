@@ -30,6 +30,9 @@ final class RecordingPictureInPicture: NSObject, ObservableObject, @preconcurren
 
     var ownsPlayback: Bool { isStarting || isActive || isStopping }
     var usesSystemTransport: Bool { isActive && !isStopping }
+    var hasActiveVideoPresentation: Bool {
+        isActive && controller?.isPictureInPictureActive == true
+    }
 
     func attach(to layer: AVPlayerLayer) {
         guard isSupported, controller?.playerLayer !== layer, !ownsPlayback else { return }

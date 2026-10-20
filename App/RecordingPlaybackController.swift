@@ -329,11 +329,18 @@ final class RecordingPlaybackController: ObservableObject {
 
     func flushPosition() { checkpoint(force: true) }
 
+    private var videoOutputIsReady: Bool {
+        // tvOS stops drawing into the inline layer while PiP owns its video.
+        // Seek/preroll/item readiness still gate playback and checkpoints;
+        // only the active native PiP presentation replaces the layer check.
+        videoLayer?.isReadyForDisplay == true || pictureInPicture.hasActiveVideoPresentation
+    }
+
     private func checkpoint(force: Bool = false, notify: Bool = true) {
         guard !isStopped else { return }
         // seek/preroll中の一時的な0秒や、最初のフレームを待つ時計は保存しない。
         if !preparing, !isLoading, failure == nil, prerolled,
-           player.currentItem?.status == .readyToPlay, videoLayer?.isReadyForDisplay == true {
+           player.currentItem?.status == .readyToPlay, videoOutputIsReady {
             lastTrustedPosition = safeTime()
             let duration = player.currentItem?.duration.seconds ?? .nan
             lastTrustedDuration = duration.isFinite && duration > 0 ? duration : durationHint
@@ -563,7 +570,7 @@ final class RecordingPlaybackController: ObservableObject {
                         }
                         self.prerolled = true
                         self.preparationInFlight = false
-                        if self.videoLayer?.isReadyForDisplay != true {
+                        if !self.videoOutputIsReady {
                             // 一部のHLSはprerollだけでは最初の映像を出力しない。
                             // 先読み後にミュートで描画を開始し、最初のフレームまで覆いを保つ。
                             self.player.isMuted = true
@@ -580,7 +587,7 @@ final class RecordingPlaybackController: ObservableObject {
         guard !isStopped, !isSuspendedForBackground, !isChangingQuality,
               failure == nil, preparing, prerolled,
               player.currentItem?.status == .readyToPlay,
-              videoLayer?.isReadyForDisplay == true else { return }
+              videoOutputIsReady else { return }
         if let seconds = pendingSceneSeek {
             pendingSceneSeek = nil
             let maximum = durationSeconds.map { max(0, $0 - 0.1) } ?? seconds
@@ -609,7 +616,7 @@ final class RecordingPlaybackController: ObservableObject {
             updateTime()
             checkpoint(force: true)
 #if DEBUG
-            print("RingonomiTVNativeReady: target=\(targetSeconds) actual=\(player.currentTime().seconds) rate=\(player.rate) muted=\(player.isMuted) layerReady=true paused=true timeControl=\(player.timeControlStatus.rawValue)")
+            print("RingonomiTVNativeReady: target=\(targetSeconds) actual=\(player.currentTime().seconds) rate=\(player.rate) muted=\(player.isMuted) layerReady=\(videoLayer?.isReadyForDisplay == true) pipActive=\(pictureInPicture.hasActiveVideoPresentation) paused=true timeControl=\(player.timeControlStatus.rawValue)")
 #endif
             return
         }
@@ -643,7 +650,7 @@ final class RecordingPlaybackController: ObservableObject {
         updateTime()
         checkpoint(force: true)
 #if DEBUG
-        print("RingonomiTVNativeReady: target=\(targetSeconds) actual=\(player.currentTime().seconds) rate=\(player.rate) muted=\(player.isMuted) layerReady=true timeControl=\(player.timeControlStatus.rawValue)")
+        print("RingonomiTVNativeReady: target=\(targetSeconds) actual=\(player.currentTime().seconds) rate=\(player.rate) muted=\(player.isMuted) layerReady=\(videoLayer?.isReadyForDisplay == true) pipActive=\(pictureInPicture.hasActiveVideoPresentation) timeControl=\(player.timeControlStatus.rawValue)")
 #endif
     }
     private func playbackStateChanged() {
@@ -670,7 +677,7 @@ final class RecordingPlaybackController: ObservableObject {
             if advancedSincePreroll { prepareExistingPosition(safeTime()) }
             else { beginWaiting() }
         case .playing:
-            guard prerolled, videoLayer?.isReadyForDisplay == true else { beginWaiting(); return }
+            guard prerolled, videoOutputIsReady else { beginWaiting(); return }
             isLoading = false
             waitingSince = nil
             player.isMuted = wantsPause
@@ -791,7 +798,7 @@ final class RecordingPlaybackController: ObservableObject {
               !timeline.commercialSections.isEmpty, timeline.hasChapterBoundaries,
               !isLoading, !preparing, prerolled, failure == nil, !wantsPause, !reachedEnd,
               player.timeControlStatus == .playing, player.rate > 0,
-              videoLayer?.isReadyForDisplay == true else { return }
+              videoOutputIsReady else { return }
         let duration = player.currentItem?.duration.seconds ?? .nan
         guard duration.isFinite, duration > 0 else { return }
         guard abs(duration - timeline.duration) <= 2 else {
@@ -889,7 +896,7 @@ final class RecordingPlaybackController: ObservableObject {
 #if DEBUG
         if Date().timeIntervalSince(lastLog) >= 5 {
             lastLog = Date()
-            print("RingonomiTVNative: time=\(safeTime()) rate=\(player.rate) loading=\(isLoading) muted=\(player.isMuted) layerReady=\(videoLayer?.isReadyForDisplay == true) itemStatus=\(player.currentItem?.status.rawValue ?? -1) playerStatus=\(player.status.rawValue) preparing=\(preparing) prerolled=\(prerolled) inFlight=\(preparationInFlight)")
+            print("RingonomiTVNative: time=\(safeTime()) rate=\(player.rate) loading=\(isLoading) muted=\(player.isMuted) layerReady=\(videoLayer?.isReadyForDisplay == true) pipActive=\(pictureInPicture.hasActiveVideoPresentation) itemStatus=\(player.currentItem?.status.rawValue ?? -1) playerStatus=\(player.status.rawValue) preparing=\(preparing) prerolled=\(prerolled) inFlight=\(preparationInFlight)")
         }
 #endif
     }
