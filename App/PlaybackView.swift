@@ -50,6 +50,7 @@ struct PlaybackView: View {
     let restoreRequest: UUID?
     let onClose: (Bool) -> Void
     let onDetachedChanged: (Bool) -> Void
+    let onPictureInPictureNoticeChanged: (String?) -> Void
     @State private var isClosing = false
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -79,6 +80,7 @@ struct PlaybackView: View {
          closeRequest: UUID?, restoreRequest: UUID?,
          onClose: @escaping (Bool) -> Void,
          onDetachedChanged: @escaping (Bool) -> Void,
+         onPictureInPictureNoticeChanged: @escaping (String?) -> Void,
          onContinuousDisplayChanged: @escaping (Bool) -> Void) {
         self.item = item
         self.resumeStore = resumeStore
@@ -86,6 +88,7 @@ struct PlaybackView: View {
         self.restoreRequest = restoreRequest
         self.onClose = onClose
         self.onDetachedChanged = onDetachedChanged
+        self.onPictureInPictureNoticeChanged = onPictureInPictureNoticeChanged
         self.onContinuousDisplayChanged = onContinuousDisplayChanged
         _quality = State(initialValue: item.initialQuality)
     }
@@ -161,6 +164,9 @@ struct PlaybackView: View {
             } else if !isClosing {
                 playbackFocus = acceptsInlineInput ? readyFocus : nil
             }
+        }
+        .onChange(of: recordingController.pictureInPicture.notice) { _, notice in
+            onPictureInPictureNoticeChanged(notice)
         }
         .onChange(of: recordingController.pictureInPicture.isTransitioning) { _, transitioning in
             playbackFocus = !transitioning && acceptsInlineInput ? readyFocus : nil

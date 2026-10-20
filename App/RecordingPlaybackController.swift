@@ -970,6 +970,7 @@ final class RecordingPlaybackController: ObservableObject {
         if let clockToken { player.removeTimeObserver(clockToken); self.clockToken = nil }
         if let endToken { NotificationCenter.default.removeObserver(endToken); self.endToken = nil }
         player.replaceCurrentItem(with: nil)
+        pictureInPicture.releaseAudioSession()
         currentURL = nil
         videoLayer = nil
     }

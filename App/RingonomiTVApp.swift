@@ -261,10 +261,15 @@ struct LibraryView: View {
         .accessibilityHidden(playback != nil && !playbackPresentation.isDetached)
         .safeAreaInset(edge: .bottom) {
             if playbackPresentation.isDetached, let item = playback {
-                HStack(spacing: 30) {
-                    Text(item.title).lineLimit(1)
-                    Button("全画面へ戻る") { playbackPresentation.restoreInline() }
-                    Button("再生を終了") { playbackPresentation.present(nil) }
+                VStack(alignment: .leading, spacing: 12) {
+                    if let notice = playbackPresentation.notice {
+                        Text(notice).font(.callout).foregroundStyle(.orange)
+                    }
+                    HStack(spacing: 30) {
+                        Text(item.title).lineLimit(1)
+                        Button("全画面へ戻る") { playbackPresentation.restoreInline() }
+                        Button("再生を終了") { playbackPresentation.present(nil) }
+                    }
                 }
                 .padding(24)
                 .frame(maxWidth: .infinity)
@@ -277,7 +282,8 @@ struct LibraryView: View {
                              closeRequest: playbackPresentation.closeRequest,
                              restoreRequest: playbackPresentation.restoreRequest,
                              onClose: { playbackPresentation.didClose(item.id, success: $0) },
-                             onDetachedChanged: { playbackPresentation.setDetached($0, for: item.id) }) { needsDisplay in
+                             onDetachedChanged: { playbackPresentation.setDetached($0, for: item.id) },
+                             onPictureInPictureNoticeChanged: { playbackPresentation.setNotice($0, for: item.id) }) { needsDisplay in
                     guard playback?.id == item.id else { return }
                     playbackIdleTimer.setNeedsContinuousDisplay(needsDisplay)
                 }

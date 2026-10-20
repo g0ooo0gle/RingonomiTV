@@ -26,6 +26,7 @@ final class RecordingPictureInPicture: NSObject, ObservableObject, @preconcurren
     private var restoreGeneration: UUID?
     private var isStarting = false
     private var isStopping = false
+    private var ownsAudioSession = false
 
     var ownsPlayback: Bool { isStarting || isActive || isStopping }
     var usesSystemTransport: Bool { isActive && !isStopping }
@@ -35,6 +36,9 @@ final class RecordingPictureInPicture: NSObject, ObservableObject, @preconcurren
         possibleObservation?.invalidate()
         controller?.delegate = nil
         inlineLayer = layer
+        // The playback category must be active before tvOS evaluates whether
+        // PiP is possible; the start button depends on that evaluation.
+        _ = prepareAudioSession()
         controller = AVPictureInPictureController(playerLayer: layer)
         controller?.delegate = self
         possibleObservation = controller?.observe(\.isPictureInPicturePossible, options: [.initial, .new]) { [weak self] _, _ in
@@ -49,19 +53,37 @@ final class RecordingPictureInPicture: NSObject, ObservableObject, @preconcurren
 #endif
     }
 
+    private func prepareAudioSession() -> Bool {
+        do {
+            let audioSession = AVAudioSession.sharedInstance()
+            try audioSession.setCategory(.playback, mode: .moviePlayback)
+            try audioSession.setActive(true)
+            ownsAudioSession = true
+            return true
+        } catch {
+            notice = "PiPの音声を準備できませんでした。全画面で視聴を続けられます。"
+            return false
+        }
+    }
+
+    /// Called after the recording player has released its item, never merely
+    /// when PiP returns inline and the same recording continues playing.
+    func releaseAudioSession() {
+        guard ownsAudioSession, !ownsPlayback else { return }
+        do {
+            try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            ownsAudioSession = false
+        } catch {
+            // Teardown is best effort; retain ownership so a later stop can retry.
+        }
+    }
+
     func start() {
         guard let controller, isSupported, isPossible, !ownsPlayback else {
             notice = "この録画ではまだPiPを開始できません。再生準備後にお試しください。"
             return
         }
-        do {
-            let audioSession = AVAudioSession.sharedInstance()
-            try audioSession.setCategory(.playback, mode: .moviePlayback)
-            try audioSession.setActive(true)
-        } catch {
-            notice = "PiPの音声を準備できませんでした。全画面で視聴を続けられます。"
-            return
-        }
+        guard prepareAudioSession() else { return }
         cancelRestore()
         sessionGeneration = UUID()
         notice = nil
@@ -99,6 +121,8 @@ final class RecordingPictureInPicture: NSObject, ObservableObject, @preconcurren
         guard ownsPlayback else { return }
         returningInline = true
         isDetached = false
+        isTransitioning = true
+        beginStopDeadline()
         requestNativeStop()
     }
 
@@ -111,16 +135,33 @@ final class RecordingPictureInPicture: NSObject, ObservableObject, @preconcurren
         returningInline = false
         cancelRestore()
         stopCompletion = completion
+        beginStopDeadline()
+        requestNativeStop()
+    }
+
+    private func beginStopDeadline() {
         let expected = UUID()
         stopToken = expected
         deadline?.cancel()
         deadline = Task { @MainActor [weak self] in
             do { try await Task.sleep(for: .seconds(10)) } catch { return }
-            guard let self, self.stopToken == expected, self.stopCompletion != nil else { return }
-            self.notice = "PiPの終了を確認できませんでした。小窓を閉じてから再度お試しください。"
+            guard let self, self.stopToken == expected else { return }
+            if let native = self.controller, !native.isPictureInPictureActive, !self.isStarting {
+                self.pictureInPictureControllerDidStopPictureInPicture(native)
+                return
+            }
+            // Keep an active source alive and make the next explicit stop
+            // retry possible even if the native completion never arrived.
+            self.cancelRestore()
+            self.isStarting = false
+            self.isStopping = false
+            self.isTransitioning = false
+            self.isActive = true
+            self.returningInline = false
+            self.isDetached = true
+            self.notice = "PiPの終了を確認できませんでした。小窓を閉じるか、もう一度お試しください。"
             self.finishClose(success: false)
         }
-        requestNativeStop()
     }
 
     private func requestNativeStop() {
@@ -212,6 +253,7 @@ final class RecordingPictureInPicture: NSObject, ObservableObject, @preconcurren
         guard pictureInPictureController === controller else { return }
         isStopping = true
         isTransitioning = true
+        if deadline == nil { beginStopDeadline() }
     }
 
     func pictureInPictureControllerDidStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
@@ -244,5 +286,7 @@ final class RecordingPictureInPicture: NSObject, ObservableObject, @preconcurren
         restoreCompletion = completionHandler
         restoreGeneration = sessionGeneration
         restoreRequest = UUID()
+        isTransitioning = true
+        beginStopDeadline()
     }
 }

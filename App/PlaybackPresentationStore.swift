@@ -8,6 +8,7 @@ final class PlaybackPresentationStore: ObservableObject {
     @Published private(set) var closeRequest: UUID?
     @Published private(set) var restoreRequest: UUID?
     @Published private(set) var isDetached = false
+    @Published private(set) var notice: String?
     private var pending: Playback?
     private var hasPending = false
     private var waiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
@@ -28,6 +29,11 @@ final class PlaybackPresentationStore: ObservableObject {
         isDetached = detached
     }
 
+    func setNotice(_ notice: String?, for id: UUID) {
+        guard current?.id == id else { return }
+        self.notice = notice
+    }
+
     func restoreInline() { restoreRequest = UUID() }
 
     func didClose(_ id: UUID, success: Bool) {
@@ -37,6 +43,7 @@ final class PlaybackPresentationStore: ObservableObject {
             current = hasPending ? pending : nil
             isDetached = false
             restoreRequest = nil
+            notice = nil
         }
         pending = nil
         hasPending = false
