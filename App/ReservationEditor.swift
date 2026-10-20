@@ -42,6 +42,7 @@ struct ReservationEditor: View {
                     Button("閉じる") { dismiss() }.disabled(busy)
                 }
             }.disabled(busy)
+            .navigationFormViewport()
             .appNavigationTitle(Text(original == nil ? "録画予約" : "予約を変更"))
             .interactiveDismissDisabled(busy)
             .confirmationDialog(original == nil ? "この番組を録画予約しますか？" : "予約の変更を保存しますか？", isPresented: $confirmation, titleVisibility: .visible) {
