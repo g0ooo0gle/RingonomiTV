@@ -20,6 +20,10 @@ final class RecordingPictureInPicture: NSObject, ObservableObject, @preconcurren
     private var deadline: Task<Void, Never>?
     private var stopToken = UUID()
     private var returningInline = false
+    private var startDeadline: Task<Void, Never>?
+    private weak var inlineLayer: AVPlayerLayer?
+    private var sessionGeneration = UUID()
+    private var restoreGeneration: UUID?
     private var isStarting = false
     private var isStopping = false
 
@@ -30,6 +34,7 @@ final class RecordingPictureInPicture: NSObject, ObservableObject, @preconcurren
         guard isSupported, controller?.playerLayer !== layer, !ownsPlayback else { return }
         possibleObservation?.invalidate()
         controller?.delegate = nil
+        inlineLayer = layer
         controller = AVPictureInPictureController(playerLayer: layer)
         controller?.delegate = self
         possibleObservation = controller?.observe(\.isPictureInPicturePossible, options: [.initial, .new]) { [weak self] _, _ in
@@ -57,11 +62,37 @@ final class RecordingPictureInPicture: NSObject, ObservableObject, @preconcurren
             notice = "PiPの音声を準備できませんでした。全画面で視聴を続けられます。"
             return
         }
+        cancelRestore()
+        sessionGeneration = UUID()
         notice = nil
         returningInline = false
         isStarting = true
         isTransitioning = true
         controller.startPictureInPicture()
+        let expected = sessionGeneration
+        startDeadline?.cancel()
+        startDeadline = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: .seconds(8)) } catch { return }
+            guard let self, self.sessionGeneration == expected, self.isStarting else { return }
+            if let native = self.controller, native.isPictureInPictureActive {
+                // Native state is authoritative even if its callback was lost.
+                self.pictureInPictureControllerDidStartPictureInPicture(native)
+            } else {
+                // Release this unstarted controller, without tvOS's global
+                // stop API, so a missing callback cannot strand the inline UI.
+                self.controller?.delegate = nil
+                self.possibleObservation?.invalidate()
+                self.possibleObservation = nil
+                self.controller = nil
+                self.isStarting = false
+                self.isTransitioning = false
+                self.isDetached = false
+                self.isPossible = false
+                self.notice = "PiPの開始がタイムアウトしました。全画面で視聴を続けられます。"
+                if let layer = self.inlineLayer { self.attach(to: layer) }
+                self.finishClose(success: true)
+            }
+        }
     }
 
     func returnToInline() {
@@ -78,6 +109,7 @@ final class RecordingPictureInPicture: NSObject, ObservableObject, @preconcurren
         guard stopCompletion == nil else { completion(false); return }
         guard ownsPlayback else { completion(true); return }
         returningInline = false
+        cancelRestore()
         stopCompletion = completion
         let expected = UUID()
         stopToken = expected
@@ -110,11 +142,20 @@ final class RecordingPictureInPicture: NSObject, ObservableObject, @preconcurren
     }
 
     func completeRestore(_ restored: Bool, request: UUID) {
-        guard restoreRequest == request else { return }
+        guard restoreRequest == request, restoreGeneration == sessionGeneration else { return }
         let completion = restoreCompletion
         restoreCompletion = nil
         restoreRequest = nil
+        restoreGeneration = nil
         completion?(restored)
+    }
+
+    private func cancelRestore() {
+        let completion = restoreCompletion
+        restoreCompletion = nil
+        restoreRequest = nil
+        restoreGeneration = nil
+        completion?(false)
     }
 
     func invalidate() {
@@ -126,8 +167,9 @@ final class RecordingPictureInPicture: NSObject, ObservableObject, @preconcurren
         controller = nil
         deadline?.cancel()
         deadline = nil
-        restoreCompletion?(false)
-        restoreCompletion = nil
+        startDeadline?.cancel()
+        startDeadline = nil
+        cancelRestore()
     }
 
     func pictureInPictureControllerWillStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
@@ -138,6 +180,8 @@ final class RecordingPictureInPicture: NSObject, ObservableObject, @preconcurren
 
     func pictureInPictureControllerDidStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
         guard pictureInPictureController === controller else { return }
+        startDeadline?.cancel()
+        startDeadline = nil
         isStarting = false
         isActive = true
         isTransitioning = false
@@ -150,6 +194,8 @@ final class RecordingPictureInPicture: NSObject, ObservableObject, @preconcurren
 
     func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, failedToStartPictureInPictureWithError error: Error) {
         guard pictureInPictureController === controller else { return }
+        startDeadline?.cancel()
+        startDeadline = nil
         isStarting = false
         isActive = false
         isStopping = false
@@ -171,6 +217,8 @@ final class RecordingPictureInPicture: NSObject, ObservableObject, @preconcurren
     func pictureInPictureControllerDidStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
         guard pictureInPictureController === controller else { return }
         let shouldClose = isDetached && !returningInline && stopCompletion == nil
+        startDeadline?.cancel()
+        startDeadline = nil
         isStarting = false
         isActive = false
         isStopping = false
@@ -194,6 +242,7 @@ final class RecordingPictureInPicture: NSObject, ObservableObject, @preconcurren
         returningInline = true
         isDetached = false
         restoreCompletion = completionHandler
+        restoreGeneration = sessionGeneration
         restoreRequest = UUID()
     }
 }

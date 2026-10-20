@@ -101,7 +101,11 @@ struct PlaybackView: View {
     private var audioOptions: [PlaybackAudioOption] { isRecording ? recordingController.audioOptions : controller.audioOptions }
     private var selectedAudioID: String? { isRecording ? recordingController.selectedAudioID : controller.selectedAudioID }
     private var audioSelectionError: String? { isRecording ? recordingController.audioSelectionError : controller.audioSelectionError }
-    private var surfaceIsFocusable: Bool { !recordingController.pictureInPicture.isDetached && visiblePanel == nil && !isLoading && failure == nil && !isSceneSearchPresented && !viewportSettings.isPresented }
+    private var acceptsInlineInput: Bool {
+        !isClosing && !recordingController.pictureInPicture.isDetached && !recordingController.pictureInPicture.isTransitioning
+    }
+    private var readyFocus: PlaybackControlFocus { failure != nil ? .retry : (isLoading ? .close : .surface) }
+    private var surfaceIsFocusable: Bool { acceptsInlineInput && visiblePanel == nil && !isLoading && failure == nil && !isSceneSearchPresented && !viewportSettings.isPresented }
 #endif
     private var needsContinuousDisplay: Bool {
 #if canImport(TVVLCKit)
@@ -155,8 +159,11 @@ struct PlaybackView: View {
                 visiblePanel = nil
                 playbackFocus = nil
             } else if !isClosing {
-                playbackFocus = failure == nil ? .surface : .retry
+                playbackFocus = acceptsInlineInput ? readyFocus : nil
             }
+        }
+        .onChange(of: recordingController.pictureInPicture.isTransitioning) { _, transitioning in
+            playbackFocus = !transitioning && acceptsInlineInput ? readyFocus : nil
         }
         .onChange(of: restoreRequest) { _, request in
             if request != nil { recordingController.pictureInPicture.returnToInline() }
@@ -448,6 +455,9 @@ struct PlaybackView: View {
             }.frame(maxWidth: .infinity, maxHeight: .infinity).background(.black)
 #endif
         }
+#if canImport(TVVLCKit)
+        .disabled(recordingController.pictureInPicture.isTransitioning)
+#endif
         .onExitCommand { handleExitCommand() }
 #if canImport(TVVLCKit)
         .task(id: LiveCommentRequestID(channel: item.channelID, enabled: liveCommentsEnabled,
@@ -466,6 +476,7 @@ struct PlaybackView: View {
         .defaultFocus($playbackFocus, .surface)
         .onChange(of: isLoading, initial: true) { _, loading in
             updateLiveCommentClock()
+            guard acceptsInlineInput else { playbackFocus = nil; return }
             if loading {
                 closeViewport(restoreFocus: false)
                 finishSceneSearch(restoreFocus: false)
@@ -529,6 +540,7 @@ struct PlaybackView: View {
             }
         }
         .onChange(of: visiblePanel) { _, panel in
+            guard acceptsInlineInput else { playbackFocus = nil; return }
 #if DEBUG
             print("RingonomiPlaybackPanel: \(panel.map { $0 == .top ? "top" : "bottom" } ?? "hidden") uptime=\(ProcessInfo.processInfo.systemUptime)")
 #endif
@@ -555,7 +567,7 @@ struct PlaybackView: View {
 #if DEBUG
             print("RingonomiPlaybackCommand: playPause")
 #endif
-            guard !isSceneSearchPresented, !viewportSettings.isPresented else { return }
+            guard acceptsInlineInput, !isSceneSearchPresented, !viewportSettings.isPresented else { return }
             if isRecording { recordingController.togglePause() } else { controller.togglePause() }
         }
         .task(id: CommentRequestID(server: item.client.baseURL, recordingID: item.recordingID,
@@ -886,6 +898,7 @@ struct PlaybackView: View {
     }
 
     private func handleMoveCommand(_ direction: MoveCommandDirection) {
+        guard acceptsInlineInput else { return }
         switch direction {
         case .up: revealTopPanel()
         case .down:
@@ -899,6 +912,7 @@ struct PlaybackView: View {
     }
 
     private func selectQuality(_ value: String) {
+        guard acceptsInlineInput else { return }
         guard value != quality, !isLoading else { return }
         if isRecording { recordingController.prepareQualityChange() }
         else { controller.prepareQualityChange() }
