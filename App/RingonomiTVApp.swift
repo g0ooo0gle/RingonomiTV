@@ -138,7 +138,7 @@ struct LibraryView: View {
                     AccountSettingsView(address: effectiveAddress, account: account)
                         .disabled(reservations.saving || keywords.saving)
                 }
-                .navigationTitle("設定")
+                .appNavigationTitle(Text("設定"))
                 .navigationDestination(for: SettingsDestination.self) { destination in
                     switch destination {
                     case .mirakurun:

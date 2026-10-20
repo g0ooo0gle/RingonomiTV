@@ -50,7 +50,7 @@ struct KeywordTimeRangeSelection: View {
                 }
             }
         }
-        .navigationTitle("曜日・時間帯")
+        .appNavigationTitle(Text("曜日・時間帯"))
         .sheet(item: $editing) { item in
             KeywordTimeRangeEditor(range: item.range, allowUnchangedRange: item.index != nil) { updated in
                 guard var values = selection else { return false }
@@ -107,7 +107,7 @@ private struct KeywordTimeRangeEditor: View {
                     Button("キャンセル") { dismiss() }
                 }
             }
-            .navigationTitle("日時範囲を編集")
+            .appNavigationTitle(Text("日時範囲を編集"))
             .alert("日時を確認してください", isPresented: Binding(
                 get: { error != nil }, set: { if !$0 { error = nil } }
             )) {

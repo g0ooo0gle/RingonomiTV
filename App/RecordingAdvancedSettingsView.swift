@@ -48,7 +48,7 @@ struct RecordingAdvancedSettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
-        .navigationTitle("保存先と録画後処理")
+        .appNavigationTitle(Text("保存先と録画後処理"))
         .alert("設定を確認してください", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
             Button("閉じる") { error = nil }
         } message: { Text(error ?? "") }
@@ -101,7 +101,7 @@ private struct RecordingFoldersView: View {
                 Section { Text(draft.foldersMessage ?? "保存先の形式を確認できません。既存設定は保持されます。") }
             }
         }
-        .navigationTitle("保存先フォルダー")
+        .appNavigationTitle(Text("保存先フォルダー"))
         .sheet(item: $editing) { item in
             RecordingFolderEditor(folder: item.folder) { path, template, oneseg in
                 var candidate = draft
@@ -178,7 +178,7 @@ private struct RecordingFolderEditor: View {
                     Button("キャンセル") { dismiss() }
                 }
             }
-            .navigationTitle(folder == nil ? "保存先を追加" : "保存先を編集")
+            .appNavigationTitle(Text(folder == nil ? "保存先を追加" : "保存先を編集"))
             .alert("保存先を確認してください", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
                 Button("閉じる") { error = nil }
             } message: { Text(error ?? "") }
@@ -219,7 +219,7 @@ private struct RecordingBatchSelection: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
-        .navigationTitle("録画後バッチ")
+        .appNavigationTitle(Text("録画後バッチ"))
     }
 
     private func choice(_ title: String, detail: String?, value: RecordingBatchChoice) -> some View {
@@ -270,7 +270,7 @@ private struct RecordingBatchLibraryView: View {
             }
             if let error = store.error { Section { Text(error).foregroundStyle(.orange) } }
         }
-        .navigationTitle("バッチの登録・削除")
+        .appNavigationTitle(Text("バッチの登録・削除"))
         .sheet(isPresented: $adding) { RecordingBatchRegistration(store: store) }
         .confirmationDialog("この登録を削除しますか？", isPresented: $confirmingDeletion, titleVisibility: .visible) {
             Button("登録を削除", role: .destructive) {
@@ -309,7 +309,7 @@ private struct RecordingBatchRegistration: View {
                     Button("キャンセル") { dismiss() }
                 }
             }
-            .navigationTitle("バッチを登録")
+            .appNavigationTitle(Text("バッチを登録"))
             .alert("入力内容を確認してください", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
                 Button("閉じる") { error = nil }
             } message: { Text(error ?? "") }

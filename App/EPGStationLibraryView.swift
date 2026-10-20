@@ -171,7 +171,7 @@ struct EPGStationLibraryView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .navigationTitle("EPGStation録画")
+        .appNavigationTitle(Text("EPGStation録画"))
         .navigationDestination(isPresented: $showingDetail) {
             if let selectedID {
                 EPGStationRecordingDetailView(
@@ -309,7 +309,7 @@ private struct EPGStationRecordingDetailView: View {
                 }
             }
         }
-        .navigationTitle("録画の詳細")
+        .appNavigationTitle(Text("録画の詳細"))
         .task(id: address + ":" + String(recordingID)) { await load() }
         .onDisappear {
             detailTask?.cancel()

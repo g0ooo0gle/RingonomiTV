@@ -154,7 +154,7 @@ struct MirakurunServiceView: View {
                 }
             }
         }
-        .navigationTitle("Mirakurun直接視聴")
+        .appNavigationTitle(Text("Mirakurun直接視聴"))
         .onAppear {
             if !didPrepareDraft {
                 draftAddress = effectiveAddress

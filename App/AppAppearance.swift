@@ -144,3 +144,21 @@ struct AppSection<Content: View>: View {
         }
     }
 }
+
+/// Applies the selected appearance to the native navigation title and buttons.
+private struct AppNavigationTitle: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+    let title: Text
+
+    func body(content: Content) -> some View {
+        content
+            .navigationTitle(title)
+            .toolbarColorScheme(colorScheme, for: .navigationBar)
+    }
+}
+
+extension View {
+    func appNavigationTitle(_ title: Text) -> some View {
+        modifier(AppNavigationTitle(title: title))
+    }
+}

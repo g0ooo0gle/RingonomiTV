@@ -66,7 +66,7 @@ struct KeywordReservationEditor: View {
                 }
             }
             .disabled(busy)
-            .navigationTitle(original == nil ? "新しいキーワード予約" : "キーワード予約を変更")
+            .appNavigationTitle(Text(original == nil ? "新しいキーワード予約" : "キーワード予約を変更"))
             .interactiveDismissDisabled(busy)
             .onChange(of: search.rawValues) { _, _ in invalidatePreview() }
             .onChange(of: minimumDuration) { _, _ in invalidatePreview() }

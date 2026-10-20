@@ -37,7 +37,7 @@ struct KeywordChannelSelection: View {
                 Button("再試行") { revision += 1 }
             }
         }
-        .navigationTitle("対象チャンネル")
+        .appNavigationTitle(Text("対象チャンネル"))
         .overlay { if loading { ProgressView("チャンネルを読み込んでいます…") } }
         .task(id: "\(address)|\(revision)") { await load() }
     }

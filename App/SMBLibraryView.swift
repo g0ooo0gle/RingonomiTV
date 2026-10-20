@@ -127,7 +127,7 @@ struct SMBLibraryView: View {
                     }
                 }
             }
-            .navigationTitle("SMBライブラリ")
+            .appNavigationTitle(Text("SMBライブラリ"))
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button {
@@ -424,7 +424,7 @@ private struct SMBConnectionForm: View {
                 }
             }
         }
-        .navigationTitle("共有を追加")
+        .appNavigationTitle(Text("共有を追加"))
         .onExitCommand { dismiss() }
         .onDisappear { password = "" }
     }
@@ -512,7 +512,7 @@ private struct SMBEditCredentialsForm: View {
                 }
             }
         }
-        .navigationTitle("認証情報を変更")
+        .appNavigationTitle(Text("認証情報を変更"))
         .onExitCommand { dismiss() }
         .onDisappear { password = "" }
     }
@@ -612,7 +612,7 @@ struct SMBFolderView: View {
                 entriesList
             }
         }
-        .navigationTitle(title)
+        .appNavigationTitle(Text(title))
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {

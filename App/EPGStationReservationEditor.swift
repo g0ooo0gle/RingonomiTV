@@ -185,7 +185,7 @@ struct EPGStationReservationEditor: View {
                 }
             }
         }
-        .navigationTitle("録画する番組")
+        .appNavigationTitle(Text("録画する番組"))
         .onAppear(perform: loadPrograms)
     }
 

@@ -81,7 +81,7 @@ struct EPGStationRuleChannelSelection: View {
                 }
             }
         }
-        .navigationTitle("対象チャンネル")
+        .appNavigationTitle(Text("対象チャンネル"))
     }
 
     private var allChannelsBinding: Binding<Bool> {
@@ -163,7 +163,7 @@ struct EPGStationRuleGenreSelection: View {
                 }
             }
         }
-        .navigationTitle("対象ジャンル")
+        .appNavigationTitle(Text("対象ジャンル"))
     }
 
     private var allGenres: Bool {
@@ -330,7 +330,7 @@ struct EPGStationRuleTimeSelection: View {
                 }
             }
         }
-        .navigationTitle("曜日・時間帯")
+        .appNavigationTitle(Text("曜日・時間帯"))
         .sheet(item: $editing) { item in
             EPGStationRuleTimeEditor(draft: item.draft) { draft in
                 apply(draft, to: item)
@@ -567,7 +567,7 @@ private struct EPGStationRuleTimeEditor: View {
                     Button("キャンセル", role: .cancel) { dismiss() }
                 }
             }
-            .navigationTitle("曜日・時間帯を編集")
+            .appNavigationTitle(Text("曜日・時間帯を編集"))
             .alert("入力を確認してください", isPresented: Binding(
                 get: { error != nil },
                 set: { if !$0 { error = nil } }

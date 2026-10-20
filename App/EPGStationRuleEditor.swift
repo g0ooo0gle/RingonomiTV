@@ -56,7 +56,7 @@ struct EPGStationRuleEditor: View {
                         }
                         Button("条件に戻る") { showingPreview = false }
                     }
-                    .navigationTitle("番組検索プレビュー")
+                    .appNavigationTitle(Text("番組検索プレビュー"))
                     .onExitCommand { showingPreview = false }
                 }
             }

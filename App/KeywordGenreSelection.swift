@@ -59,7 +59,7 @@ struct KeywordGenreSelection: View {
                 }
             }
         }
-        .navigationTitle("対象ジャンル")
+        .appNavigationTitle(Text("対象ジャンル"))
     }
 
     private var allGenresBinding: Binding<Bool> {
@@ -185,7 +185,7 @@ private struct KeywordGenreMiddleSelection: View {
                 }
             }
         }
-        .navigationTitle(majorName.isEmpty ? "未登録の大分類" : majorName)
+        .appNavigationTitle(Text(majorName.isEmpty ? "未登録の大分類" : majorName))
     }
 
     private var unknownMiddleNames: [String] {

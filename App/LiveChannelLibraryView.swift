@@ -67,7 +67,7 @@ struct LiveChannelLibraryView: View {
             channelContent
         }
         .padding(.horizontal, 48)
-        .navigationTitle("ライブチャンネル")
+        .appNavigationTitle(Text("ライブチャンネル"))
         .sheet(isPresented: $showingSearch, onDismiss: { focus = .search }) {
             LiveChannelSearchSheet(
                 initialText: committedSearch,
