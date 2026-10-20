@@ -550,6 +550,9 @@ struct SMBFolderView: View {
     @State private var message: String?
     @State private var needsReload = true
     @State private var isVisible = false
+    @FocusState private var focusedEntryID: String?
+    @State private var restoreEntryPath: SMBRelativePath?
+    @State private var focusRestoreRevision = 0
 
     private let keychain = SMBCredentialsKeychain()
 
@@ -684,6 +687,16 @@ struct SMBFolderView: View {
                 reload()
             }
         }
+        .onChange(of: directory.loadedPath) { _, loadedPath in
+            guard loadedPath == currentPath, restoreEntryPath != nil,
+                  isVisible, !playbackActive, scenePhase == .active else { return }
+            if visibleEntries.isEmpty {
+                restoreEntryPath = nil
+                focusedEntryID = nil
+            } else {
+                focusRestoreRevision &+= 1
+            }
+        }
         .onDisappear {
             isVisible = false
             needsReload = true
@@ -692,21 +705,28 @@ struct SMBFolderView: View {
     }
 
     private var entriesList: some View {
-        List {
-            if let parent = currentPath.parent() {
+        ScrollViewReader { proxy in
+            List {
+                if let parent = currentPath.parent() {
+                    Section {
+                        Button {
+                            navigate(to: parent)
+                        } label: {
+                            Label("親フォルダーへ戻る", systemImage: "arrow.up.left")
+                        }
+                    }
+                }
+
                 Section {
-                    Button {
-                        navigate(to: parent)
-                    } label: {
-                        Label("親フォルダーへ戻る", systemImage: "arrow.up.left")
+                    ForEach(visibleEntries) { entry in
+                        entryRow(entry)
+                            .id(entry.id)
                     }
                 }
             }
-
-            Section {
-                ForEach(visibleEntries) { entry in
-                    entryRow(entry)
-                }
+            .task(id: focusRestoreRevision) {
+                guard focusRestoreRevision > 0 else { return }
+                await restoreFocus(using: proxy, revision: focusRestoreRevision)
             }
         }
     }
@@ -721,13 +741,16 @@ struct SMBFolderView: View {
                     entryLabel(entry)
                 }
                 .buttonStyle(.plain)
+                .focused($focusedEntryID, equals: entry.id)
             } else {
                 Button {
+                    restoreEntryPath = entry.path
                     onOpen(connection, entry)
                 } label: {
                     entryLabel(entry)
                 }
                 .buttonStyle(.plain)
+                .focused($focusedEntryID, equals: entry.id)
             }
 
             if entry.isDirectory && allowsPinning {
@@ -844,8 +867,37 @@ struct SMBFolderView: View {
         }
     }
 
+    @MainActor
+    private func restoreFocus(using proxy: ScrollViewProxy, revision: Int) async {
+        guard canRestoreFocus(revision: revision), let path = restoreEntryPath else { return }
+        let targetID = visibleEntries.first(where: { $0.path == path })?.id
+            ?? visibleEntries.first?.id
+        guard let targetID else {
+            restoreEntryPath = nil
+            focusedEntryID = nil
+            return
+        }
+        proxy.scrollTo(targetID, anchor: .center)
+        await Task.yield()
+        guard canRestoreFocus(revision: revision), restoreEntryPath == path,
+              visibleEntries.contains(where: { $0.id == targetID }) else { return }
+        focusedEntryID = targetID
+        restoreEntryPath = nil
+#if DEBUG
+        print("RingonomiSMBFocus: restoredIndex=\(visibleEntries.firstIndex(where: { $0.id == targetID }) ?? -1)")
+#endif
+    }
+
+    private func canRestoreFocus(revision: Int) -> Bool {
+        !Task.isCancelled && revision == focusRestoreRevision && isVisible
+            && !playbackActive && scenePhase == .active && !directory.loading
+            && directory.error == nil && directory.loadedPath == currentPath
+    }
+
     private func navigate(to newPath: SMBRelativePath) {
         guard newPath != currentPath else { return }
+        restoreEntryPath = nil
+        focusedEntryID = nil
         currentPath = newPath
         query = ""
         reload()
