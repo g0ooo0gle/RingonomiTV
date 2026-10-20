@@ -182,9 +182,11 @@ struct MirakurunServiceView: View {
             }
         }
         .fullScreenCover(item: $playback) { item in
-            MirakurunPlaybackView(item: item) { needsDisplay in
-                guard playback?.id == item.id else { return }
-                playbackIdleTimer.setNeedsContinuousDisplay(needsDisplay)
+            PlaybackHandoffView {
+                MirakurunPlaybackView(item: item) { needsDisplay in
+                    guard playback?.id == item.id else { return }
+                    playbackIdleTimer.setNeedsContinuousDisplay(needsDisplay)
+                }
             }
         }
         .onChange(of: playback?.id) { _, id in

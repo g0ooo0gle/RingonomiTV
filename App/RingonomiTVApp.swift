@@ -25,7 +25,11 @@ struct LibraryView: View {
     @State private var error: String?
     @State private var channelError: String?
     @State private var loading = false
-    @State private var playback: Playback?
+    @StateObject private var playbackPresentation = PlaybackPresentationStore()
+    private var playback: Playback? {
+        get { playbackPresentation.current }
+        nonmutating set { playbackPresentation.present(newValue) }
+    }
     @StateObject private var playbackIdleTimer = PlaybackIdleTimer()
     @State private var selectedTab = 0
     @State private var settingsPath: [SettingsDestination] = []
@@ -253,13 +257,43 @@ struct LibraryView: View {
         .task(id: effectiveAddress) {
             await account.restore(address: effectiveAddress)
         }
-        .fullScreenCover(item: $playback) { item in
-            PlaybackView(item: item, resumeStore: resumeStore) { needsDisplay in
-                // Ignore a late update from a player that has already closed.
-                guard playback?.id == item.id else { return }
-                playbackIdleTimer.setNeedsContinuousDisplay(needsDisplay)
+        .disabled(playback != nil && !playbackPresentation.isDetached)
+        .accessibilityHidden(playback != nil && !playbackPresentation.isDetached)
+        .safeAreaInset(edge: .bottom) {
+            if playbackPresentation.isDetached, let item = playback {
+                HStack(spacing: 30) {
+                    Text(item.title).lineLimit(1)
+                    Button("全画面へ戻る") { playbackPresentation.restoreInline() }
+                    Button("再生を終了") { playbackPresentation.present(nil) }
+                }
+                .padding(24)
+                .frame(maxWidth: .infinity)
+                .background(.ultraThinMaterial)
             }
         }
+        .overlay {
+            if let item = playback {
+                PlaybackView(item: item, resumeStore: resumeStore,
+                             closeRequest: playbackPresentation.closeRequest,
+                             restoreRequest: playbackPresentation.restoreRequest,
+                             onClose: { playbackPresentation.didClose(item.id, success: $0) },
+                             onDetachedChanged: { playbackPresentation.setDetached($0, for: item.id) }) { needsDisplay in
+                    guard playback?.id == item.id else { return }
+                    playbackIdleTimer.setNeedsContinuousDisplay(needsDisplay)
+                }
+                .id(item.id)
+                // Preserve the subtree, its layer, quality and keep-alive task
+                // while the library accepts input below system PiP.
+                .opacity(playbackPresentation.isDetached ? 0 : 1)
+                .allowsHitTesting(!playbackPresentation.isDetached)
+                .disabled(playbackPresentation.isDetached)
+                .accessibilityHidden(playbackPresentation.isDetached)
+                .ignoresSafeArea()
+            }
+        }
+        .environment(\.playbackHandoff, PlaybackHandoff(stopPrevious: { [weak playbackPresentation] in
+            await playbackPresentation?.stopForAnotherPlayer() ?? true
+        }))
         .onChange(of: playback?.id) { _, id in
             if id == nil {
                 playbackIdleTimer.setNeedsContinuousDisplay(false)

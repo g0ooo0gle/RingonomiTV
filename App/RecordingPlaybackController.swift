@@ -6,6 +6,8 @@ import RingonomiCore
 @MainActor
 final class RecordingPlaybackController: ObservableObject {
     let player = AVPlayer()
+    let pictureInPicture = RecordingPictureInPicture()
+    private var pictureInPictureObservation: AnyCancellable?
     let captions = RecordingCaptionController()
     @Published private(set) var status = "読み込み中…"
     @Published private(set) var playbackTime = "00:00"
@@ -71,6 +73,9 @@ final class RecordingPlaybackController: ObservableObject {
     init() {
         player.automaticallyWaitsToMinimizeStalling = true
         player.isMuted = true
+        pictureInPictureObservation = pictureInPicture.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
     }
 
     /// Selects one of the options discovered on the current asset.  The
@@ -343,6 +348,7 @@ final class RecordingPlaybackController: ObservableObject {
         layerObservation?.invalidate()
         videoLayer = layer
         layer.player = player
+        pictureInPicture.attach(to: layer)
         layer.videoGravity = .resizeAspect
         layerObservation = layer.observe(\.isReadyForDisplay, options: [.new]) { [weak self] _, _ in
             Task { @MainActor [weak self] in self?.revealWhenReady() }
@@ -433,7 +439,8 @@ final class RecordingPlaybackController: ObservableObject {
     /// is backgrounded.  The resume path creates a fresh AVPlayerItem instead
     /// of trying to continue the item that was interrupted by Home/system UI.
     func suspendForBackground() {
-        guard !isStopped, !isSuspendedForBackground, currentURL != nil, failure == nil else { return }
+        guard !isStopped, !isSuspendedForBackground, currentURL != nil, failure == nil,
+              !pictureInPicture.ownsPlayback else { return }
 
         checkpoint(force: true)
         if !preparing, !isLoading, prerolled {
@@ -639,6 +646,15 @@ final class RecordingPlaybackController: ObservableObject {
     }
     private func playbackStateChanged() {
         guard !isStopped, !isSuspendedForBackground, failure == nil, !preparing else { return }
+        if pictureInPicture.usesSystemTransport, !isLoading, prerolled {
+            // PiP's system controls operate AVPlayer directly. Adopt their
+            // intent before enforcing the inline pause state.
+            if player.timeControlStatus == .playing || player.rate > 0 {
+                wantsPause = false
+            } else if player.timeControlStatus == .paused, !reachedEnd {
+                wantsPause = true
+            }
+        }
         if wantsPause {
             player.pause()
             player.isMuted = true
@@ -923,6 +939,8 @@ final class RecordingPlaybackController: ObservableObject {
         player.currentItem?.cancelPendingSeeks()
     }
     func stop() {
+        guard !pictureInPicture.ownsPlayback else { return }
+        pictureInPicture.invalidate()
         // `onDisappear`/the explicit close path normally flushes first.  Keep
         // the final trusted position up to date here as a fallback, but do
         // not call the resume-store closure while SwiftUI is dismantling the
@@ -972,6 +990,7 @@ struct NativeRecordingVideo: UIViewRepresentable {
     }
     func updateUIView(_ view: RecordingVideoSurface, context: Context) { controller.load(url) }
     static func dismantleUIView(_ view: RecordingVideoSurface, coordinator: RecordingPlaybackController) {
+        guard !coordinator.pictureInPicture.ownsPlayback else { return }
         coordinator.stop()
         view.playerLayer?.player = nil
     }

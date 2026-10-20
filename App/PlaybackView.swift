@@ -46,7 +46,11 @@ struct PlaybackView: View {
     let item: Playback
     let resumeStore: RecordingResumeStore
     let onContinuousDisplayChanged: (Bool) -> Void
-    @Environment(\.dismiss) private var dismiss
+    let closeRequest: UUID?
+    let restoreRequest: UUID?
+    let onClose: (Bool) -> Void
+    let onDetachedChanged: (Bool) -> Void
+    @State private var isClosing = false
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var quality: String
@@ -72,9 +76,16 @@ struct PlaybackView: View {
     @State private var commentReload = 0
     @StateObject private var commentStore = RecordingCommentStore()
     init(item: Playback, resumeStore: RecordingResumeStore,
+         closeRequest: UUID?, restoreRequest: UUID?,
+         onClose: @escaping (Bool) -> Void,
+         onDetachedChanged: @escaping (Bool) -> Void,
          onContinuousDisplayChanged: @escaping (Bool) -> Void) {
         self.item = item
         self.resumeStore = resumeStore
+        self.closeRequest = closeRequest
+        self.restoreRequest = restoreRequest
+        self.onClose = onClose
+        self.onDetachedChanged = onDetachedChanged
         self.onContinuousDisplayChanged = onContinuousDisplayChanged
         _quality = State(initialValue: item.initialQuality)
     }
@@ -90,7 +101,7 @@ struct PlaybackView: View {
     private var audioOptions: [PlaybackAudioOption] { isRecording ? recordingController.audioOptions : controller.audioOptions }
     private var selectedAudioID: String? { isRecording ? recordingController.selectedAudioID : controller.selectedAudioID }
     private var audioSelectionError: String? { isRecording ? recordingController.audioSelectionError : controller.audioSelectionError }
-    private var surfaceIsFocusable: Bool { visiblePanel == nil && !isLoading && failure == nil && !isSceneSearchPresented && !viewportSettings.isPresented }
+    private var surfaceIsFocusable: Bool { !recordingController.pictureInPicture.isDetached && visiblePanel == nil && !isLoading && failure == nil && !isSceneSearchPresented && !viewportSettings.isPresented }
 #endif
     private var needsContinuousDisplay: Bool {
 #if canImport(TVVLCKit)
@@ -132,6 +143,53 @@ struct PlaybackView: View {
             if !hasStarted, item.savedPosition == nil { beginPlayback(at: 0) }
         }
         .onExitCommand { handleExitCommand() }
+        .onChange(of: closeRequest, initial: true) { _, request in
+            if request != nil { close() }
+        }
+#if canImport(TVVLCKit)
+        .onChange(of: recordingController.pictureInPicture.isDetached) { _, detached in
+            onDetachedChanged(detached)
+            if detached {
+                closeViewport(restoreFocus: false)
+                finishSceneSearch(restoreFocus: false, preparePlayback: false)
+                visiblePanel = nil
+                playbackFocus = nil
+            } else if !isClosing {
+                playbackFocus = failure == nil ? .surface : .retry
+            }
+        }
+        .onChange(of: restoreRequest) { _, request in
+            if request != nil { recordingController.pictureInPicture.returnToInline() }
+        }
+        .onChange(of: recordingController.pictureInPicture.endedWhileDetached) { _, ended in
+            if ended != nil { close() }
+        }
+        .onChange(of: recordingController.pictureInPicture.ownsPlayback) { _, owned in
+            if !owned, !isClosing {
+                recordingController.captions.reset(for: recordingController.currentSeconds)
+#if canImport(UIKit)
+                if UIApplication.shared.applicationState != .active { recordingController.suspendForBackground() }
+#endif
+            }
+        }
+        .task(id: recordingController.pictureInPicture.restoreRequest) {
+            guard let request = recordingController.pictureInPicture.restoreRequest else { return }
+            // The subtree stays mounted. Allow the library's opacity/focus
+            // update to commit, and wait for app activation after Home.
+            for _ in 0..<100 {
+                guard !Task.isCancelled else { return }
+#if canImport(UIKit)
+                if UIApplication.shared.applicationState == .active {
+                    await Task.yield()
+                    recordingController.pictureInPicture.completeRestore(true, request: request)
+                    return
+                }
+#endif
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            recordingController.pictureInPicture.completeRestore(false, request: request)
+        }
+#endif
 #if canImport(UIKit)
         // UIApplication notifications are the primary lifecycle boundary on
         // tvOS.  scenePhase remains a fallback because it can lag during a
@@ -226,6 +284,8 @@ struct PlaybackView: View {
     }
 
     private func close() {
+        guard !isClosing else { return }
+        isClosing = true
         closeViewport(restoreFocus: false)
         onContinuousDisplayChanged(false)
 #if DEBUG
@@ -238,7 +298,22 @@ struct PlaybackView: View {
         visiblePanel = nil
         isQualityOverlayPresented = false
         isSeeking = false
-        dismiss()
+#if canImport(TVVLCKit)
+        if isRecording {
+            recordingController.pictureInPicture.stopBeforeClosing { success in
+                if success {
+                    recordingController.flushPosition()
+                    recordingController.stop()
+                } else { isClosing = false }
+                onClose(success)
+            }
+        } else {
+            controller.stop()
+            onClose(true)
+        }
+#else
+        onClose(true)
+#endif
     }
 
     private var playerBody: some View {
@@ -443,6 +518,7 @@ struct PlaybackView: View {
         .onChange(of: failure) { _, failure in
             updateLiveCommentClock()
             if failure != nil {
+                if isRecording { recordingController.pictureInPicture.returnToInline() }
                 closeViewport(restoreFocus: false)
                 finishSceneSearch(restoreFocus: false)
                 isQualityOverlayPresented = false
@@ -550,6 +626,9 @@ struct PlaybackView: View {
                 if isRecording, let notice = recordingController.commercialSkipNotice {
                     Text(notice).font(.caption)
                 }
+                if isRecording, let notice = recordingController.pictureInPicture.notice {
+                    Text(notice).foregroundStyle(.orange)
+                }
                 if let audioSelectionError {
                     Text(audioSelectionError)
                         .font(.caption)
@@ -581,6 +660,13 @@ struct PlaybackView: View {
                 failure: failure,
                 audioOptions: audioOptions,
                 selectedAudioID: selectedAudioID,
+                pictureInPictureSupported: isRecording && recordingController.pictureInPicture.isSupported,
+                pictureInPicturePossible: recordingController.pictureInPicture.isPossible,
+                pictureInPictureBusy: recordingController.pictureInPicture.isTransitioning,
+                startPictureInPicture: {
+                    guard isRecording, !isLoading, failure == nil else { return }
+                    recordingController.pictureInPicture.start()
+                },
                 selectAudio: { id in
                     if isRecording { recordingController.selectAudioTrack(id: id) }
                     else { controller.selectAudioTrack(id: id) }
@@ -718,6 +804,8 @@ struct PlaybackView: View {
             switch focus {
             case .captions, .comments, .quality, .viewport, .panelClose:
                 return true
+            case .pictureInPicture:
+                return isRecording && recordingController.pictureInPicture.isSupported
             case .audio:
                 return audioOptions.count > 1
             default:

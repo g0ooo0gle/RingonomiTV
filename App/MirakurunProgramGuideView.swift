@@ -106,9 +106,11 @@ struct MirakurunProgramGuideView: View {
             playbackIdleTimer.setNeedsContinuousDisplay(false)
             returnFocusRevision += 1
         }) { item in
-            MirakurunPlaybackView(item: item) { needed in
-                guard playback?.id == item.id else { return }
-                playbackIdleTimer.setNeedsContinuousDisplay(needed)
+            PlaybackHandoffView {
+                MirakurunPlaybackView(item: item) { needed in
+                    guard playback?.id == item.id else { return }
+                    playbackIdleTimer.setNeedsContinuousDisplay(needed)
+                }
             }
         }
         .onChange(of: playback?.id) { _, id in

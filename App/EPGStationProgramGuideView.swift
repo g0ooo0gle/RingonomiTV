@@ -160,9 +160,11 @@ struct EPGStationProgramGuideView: View {
             playbackIdleTimer.setNeedsContinuousDisplay(false)
             returnFocusRevision += 1
         }) { item in
-            EPGStationLivePlaybackView(item: item) { needsDisplay in
-                guard playback?.id == item.id else { return }
-                playbackIdleTimer.setNeedsContinuousDisplay(needsDisplay)
+            PlaybackHandoffView {
+                EPGStationLivePlaybackView(item: item) { needsDisplay in
+                    guard playback?.id == item.id else { return }
+                    playbackIdleTimer.setNeedsContinuousDisplay(needsDisplay)
+                }
             }
         }
         .onChange(of: playback?.id) { _, id in

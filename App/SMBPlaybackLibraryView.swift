@@ -34,14 +34,16 @@ struct SMBPlaybackLibraryView: View {
             }
         }
         .fullScreenCover(item: $playback) { session in
-            SMBResumePlaybackView(item: session.item,
-                onBeginning: { resumeStore.remove(session.resumeID) },
-                onContinuousDisplayChanged: { idleTimer.setNeedsContinuousDisplay($0) },
-                onProgress: { seconds, duration, ended in
-                    // Capture this session's ID, never the current selection.
-                    resumeStore.save(session.resumeID, seconds: seconds,
-                                     duration: duration, reachedEnd: ended)
-                })
+            PlaybackHandoffView {
+                SMBResumePlaybackView(item: session.item,
+                    onBeginning: { resumeStore.remove(session.resumeID) },
+                    onContinuousDisplayChanged: { idleTimer.setNeedsContinuousDisplay($0) },
+                    onProgress: { seconds, duration, ended in
+                        // Capture this session's ID, never the current selection.
+                        resumeStore.save(session.resumeID, seconds: seconds,
+                                         duration: duration, reachedEnd: ended)
+                    })
+            }
         }
         .onChange(of: playback) { _, item in
             if item == nil { idleTimer.setNeedsContinuousDisplay(false) }

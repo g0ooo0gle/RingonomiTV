@@ -323,17 +323,19 @@ private struct EPGStationRecordingDetailView: View {
             Button("キャンセル", role: .cancel) { pendingFile = nil }
         }
         .fullScreenCover(item: $playback) { session in
-            FilePlaybackView(item: session.item, onContinuousDisplayChanged: { needed in
-                guard playback?.id == session.id else { return }
-                playbackIdleTimer.setNeedsContinuousDisplay(needed)
-            }, onProgress: { position, duration, ended in
-                guard playback?.id == session.id else { return }
-                resumeStore.save(session.resumeID, seconds: position, duration: duration,
-                                 status: session.status, reachedEnd: ended)
-#if DEBUG
-                print("RingonomiEPGStationProgress: seconds=\(position) duration=\(duration ?? -1) ended=\(ended)")
-#endif
-            })
+            PlaybackHandoffView {
+                FilePlaybackView(item: session.item, onContinuousDisplayChanged: { needed in
+                    guard playback?.id == session.id else { return }
+                    playbackIdleTimer.setNeedsContinuousDisplay(needed)
+                }, onProgress: { position, duration, ended in
+                    guard playback?.id == session.id else { return }
+                    resumeStore.save(session.resumeID, seconds: position, duration: duration,
+                                     status: session.status, reachedEnd: ended)
+    #if DEBUG
+                    print("RingonomiEPGStationProgress: seconds=\(position) duration=\(duration ?? -1) ended=\(ended)")
+    #endif
+                })
+            }
         }
         .onChange(of: playback?.id) { _, id in
             if id == nil { playbackIdleTimer.setNeedsContinuousDisplay(false) }
