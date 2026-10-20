@@ -726,6 +726,7 @@ struct SMBFolderView: View {
                 }
             }
             .safeAreaPadding(.vertical)
+            .clipped()
             .task(id: focusRestoreRevision) {
                 guard focusRestoreRevision > 0 else { return }
                 await restoreFocus(using: proxy, revision: focusRestoreRevision)
@@ -769,12 +770,13 @@ struct SMBFolderView: View {
     }
 
     private func entryLabel(_ entry: SMBLibraryEntry) -> some View {
-        Label {
+        HStack(spacing: 20) {
+            Image(systemName: entry.isDirectory ? "folder" : "film")
+                .frame(width: 52)
+                .accessibilityHidden(true)
             Text(entry.name)
                 .lineLimit(1)
                 .truncationMode(.middle)
-        } icon: {
-            Image(systemName: entry.isDirectory ? "folder" : "film")
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
