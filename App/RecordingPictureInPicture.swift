@@ -142,10 +142,12 @@ final class RecordingPictureInPicture: NSObject, ObservableObject, @preconcurren
     private func beginStopDeadline() {
         let expected = UUID()
         stopToken = expected
+        let expectedSession = sessionGeneration
         deadline?.cancel()
         deadline = Task { @MainActor [weak self] in
             do { try await Task.sleep(for: .seconds(10)) } catch { return }
-            guard let self, self.stopToken == expected else { return }
+            guard let self, !Task.isCancelled, self.stopToken == expected,
+                  self.sessionGeneration == expectedSession else { return }
             if let native = self.controller, !native.isPictureInPictureActive, !self.isStarting {
                 self.pictureInPictureControllerDidStopPictureInPicture(native)
                 return
@@ -157,7 +159,8 @@ final class RecordingPictureInPicture: NSObject, ObservableObject, @preconcurren
             self.isStopping = false
             self.isTransitioning = false
             self.isActive = true
-            self.returningInline = false
+            // Preserve the return intent: a delayed native stop must restore
+            // inline playback, rather than treat the user's return as Close.
             self.isDetached = true
             self.notice = "PiPの終了を確認できませんでした。小窓を閉じるか、もう一度お試しください。"
             self.finishClose(success: false)
@@ -175,6 +178,7 @@ final class RecordingPictureInPicture: NSObject, ObservableObject, @preconcurren
     }
 
     private func finishClose(success: Bool) {
+        stopToken = UUID()
         deadline?.cancel()
         deadline = nil
         let completion = stopCompletion
