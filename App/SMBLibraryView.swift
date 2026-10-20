@@ -726,7 +726,7 @@ struct SMBFolderView: View {
                 }
             }
             .safeAreaPadding(.vertical)
-            .clipped()
+            .clipShape(SMBListVerticalClip())
             .task(id: focusRestoreRevision) {
                 guard focusRestoreRevision > 0 else { return }
                 await restoreFocus(using: proxy, revision: focusRestoreRevision)
@@ -955,5 +955,13 @@ private extension String {
     var nilIfBlank: String? {
         let value = trimmingCharacters(in: .whitespacesAndNewlines)
         return value.isEmpty ? nil : value
+    }
+}
+
+// tvOS focus extends beyond a row horizontally. Keep that space while
+// clipping scrolled rows below the navigation area.
+private struct SMBListVerticalClip: Shape {
+    func path(in rect: CGRect) -> Path {
+        Path(rect.insetBy(dx: -rect.width, dy: 0))
     }
 }
