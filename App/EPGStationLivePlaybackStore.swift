@@ -24,6 +24,7 @@ final class EPGStationLivePlaybackStore: ObservableObject {
     private var client: EPGStationClient?
     private var address = ""
     private var channelID: Int?
+    private var resumesAfterBackground = false
 
     deinit {
         request?.cancel()
@@ -52,6 +53,7 @@ final class EPGStationLivePlaybackStore: ObservableObject {
         error = nil
         awaitingQualitySelection = false
         isSuspended = false
+        resumesAfterBackground = false
         isLoading = true
 
         request = Task { @MainActor [weak self] in
@@ -173,10 +175,11 @@ final class EPGStationLivePlaybackStore: ObservableObject {
         keepAlive = nil
     }
 
-    /// Stop network tasks while retaining the selected quality for a fresh
-    /// stream after Home/background.  The decoder is suspended by the view.
-    func suspendForBackground() {
+    /// Cancel background work while retaining the selected quality. Errors
+    /// require an explicit Retry; the view also supplies native player errors.
+    func suspendForBackground(allowsAutomaticResume: Bool = true) {
         guard !isSuspended else { return }
+        resumesAfterBackground = allowsAutomaticResume && error == nil
         isSuspended = true
         generation = UUID()
         request?.cancel()
@@ -189,6 +192,9 @@ final class EPGStationLivePlaybackStore: ObservableObject {
     func resumeFromBackground() {
         guard isSuspended else { return }
         isSuspended = false
+        let shouldResume = resumesAfterBackground && error == nil
+        resumesAfterBackground = false
+        guard shouldResume else { return }
         if let selectedQuality {
             selectQuality(selectedQuality, force: true)
         } else if let channelID {
@@ -212,6 +218,7 @@ final class EPGStationLivePlaybackStore: ObservableObject {
         isLoading = false
         awaitingQualitySelection = false
         isSuspended = false
+        resumesAfterBackground = false
     }
 
     private func startKeepAlive(

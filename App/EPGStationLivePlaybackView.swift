@@ -745,8 +745,9 @@ struct EPGStationLivePlaybackView: View {
         viewportSettings.close()
         qualityCardRequested = false
         menuVisible = false
-        let canSuspendController = displayedURL != nil && effectiveFailure == nil
-        store.suspendForBackground()
+        let allowsAutomaticResume = effectiveFailure == nil
+        let canSuspendController = displayedURL != nil && allowsAutomaticResume
+        store.suspendForBackground(allowsAutomaticResume: allowsAutomaticResume)
 #if canImport(TVVLCKit)
         if canSuspendController {
             controller.suspendForBackground()
