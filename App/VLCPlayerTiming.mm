@@ -2,6 +2,8 @@
 
 #import <TVVLCKit/VLCMediaPlayer.h>
 #import <TVVLCKit/vlc/libvlc.h>
+#import <TVVLCKit/vlc/libvlc_media.h>
+#import <TVVLCKit/vlc/libvlc_renderer_discoverer.h>
 #import <TVVLCKit/vlc/libvlc_media_player.h>
 
 // The pinned TVVLCKit framework declares this getter in its private bridging
