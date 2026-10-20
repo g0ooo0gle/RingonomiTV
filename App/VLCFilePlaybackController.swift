@@ -165,11 +165,12 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         canSeekRelative && durationSeconds != nil
     }
 
-    /// The SMB transport can report seekable even when its TS demuxer
-    /// cannot perform time-based seeks. Require a known duration there.
+    /// Relative moves need a current timestamp, rather than a total duration.
+    /// The position gate still verifies that the demuxer actually moved.
     var canSeekRelative: Bool {
-        !isStopped && !isLoading && failure == nil && isSeekable
-            && (selection?.smbConnection == nil || durationSeconds != nil)
+        !isStopped && !isSuspendedForBackground && !isLoading
+            && failure == nil && isSeekable
+            && (durationSeconds != nil || (!isEnded && rawPlaybackSeconds != nil))
     }
 
     var videoRect: CGRect {
@@ -314,13 +315,23 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
 
     func seek(seconds: Double) {
         guard canSeekRelative, seconds.isFinite else { return }
-        seek(to: safeCurrentSeconds + seconds)
+        // An unknown-length stream must provide a real native timestamp;
+        // a requested or cached position is not a safe basis for a move.
+        let current = durationSeconds == nil ? rawPlaybackSeconds : safeCurrentSeconds
+        guard let current,
+              let target = clamp(current + seconds, duration: durationSeconds),
+              milliseconds(target) != nil else { return }
+        seekToPosition(target)
     }
 
     func seek(to seconds: Double) {
-        guard canSeekRelative, seconds.isFinite,
-              let target = clamp(seconds, duration: durationSeconds) else { return }
+        guard canSeek, seconds.isFinite,
+              let target = clamp(seconds, duration: durationSeconds),
+              milliseconds(target) != nil else { return }
+        seekToPosition(target)
+    }
 
+    private func seekToPosition(_ target: Double) {
         // The rightmost seek-bar position means the end of a completed
         // recording. Asking the TS decoder to seek into its final fraction
         // of a second can leave its input teardown blocked. End explicitly
