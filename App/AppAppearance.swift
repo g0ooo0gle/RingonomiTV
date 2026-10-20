@@ -145,15 +145,25 @@ struct AppSection<Content: View>: View {
     }
 }
 
-/// Applies the selected appearance to the native navigation title and buttons.
+/// Keeps navigation titles readable while retaining native toolbar actions.
 private struct AppNavigationTitle: ViewModifier {
     @Environment(\.colorScheme) private var colorScheme
     let title: Text
 
     func body(content: Content) -> some View {
         content
-            .navigationTitle(title)
+            .navigationTitle("")
             .toolbarColorScheme(colorScheme, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    title
+                        .font(.title2.weight(.semibold))
+                        .foregroundStyle(colorScheme == .dark ? Color.white : Color.black)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .accessibilityAddTraits(.isHeader)
+                }
+            }
     }
 }
 
