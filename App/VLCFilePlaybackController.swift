@@ -72,6 +72,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
     private var selection: FilePlaybackSelection?
     private var currentURL: URL?
     private var durationHint: Double?
+    private var nativeInputDurationSeconds: Double?
     private var targetSeconds = 0.0
     // A VLC time assignment is asynchronous. Keep the request separate from
     // the trusted playback position so an old/zero time cannot overwrite a
@@ -565,6 +566,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         isPaused = wantsPause
         isEnded = false
         durationSeconds = durationHint
+        nativeInputDurationSeconds = nil
         isSeekable = false
         status = "読み込み中…"
         waitingSince = Date()
@@ -809,7 +811,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
                 let remainingSeconds = remainingMilliseconds >= 0 ? remainingMilliseconds / 1000 : -1
                 let mediaLengthMilliseconds = media.length.value?.doubleValue ?? -1
                 let mediaLengthSeconds = mediaLengthMilliseconds >= 0 ? mediaLengthMilliseconds / 1000 : -1
-                print("RingonomiFileStats: rawSeconds=\(rawSeconds) position=\(player.position) remainingSeconds=\(remainingSeconds) mediaLengthSeconds=\(mediaLengthSeconds) seekable=\(player.isSeekable) parsedStatus=\(media.parsedStatus.rawValue) readBytes=\(stats.readBytes) demuxReadBytes=\(stats.demuxReadBytes) inputBitrate=\(stats.inputBitrate) demuxBitrate=\(stats.demuxBitrate) pictures=\(totalPictures) delta=\(pictures) decodedAudio=\(decodedAudio) playedAudio=\(playedAudio) loading=\(isLoading) muted=\(player.audio?.isMuted == true) state=\(player.state.rawValue)")
+                print("RingonomiFileStats: rawSeconds=\(rawSeconds) position=\(player.position) remainingSeconds=\(remainingSeconds) mediaLengthSeconds=\(mediaLengthSeconds) inputLengthSeconds=\(nativeInputDurationSeconds ?? -1) seekable=\(player.isSeekable) parsedStatus=\(media.parsedStatus.rawValue) readBytes=\(stats.readBytes) demuxReadBytes=\(stats.demuxReadBytes) inputBitrate=\(stats.inputBitrate) demuxBitrate=\(stats.demuxBitrate) pictures=\(totalPictures) delta=\(pictures) decodedAudio=\(decodedAudio) playedAudio=\(playedAudio) loading=\(isLoading) muted=\(player.audio?.isMuted == true) state=\(player.state.rawValue)")
             }
 #endif
 
@@ -1060,8 +1062,15 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
     }
 
     private func refreshDurationAndSeekability() {
-        if let milliseconds = player.media?.length.value?.doubleValue,
-           milliseconds.isFinite, milliseconds > 0 {
+        // An unparsed SMB media descriptor can have no length even while its
+        // active input knows the duration. Read that authoritative clock rather
+        // than estimating a duration from normalized playback position.
+        nativeInputDurationSeconds = selection?.smbConnection != nil
+            ? validDuration(RNGVLCPlayerDurationSeconds(player)) : nil
+        if let inputDuration = nativeInputDurationSeconds {
+            durationSeconds = inputDuration
+        } else if let milliseconds = player.media?.length.value?.doubleValue,
+                  milliseconds.isFinite, milliseconds > 0 {
             durationSeconds = milliseconds / 1000
         } else if durationSeconds == nil {
             durationSeconds = durationHint
@@ -1456,17 +1465,9 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         guard seconds.isFinite, seconds >= 0 else { return nil }
         let value = seconds * 1000
         guard value.isFinite else { return nil }
-
-        // VLCTime(number:) accepts an NSNumber, so retain the 64-bit millisecond
-        // range instead of narrowing a long recording to VLCTime(int:)'s
-        // 32-bit argument. Leave one value below Int64.max because Double's
-        // rounded representation of the endpoint can otherwise overflow the
-        // integer conversion.
-        let maximum = Double(Int64.max - 1)
-        guard value <= maximum else { return nil }
-        let rounded = value.rounded()
-        guard rounded <= maximum else { return nil }
-        return Int64(rounded)
+        // Double rounds Int64.max up to an out-of-range value. A checked
+        // conversion preserves long recordings without trapping at that edge.
+        return Int64(exactly: value.rounded())
     }
 }
 
