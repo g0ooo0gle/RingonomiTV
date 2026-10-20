@@ -255,6 +255,7 @@ struct PlaybackView: View {
         print("RingonomiPlaybackBegin: target=\(seconds)")
 #endif
 #if canImport(TVVLCKit)
+        if item.recordingID != nil { recordingController.configureNowPlaying(title: item.title) }
         if let id = item.resumeID {
             let store = resumeStore
             let mediaStatus = item.recordingStatus
@@ -453,7 +454,7 @@ struct PlaybackView: View {
                 VideoViewportSettingsView(settings: viewportSettings, onClose: { closeViewport() })
                     .zIndex(5)
             }
-            if visiblePanel == nil, let maintenanceError {
+            if visiblePanel == nil, failure == nil, let maintenanceError {
                 Text(maintenanceError)
                     .font(.caption)
                     .foregroundStyle(.orange)

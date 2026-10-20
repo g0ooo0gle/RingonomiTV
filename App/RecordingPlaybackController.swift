@@ -9,6 +9,11 @@ final class RecordingPlaybackController: ObservableObject {
     let player = AVPlayer()
     let pictureInPicture = RecordingPictureInPicture()
     private var pictureInPictureObservation: AnyCancellable?
+    private var pictureInPictureActiveObservation: AnyCancellable?
+    private var nowPlayingTitle = "録画"
+    private lazy var remoteControls = RecordingRemoteControls(player: player) { [weak self] command in
+        self?.handleRemoteCommand(command)
+    }
     let captions = RecordingCaptionController()
     @Published private(set) var status = "読み込み中…"
     @Published private(set) var playbackTime = "00:00"
@@ -76,6 +81,15 @@ final class RecordingPlaybackController: ObservableObject {
         player.isMuted = true
         pictureInPictureObservation = pictureInPicture.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
+        }
+        pictureInPictureActiveObservation = pictureInPicture.$isActive.sink { [weak self] active in
+            guard let self else { return }
+            if active {
+                self.remoteControls.activate()
+                self.updateRemoteControls()
+            } else {
+                self.remoteControls.deactivate()
+            }
         }
     }
 
@@ -712,6 +726,29 @@ final class RecordingPlaybackController: ObservableObject {
         playbackStartRequested = false
         beginWaiting()
     }
+    func configureNowPlaying(title: String) { nowPlayingTitle = title }
+
+    private func handleRemoteCommand(_ command: RecordingRemoteControls.Command) {
+        guard pictureInPicture.hasActiveVideoPresentation, !pictureInPicture.isTransitioning,
+              !isStopped, !isSuspendedForBackground, failure == nil, !reachedEnd else { return }
+        switch command {
+        case .play: if wantsPause { togglePause() }
+        case .pause: if !wantsPause { togglePause() }
+        case .toggle: togglePause()
+        }
+        updateRemoteControls()
+#if DEBUG
+        print("RingonomiRecordingRemote: command=\(command) paused=\(wantsPause) loading=\(isLoading)")
+#endif
+    }
+
+    private func updateRemoteControls() {
+        remoteControls.update(title: nowPlayingTitle,
+                              seconds: isLoading ? targetSeconds : safeTime(),
+                              duration: durationSeconds,
+                              playing: !wantsPause && !isLoading && failure == nil && player.timeControlStatus == .playing)
+    }
+
     func togglePause() {
         guard !isStopped, !isSuspendedForBackground, failure == nil else { return }
         if reachedEnd {
@@ -893,6 +930,7 @@ final class RecordingPlaybackController: ObservableObject {
         let seconds = isLoading ? targetSeconds : safeTime()
         captions.tick(seconds: seconds, frameSize: videoRect.size,
                       isReady: !preparing && !isLoading && failure == nil && prerolled)
+        updateRemoteControls()
         let whole = Int(max(0, min(seconds, 100_000_000)))
         playbackTime = String(format: "%02d:%02d", whole / 60, whole % 60)
 #if DEBUG
@@ -951,6 +989,7 @@ final class RecordingPlaybackController: ObservableObject {
     }
     func stop() {
         guard !pictureInPicture.ownsPlayback else { return }
+        remoteControls.deactivate()
         pictureInPicture.invalidate()
         // `onDisappear`/the explicit close path normally flushes first.  Keep
         // the final trusted position up to date here as a fallback, but do
