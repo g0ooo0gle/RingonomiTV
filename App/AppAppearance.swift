@@ -121,11 +121,16 @@ extension EnvironmentValues {
 /// A native section with a header that follows the selected appearance on tvOS.
 struct AppSection<Content: View>: View {
     @Environment(\.colorScheme) private var colorScheme
-    private let title: LocalizedStringKey
+    private let title: Text
     private let content: Content
 
     init(_ title: LocalizedStringKey, @ViewBuilder content: () -> Content) {
-        self.title = title
+        self.title = Text(title)
+        self.content = content()
+    }
+
+    init(verbatim title: String, @ViewBuilder content: () -> Content) {
+        self.title = Text(verbatim: title)
         self.content = content()
     }
 
@@ -133,7 +138,7 @@ struct AppSection<Content: View>: View {
         Section {
             content
         } header: {
-            Text(title)
+            title
                 .foregroundStyle(colorScheme == .dark
                     ? Color.white.opacity(0.74) : Color.black.opacity(0.68))
         }

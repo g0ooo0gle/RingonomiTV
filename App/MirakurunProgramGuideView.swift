@@ -168,7 +168,7 @@ struct MirakurunProgramGuideView: View {
                     }
                 } else {
                     ForEach(response.flattenedChannels.filter { !$0.programs.isEmpty }, id: \.channel.id) { group in
-                        Section(group.channel.name) {
+                        AppSection(verbatim: group.channel.name) {
                             ForEach(group.programs.sorted {
                                 if $0.startDate != $1.startDate {
                                     return ($0.startDate ?? .distantFuture) < ($1.startDate ?? .distantFuture)

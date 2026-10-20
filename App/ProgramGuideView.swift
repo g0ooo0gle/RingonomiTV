@@ -131,7 +131,7 @@ struct ProgramGuideView: View {
                     }
                 } else {
                     ForEach(visibleGroups, id: \.channel.id) { group in
-                        Section(group.channel.name) {
+                        AppSection(verbatim: group.channel.name) {
                             ForEach(visiblePrograms(group)) { program in
                                 programButton(program, channel: group.channel, showChannel: false)
                             }
