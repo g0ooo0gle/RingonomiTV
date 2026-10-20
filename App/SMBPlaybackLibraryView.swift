@@ -16,11 +16,14 @@ struct SMBPlaybackLibraryView: View {
     @StateObject private var resumeStore = SMBResumeStore.playbackStore()
     @StateObject private var idleTimer = PlaybackIdleTimer()
 
-    var body: some View {
+    private var libraryContent: some View {
         SMBLibraryView(playbackActive: playback != nil) { connection, entry in
             do {
                 let id = SMBResumeID(connection: connection, entry: entry)
                 let bookmark = resumeStore.bookmark(for: id)
+#if DEBUG
+                print("RingonomiSMBResume: candidate=\(bookmark != nil)")
+#endif
                 let item = FilePlaybackSelection(
                     url: try connection.url(for: entry.path), title: entry.name,
                     identity: id.storageKey, smbConnection: connection,
@@ -32,6 +35,14 @@ struct SMBPlaybackLibraryView: View {
                 self.error = "このファイルを開けませんでした。フォルダーを更新して再試行してください。"
             }
         }
+    }
+
+    // Keep the presenter outside the browser's own share-delete dialog. Both
+    // can otherwise resolve to the same navigation presentation anchor.
+    private var resumePresentationAnchor: some View {
+        Color.clear.frame(width: 1, height: 1)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
         .confirmationDialog("続きから再生しますか？", isPresented: Binding(
             get: { pendingResume != nil },
             set: { if !$0 { pendingResume = nil } }
@@ -50,6 +61,17 @@ struct SMBPlaybackLibraryView: View {
             }
             Button("キャンセル", role: .cancel) { pendingResume = nil }
         }
+        .alert("ファイルを開けません", isPresented: Binding(
+            get: { error != nil }, set: { if !$0 { error = nil } }
+        )) { Button("閉じる", role: .cancel) { error = nil } }
+        message: { Text(error ?? "") }
+    }
+
+    var body: some View {
+        ZStack {
+            libraryContent
+            resumePresentationAnchor
+        }
         .fullScreenCover(item: $playback) { session in
             FilePlaybackView(item: session.item,
                 onContinuousDisplayChanged: { idleTimer.setNeedsContinuousDisplay($0) },
@@ -63,10 +85,7 @@ struct SMBPlaybackLibraryView: View {
             if item == nil { idleTimer.setNeedsContinuousDisplay(false) }
         }
         .onDisappear { idleTimer.setNeedsContinuousDisplay(false) }
-        .alert("ファイルを開けません", isPresented: Binding(
-            get: { error != nil }, set: { if !$0 { error = nil } }
-        )) { Button("閉じる", role: .cancel) { error = nil } }
-        message: { Text(error ?? "") }
+
     }
 
     private func resumeTime(_ seconds: Double?) -> String {
