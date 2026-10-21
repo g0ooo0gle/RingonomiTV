@@ -160,6 +160,7 @@ struct GuideGridView: View {
         palette: AppColorPalette
     ) {
         let body = CGRect(x: axisWidth, y: headerHeight, width: max(0, size.width - axisWidth), height: max(0, size.height - headerHeight))
+        let selectedEntry = layout.focusedEntry(position)
         var grid = context
         grid.clip(to: Path(body))
         for hour in 0...24 {
@@ -174,7 +175,11 @@ struct GuideGridView: View {
             for entry in column.entries {
                 let rect = cellRect(entry, column: index, columnWidth: columnWidth)
                 guard rect.maxY >= headerHeight, rect.minY <= size.height else { continue }
-                drawEntry(entry, in: rect, context: grid, selected: false, now: now, palette: palette)
+                let isSelected = index == position.column && entry.id == selectedEntry?.id
+                // The expanded selection draws its text below. Keep the
+                // original time slot's background without a second title.
+                drawEntry(entry, in: rect, context: grid, selected: false,
+                          showsText: !isSelected, now: now, palette: palette)
             }
         }
         let minute = now.timeIntervalSince(layout.baseDate) / 60
@@ -184,7 +189,7 @@ struct GuideGridView: View {
             grid.stroke(line, with: .color(palette.currentTime), lineWidth: 2)
         }
         if layout.columns.indices.contains(position.column) {
-            if let entry = layout.focusedEntry(position) {
+            if let entry = selectedEntry {
                 var rect = cellRect(entry, column: position.column, columnWidth: columnWidth)
                 rect.size.height = max(140, min(rect.height, body.height * 0.8))
                 rect.origin.y = min(max(headerHeight + 3, rect.minY), max(headerHeight + 3, size.height - rect.height - 3))
@@ -251,23 +256,32 @@ struct GuideGridView: View {
         in rect: CGRect,
         context: GraphicsContext,
         selected: Bool,
+        showsText: Bool = true,
         now: Date,
         palette: AppColorPalette
     ) {
         let color = palette.genreColor(for: entry.program.genres.first?.major ?? "")
         let past = (entry.program.endDate ?? .distantFuture) <= now
         let background = selected ? (hasFocus ? palette.selection : palette.inactiveSelection) : color.opacity(past ? 0.10 : 0.24)
-        context.fill(Path(roundedRect: rect, cornerRadius: 5), with: .color(background))
+        let shape = Path(roundedRect: rect, cornerRadius: 5)
+        if selected {
+            // Inactive selection colors can be translucent. An opaque base
+            // prevents neighboring titles from showing through the overlay.
+            context.fill(shape, with: .color(palette.background))
+        }
+        context.fill(shape, with: .color(background))
         context.fill(Path(CGRect(x: rect.minX, y: rect.minY, width: 4, height: rect.height)), with: .color(color))
-        var cell = context
-        cell.clip(to: Path(rect.insetBy(dx: 6, dy: 3)))
-        let time = clockText(for: entry.program.startDate)
-        label(time, in: CGRect(x: rect.minX + 12, y: rect.minY + 7, width: rect.width - 22, height: 22),
-              context: cell, font: .system(size: 16), color: palette.secondaryText)
-        label(programTitle(entry.program), in: CGRect(x: rect.minX + 12, y: rect.minY + 30, width: rect.width - 22, height: max(0, rect.height - 38)),
-              context: cell,
-              font: .system(size: selected ? 23 : 21, weight: selected ? .bold : .medium),
-              color: palette.primaryText.opacity(past && !selected ? 0.55 : 1))
+        if showsText {
+            var cell = context
+            cell.clip(to: Path(rect.insetBy(dx: 6, dy: 3)))
+            let time = clockText(for: entry.program.startDate)
+            label(time, in: CGRect(x: rect.minX + 12, y: rect.minY + 7, width: rect.width - 22, height: 22),
+                  context: cell, font: .system(size: 16), color: palette.secondaryText)
+            label(programTitle(entry.program), in: CGRect(x: rect.minX + 12, y: rect.minY + 30, width: rect.width - 22, height: max(0, rect.height - 38)),
+                  context: cell,
+                  font: .system(size: selected ? 23 : 21, weight: selected ? .bold : .medium),
+                  color: palette.primaryText.opacity(past && !selected ? 0.55 : 1))
+        }
         if entry.program.reservation?.id != nil {
             context.stroke(Path(roundedRect: rect.insetBy(dx: 2, dy: 2), cornerRadius: 5),
                            with: .color(palette.reservation), style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
