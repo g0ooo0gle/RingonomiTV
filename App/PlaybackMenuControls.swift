@@ -18,6 +18,7 @@ enum PlaybackControlFocus: String, Hashable {
     case quality
     case viewport
     case pictureInPicture
+    case miniPlayer
     case close
     case panelClose
     case retry
@@ -48,6 +49,7 @@ struct PlaybackTopControls: View {
     let pictureInPicturePossible: Bool
     let pictureInPictureBusy: Bool
     let startPictureInPicture: () -> Void
+    let startMiniPlayer: () -> Void
     let selectAudio: (String) -> Void
     let close: () -> Void
     let openViewport: () -> Void
@@ -131,6 +133,13 @@ struct PlaybackTopControls: View {
             .accessibilityLabel("画質")
             .accessibilityValue(quality)
             .accessibilityIdentifier("playback.quality")
+
+            Button("小窓", action: startMiniPlayer)
+                .focused($focus, equals: .miniPlayer)
+                .disabled(isLoading || failure != nil || pictureInPictureBusy)
+                .accessibilityLabel("アプリ内小窓で表示")
+                .accessibilityHint("再生を続けながら一覧を操作します")
+                .accessibilityIdentifier("playback.miniPlayer")
 
             if pictureInPictureSupported {
                 Button("PiP", action: startPictureInPicture)

@@ -49,6 +49,8 @@ struct PlaybackView: View {
     let closeRequest: UUID?
     let restoreRequest: UUID?
     let togglePauseRequest: UInt64
+    let isMiniPlayer: Bool
+    let onMiniPlayerChanged: (Bool) -> Void
     let onClose: (Bool) -> Void
     let onDetachedChanged: (Bool) -> Void
     let onPictureInPictureNoticeChanged: (String?) -> Void
@@ -80,6 +82,7 @@ struct PlaybackView: View {
     @StateObject private var commentStore = RecordingCommentStore()
     init(item: Playback, resumeStore: RecordingResumeStore,
          closeRequest: UUID?, restoreRequest: UUID?, togglePauseRequest: UInt64,
+         isMiniPlayer: Bool, onMiniPlayerChanged: @escaping (Bool) -> Void,
          onClose: @escaping (Bool) -> Void,
          onDetachedChanged: @escaping (Bool) -> Void,
          onPictureInPictureNoticeChanged: @escaping (String?) -> Void,
@@ -90,6 +93,8 @@ struct PlaybackView: View {
         self.closeRequest = closeRequest
         self.restoreRequest = restoreRequest
         self.togglePauseRequest = togglePauseRequest
+        self.isMiniPlayer = isMiniPlayer
+        self.onMiniPlayerChanged = onMiniPlayerChanged
         self.onClose = onClose
         self.onDetachedChanged = onDetachedChanged
         self.onPictureInPictureNoticeChanged = onPictureInPictureNoticeChanged
@@ -110,10 +115,13 @@ struct PlaybackView: View {
     private var selectedAudioID: String? { isRecording ? recordingController.selectedAudioID : controller.selectedAudioID }
     private var audioSelectionError: String? { isRecording ? recordingController.audioSelectionError : controller.audioSelectionError }
     private var acceptsInlineInput: Bool {
-        !isClosing && !recordingController.pictureInPicture.isDetached && !recordingController.pictureInPicture.isTransitioning
+        !isClosing && !isMiniPlayer && !recordingController.pictureInPicture.isDetached && !recordingController.pictureInPicture.isTransitioning
     }
     private var readyFocus: PlaybackControlFocus { failure != nil ? .retry : (isLoading ? .close : .surface) }
     private var pictureInPictureNotice: String? {
+        if isMiniPlayer {
+            return failure ?? maintenanceError ?? (isLoading ? "映像と音声を準備しています…" : nil)
+        }
         guard isRecording else { return nil }
         // The inline subtree is hidden during PiP. Keep connection and
         // buffering status visible in the library's playback banner too.
@@ -121,8 +129,10 @@ struct PlaybackView: View {
             ?? (recordingController.pictureInPicture.ownsPlayback && isLoading ? "録画を読み込んでいます…" : nil)
     }
     private var pictureInPictureTransport: PlaybackTransportState {
-        PlaybackTransportState(isPaused: recordingController.isPaused,
-                               canToggle: isRecording && !isClosing && recordingController.canControlPictureInPicture)
+        PlaybackTransportState(isPaused: isRecording ? recordingController.isPaused : controller.isPaused,
+                               canToggle: isMiniPlayer
+                                   ? hasStarted && !isClosing && !isLoading && failure == nil
+                                   : isRecording && !isClosing && recordingController.canControlPictureInPicture)
     }
     private var surfaceIsFocusable: Bool { acceptsInlineInput && visiblePanel == nil && !isLoading && failure == nil && !isSceneSearchPresented && !viewportSettings.isPresented }
 #endif
@@ -170,6 +180,21 @@ struct PlaybackView: View {
             if request != nil { close() }
         }
 #if canImport(TVVLCKit)
+        .onChange(of: isMiniPlayer) { _, mini in
+            if mini {
+                closeViewport(restoreFocus: false)
+                finishSceneSearch(restoreFocus: false, preparePlayback: false)
+                isQualityOverlayPresented = false
+                visiblePanel = nil
+                panelBeforeLoading = nil
+                playbackFocus = nil
+            } else if acceptsInlineInput {
+                playbackFocus = readyFocus
+            }
+#if DEBUG
+            print("RingonomiMiniPlayer: active=\(mini)")
+#endif
+        }
         .onChange(of: recordingController.pictureInPicture.isDetached) { _, detached in
             onDetachedChanged(detached)
             if detached {
@@ -191,13 +216,16 @@ struct PlaybackView: View {
             onTransportChanged(state)
         }
         .onChange(of: togglePauseRequest) { previous, current in
-            guard isRecording, !isClosing,
-                  !(current &- previous).isMultiple(of: 2) else { return }
-            recordingController.togglePictureInPicturePause()
+            guard !isClosing, !(current &- previous).isMultiple(of: 2) else { return }
+            if isMiniPlayer {
+                if isRecording { recordingController.togglePause() } else { controller.togglePause() }
+            } else if isRecording { recordingController.togglePictureInPicturePause() }
         }
         .onChange(of: restoreRequest) { _, request in
             guard request != nil, closeRequest == nil, !isClosing else { return }
-            recordingController.pictureInPicture.returnToInline()
+            if recordingController.pictureInPicture.isDetached {
+                recordingController.pictureInPicture.returnToInline()
+            } else if acceptsInlineInput { playbackFocus = readyFocus }
         }
         .onChange(of: recordingController.pictureInPicture.endedWhileDetached) { _, ended in
             if ended != nil, failure == nil { close() }
@@ -561,6 +589,7 @@ struct PlaybackView: View {
         .onChange(of: failure) { _, failure in
             updateLiveCommentClock()
             if failure != nil {
+                if isMiniPlayer { onMiniPlayerChanged(false) }
                 if isRecording { recordingController.pictureInPicture.returnToInline() }
                 closeViewport(restoreFocus: false)
                 finishSceneSearch(restoreFocus: false)
@@ -711,6 +740,10 @@ struct PlaybackView: View {
                     guard isRecording, !isLoading, failure == nil else { return }
                     recordingController.pictureInPicture.start()
                 },
+                startMiniPlayer: {
+                    guard hasStarted, !isLoading, failure == nil, acceptsInlineInput else { return }
+                    onMiniPlayerChanged(true)
+                },
                 selectAudio: { id in
                     if isRecording { recordingController.selectAudioTrack(id: id) }
                     else { controller.selectAudioTrack(id: id) }
@@ -846,7 +879,7 @@ struct PlaybackView: View {
         switch panel {
         case .top:
             switch focus {
-            case .captions, .comments, .quality, .viewport, .panelClose:
+            case .captions, .comments, .quality, .viewport, .miniPlayer, .panelClose:
                 return true
             case .pictureInPicture:
                 return isRecording && recordingController.pictureInPicture.isSupported
@@ -982,6 +1015,7 @@ struct PlaybackView: View {
         print("RingonomiPlaybackExit: card=\(isQualityOverlayPresented) panel=\(visiblePanel.map { $0 == .top ? "top" : "bottom" } ?? "hidden") focus=\(playbackFocus?.rawValue ?? "none")")
 #endif
 #if canImport(TVVLCKit)
+        guard acceptsInlineInput else { return }
         if viewportSettings.isPresented {
             closeViewport()
         } else if isSceneSearchPresented {

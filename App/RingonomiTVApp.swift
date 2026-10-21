@@ -257,10 +257,10 @@ struct LibraryView: View {
         .task(id: effectiveAddress) {
             await account.restore(address: effectiveAddress)
         }
-        .disabled(playback != nil && !playbackPresentation.isDetached)
-        .accessibilityHidden(playback != nil && !playbackPresentation.isDetached)
+        .disabled(playback != nil && !playbackPresentation.exposesLibrary)
+        .accessibilityHidden(playback != nil && !playbackPresentation.exposesLibrary)
         .safeAreaInset(edge: .bottom) {
-            if playbackPresentation.isDetached, let item = playback {
+            if playbackPresentation.exposesLibrary, let item = playback {
                 VStack(alignment: .leading, spacing: 12) {
                     if let notice = playbackPresentation.notice {
                         Text(notice).font(.callout).foregroundStyle(.orange)
@@ -268,7 +268,7 @@ struct LibraryView: View {
                     Text(item.title).font(.callout).lineLimit(1)
                     HStack(spacing: 24) {
                         Button(playbackPresentation.transport.isPaused ? "再生" : "一時停止") {
-                            playbackPresentation.togglePictureInPicturePause()
+                            playbackPresentation.toggleDetachedPause()
                         }
                         .disabled(!playbackPresentation.transport.canToggle || playbackPresentation.closeRequest != nil)
                         Button("全画面へ戻る") { playbackPresentation.restoreInline() }
@@ -276,8 +276,9 @@ struct LibraryView: View {
                     }
                     .disabled(playbackPresentation.closeRequest != nil)
                 }
-                // Keep actions left of the system's default lower-right PiP.
-                .frame(maxWidth: 1_100, alignment: .leading)
+                // Reserve the lower-right corner for the persistent video.
+                .frame(maxWidth: 1_100, minHeight: playbackPresentation.isMiniPlayer ? 216 : nil, alignment: .leading)
+                .padding(.trailing, playbackPresentation.isMiniPlayer ? 440 : 0)
                 .padding(24)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(.ultraThinMaterial)
@@ -285,29 +286,40 @@ struct LibraryView: View {
         }
         .overlay {
             if let item = playback {
-                PlaybackView(item: item, resumeStore: resumeStore,
-                             closeRequest: playbackPresentation.closeRequest,
-                             restoreRequest: playbackPresentation.restoreRequest,
-                             togglePauseRequest: playbackPresentation.togglePauseRequest,
-                             onClose: { playbackPresentation.didClose(item.id, success: $0) },
-                             onDetachedChanged: { playbackPresentation.setDetached($0, for: item.id) },
-                             onPictureInPictureNoticeChanged: { playbackPresentation.setNotice($0, for: item.id) },
-                             onTransportChanged: { playbackPresentation.setTransport($0, for: item.id) }) { needsDisplay in
-                    guard playback?.id == item.id else { return }
-                    playbackIdleTimer.setNeedsContinuousDisplay(needsDisplay)
+                GeometryReader { geometry in
+                    let mini = playbackPresentation.isMiniPlayer
+                    let scale = min(384 / max(1, geometry.size.width), 216 / max(1, geometry.size.height))
+                    PlaybackView(item: item, resumeStore: resumeStore,
+                                 closeRequest: playbackPresentation.closeRequest,
+                                 restoreRequest: playbackPresentation.restoreRequest,
+                                 togglePauseRequest: playbackPresentation.togglePauseRequest,
+                                 isMiniPlayer: playbackPresentation.isMiniPlayer,
+                                 onMiniPlayerChanged: { playbackPresentation.setMiniPlayer($0, for: item.id) },
+                                 onClose: { playbackPresentation.didClose(item.id, success: $0) },
+                                 onDetachedChanged: { playbackPresentation.setDetached($0, for: item.id) },
+                                 onPictureInPictureNoticeChanged: { playbackPresentation.setNotice($0, for: item.id) },
+                                 onTransportChanged: { playbackPresentation.setTransport($0, for: item.id) }) { needsDisplay in
+                        guard playback?.id == item.id else { return }
+                        playbackIdleTimer.setNeedsContinuousDisplay(needsDisplay)
+                    }
+                    .id(item.id)
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                    .clipped()
+                    .scaleEffect(mini ? scale : 1, anchor: .bottomTrailing)
+                    .offset(x: playbackPresentation.isMiniPlayer ? -24 : 0,
+                            y: playbackPresentation.isMiniPlayer ? -24 : 0)
+                    // Preserve the subtree, its layer, quality and keep-alive task
+                    // while the library accepts input below system PiP.
+                    .opacity(playbackPresentation.isDetached ? 0 : 1)
+                    .allowsHitTesting(!playbackPresentation.exposesLibrary)
+                    .disabled(playbackPresentation.exposesLibrary)
+                    .accessibilityHidden(playbackPresentation.exposesLibrary)
                 }
-                .id(item.id)
-                // Preserve the subtree, its layer, quality and keep-alive task
-                // while the library accepts input below system PiP.
-                .opacity(playbackPresentation.isDetached ? 0 : 1)
-                .allowsHitTesting(!playbackPresentation.isDetached)
-                .disabled(playbackPresentation.isDetached)
-                .accessibilityHidden(playbackPresentation.isDetached)
                 .ignoresSafeArea()
             }
         }
         .onPlayPauseCommand {
-            if playbackPresentation.isDetached { playbackPresentation.togglePictureInPicturePause() }
+            if playbackPresentation.exposesLibrary { playbackPresentation.toggleDetachedPause() }
         }
         .environment(\.playbackHandoff, PlaybackHandoff(stopPrevious: { [weak playbackPresentation] in
             await playbackPresentation?.stopForAnotherPlayer() ?? true

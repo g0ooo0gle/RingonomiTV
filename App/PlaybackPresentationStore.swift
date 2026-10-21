@@ -10,6 +10,8 @@ final class PlaybackPresentationStore: ObservableObject {
     @Published private(set) var togglePauseRequest: UInt64 = 0
     @Published private(set) var transport = PlaybackTransportState()
     @Published private(set) var isDetached = false
+    @Published private(set) var isMiniPlayer = false
+    var exposesLibrary: Bool { isDetached || isMiniPlayer }
     @Published private(set) var notice: String?
     private var pending: Playback?
     private var hasPending = false
@@ -29,6 +31,12 @@ final class PlaybackPresentationStore: ObservableObject {
     func setDetached(_ detached: Bool, for id: UUID) {
         guard current?.id == id else { return }
         isDetached = detached
+        if detached { isMiniPlayer = false }
+    }
+
+    func setMiniPlayer(_ active: Bool, for id: UUID) {
+        guard current?.id == id, closeRequest == nil, !isDetached else { return }
+        isMiniPlayer = active
     }
 
     func setNotice(_ notice: String?, for id: UUID) {
@@ -41,15 +49,16 @@ final class PlaybackPresentationStore: ObservableObject {
         transport = state
     }
 
-    func togglePictureInPicturePause() {
-        guard current != nil, isDetached, closeRequest == nil, transport.canToggle else { return }
+    func toggleDetachedPause() {
+        guard current != nil, exposesLibrary, closeRequest == nil, transport.canToggle else { return }
         // SwiftUI can coalesce multiple inputs into one render. A counter
         // preserves their parity instead of losing all but the last UUID.
         togglePauseRequest &+= 1
     }
 
     func restoreInline() {
-        guard current != nil, isDetached, closeRequest == nil else { return }
+        guard current != nil, exposesLibrary, closeRequest == nil else { return }
+        isMiniPlayer = false
         restoreRequest = UUID()
     }
 
@@ -59,6 +68,7 @@ final class PlaybackPresentationStore: ObservableObject {
         if success {
             current = hasPending ? pending : nil
             isDetached = false
+            isMiniPlayer = false
             restoreRequest = nil
             notice = nil
             togglePauseRequest = 0
