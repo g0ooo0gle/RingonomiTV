@@ -1,5 +1,11 @@
 import SwiftUI
 
+enum PlaybackBackend {
+    case konomi
+    case mirakurun
+    case epgStationRecording
+}
+
 /// The selected backend keeps its own decoder and transport semantics.
 enum PlaybackSession: Identifiable {
     case konomi(Playback)
@@ -18,6 +24,13 @@ enum PlaybackSession: Identifiable {
         case .konomi(let item): item.title
         case .mirakurun(let item): item.title
         case .epgStationRecording(let item): item.title
+        }
+    }
+    var backend: PlaybackBackend {
+        switch self {
+        case .konomi: .konomi
+        case .mirakurun: .mirakurun
+        case .epgStationRecording: .epgStationRecording
         }
     }
     var konomi: Playback? {
@@ -80,6 +93,12 @@ final class PlaybackPresentationStore: ObservableObject {
             if !hasPending { pending = nil; hasPending = true }
             _ = beginClosing(id)
         } else if pending?.id == id { pending = nil; hasPending = true }
+    }
+
+    /// Invalidate both selected and queued items belonging to one connection.
+    func cancelSessions(for backend: PlaybackBackend) {
+        if let pending, pending.backend == backend { cancelSession(pending.id) }
+        if let current, current.backend == backend { cancelSession(current.id) }
     }
 
     func setDetached(_ detached: Bool, for id: UUID) {

@@ -173,7 +173,8 @@ struct MirakurunServiceView: View {
             store.cancel()
         }
         .onChange(of: effectiveAddress) { _, next in
-            closeRequestedPlayback()
+            playbackPresentation.cancelSessions(for: .mirakurun)
+            requestedPlaybackID = nil
             inputError = nil
             draftAddress = next
             if !next.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -187,12 +188,6 @@ struct MirakurunServiceView: View {
             openDebugServiceIfNeeded()
         }
 #endif
-    }
-
-    private func closeRequestedPlayback() {
-        guard let requestedPlaybackID else { return }
-        playbackPresentation.cancelSession(requestedPlaybackID)
-        self.requestedPlaybackID = nil
     }
 
     private func connect() {

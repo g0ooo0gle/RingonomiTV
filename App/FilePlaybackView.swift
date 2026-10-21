@@ -95,6 +95,14 @@ struct FilePlaybackView: View {
             .tint(.cyan)
             .onAppear {
                 hasAppeared = true
+                // A cancelled close can outlive a temporary disappearance.
+                // Recover only after the view is mounted, without restarting
+                // its permanently closing decoder.
+                if isClosing, closeTask == nil {
+                    isClosing = false
+                    closeFailure = "再生の終了を確認できませんでした。もう一度閉じてください。"
+                    playbackFocus = .retry
+                }
                 startPlayback()
             }
 #if canImport(UIKit)
@@ -524,7 +532,7 @@ struct FilePlaybackView: View {
     }
 
     private func startPlayback() {
-        guard !isClosing else { return }
+        guard !isClosing, closeFailure == nil else { return }
         controller.start(
             item: item,
             onContinuousDisplayChanged: onContinuousDisplayChanged,

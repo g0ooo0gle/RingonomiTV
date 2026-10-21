@@ -75,7 +75,6 @@ struct EPGStationLibraryView: View {
     @StateObject private var store = EPGStationLibraryStore()
     @EnvironmentObject private var resumeStore: RecordingResumeStore
     @EnvironmentObject private var playbackPresentation: PlaybackPresentationStore
-    @State private var requestedPlaybackID: UUID?
 #if DEBUG
     @State private var handledDebugSelection = false
     private var runtimeAddress: String? {
@@ -178,10 +177,7 @@ struct EPGStationLibraryView: View {
             if let selectedID {
                 EPGStationRecordingDetailView(
                     address: detailAddress, recordingID: selectedID, resumeStore: resumeStore,
-                    onPlaybackRequested: { session in
-                        requestedPlaybackID = session.id
-                        playbackPresentation.presentEPGStationRecording(session)
-                    }
+                    onPlaybackRequested: { playbackPresentation.presentEPGStationRecording($0) }
                 )
             }
         }
@@ -201,11 +197,7 @@ struct EPGStationLibraryView: View {
 #endif
         }
         .onChange(of: effectiveAddress) { _, next in
-            if case .epgStationRecording(let session) = playbackPresentation.current {
-                playbackPresentation.cancelSession(session.id)
-            }
-            if let requestedPlaybackID { playbackPresentation.cancelSession(requestedPlaybackID) }
-            requestedPlaybackID = nil
+            playbackPresentation.cancelSessions(for: .epgStationRecording)
             showingDetail = false
             selectedID = nil
             detailAddress = ""

@@ -204,7 +204,7 @@ struct LibraryView: View {
                 channels = []
                 channelError = nil
                 liveFavorites.configure(address: effectiveAddress)
-                if playback != nil { playback = nil }
+                playbackPresentation.cancelSessions(for: .konomi)
                 reservations.invalidateConnection()
                 keywords.invalidateConnection()
                 if effectiveAddress.isEmpty { selectedTab = 4 }

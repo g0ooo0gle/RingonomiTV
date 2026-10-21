@@ -75,10 +75,8 @@ struct MirakurunProgramGuideView: View {
         .onChange(of: effectiveAddress) { _, next in
             selected = nil
             pendingPlayback = nil
-            if let requestedPlaybackID {
-                playbackPresentation.cancelSession(requestedPlaybackID)
-                self.requestedPlaybackID = nil
-            }
+            playbackPresentation.cancelSessions(for: .mirakurun)
+            requestedPlaybackID = nil
             draftAddress = next
             dayOffset = 0
             inputError = nil
