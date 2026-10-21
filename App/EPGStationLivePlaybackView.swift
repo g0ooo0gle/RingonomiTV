@@ -53,7 +53,7 @@ struct EPGStationLivePlaybackView: View {
     @State private var displayedURL: URL?
     @State private var menuVisible = false
     @State private var qualityCardRequested = false
-    @State private var hasAppeared = false
+    @State private var hasStartedPlayback = false
     @State private var isClosing = false
     @State private var hasStartedClosing = false
     @State private var closeFailure: String?
@@ -75,7 +75,7 @@ struct EPGStationLivePlaybackView: View {
     private var transport: PlaybackTransportState {
 #if canImport(TVVLCKit)
         return PlaybackTransportState(isPaused: controller.isPaused,
-            canToggle: hasAppeared && isMiniPlayer && !hasStartedClosing && !isBackgrounded &&
+            canToggle: hasStartedPlayback && isMiniPlayer && !hasStartedClosing && !isBackgrounded &&
                 !store.isSuspended && playerHasStream && !effectiveLoading && effectiveFailure == nil)
 #else
         return PlaybackTransportState()
@@ -125,7 +125,7 @@ struct EPGStationLivePlaybackView: View {
     }
 
     private var needsContinuousDisplay: Bool {
-        guard hasAppeared,
+        guard hasStartedPlayback,
               !hasStartedClosing,
               !isBackgrounded,
               !store.isSuspended,
@@ -218,36 +218,22 @@ struct EPGStationLivePlaybackView: View {
     private var playbackPresentation: some View {
         playbackLayout
         .onAppear {
-            guard !hasAppeared else { return }
-            hasAppeared = true
-            if hasStartedClosing {
-                if isClosing, closeTask == nil {
-                    isClosing = false
-                    closeFailure = "再生の終了を確認できませんでした。もう一度閉じてください。"
-                    focus = .retry
-                }
-                return
-            }
-            if closeRequest != nil { close(); return }
-            if isBackgrounded {
-                resumePlaybackFromBackground()
-            } else {
+            // The shared host can disappear while a library detail sheet is
+            // presented. Its session and selected quality still belong to the
+            // host; only a new item identity starts a new request.
+            if !hasStartedPlayback {
+                hasStartedPlayback = true
+                if closeRequest != nil { close(); return }
                 store.load(address: item.address, channelID: item.channelID)
             }
+            if isBackgrounded { resumePlaybackFromBackground() }
             updateContinuousDisplay()
         }
         .onDisappear {
-            hasAppeared = false
-            closeTask?.cancel()
-            closeTask = nil
             viewportSettings.close()
-            onContinuousDisplayChanged(false)
-            if !isBackgrounded && !isClosing {
-                store.stop()
-#if canImport(TVVLCKit)
-                controller.stop()
-#endif
-            }
+            // A covering sheet must not cancel a final stop acknowledgement
+            // or reset a live stream. Explicit close owns final teardown;
+            // application notifications own background suspension.
         }
         .onExitCommand(perform: handleExitCommand)
         .onChange(of: closeRequest, initial: true) { _, request in
@@ -857,7 +843,7 @@ struct EPGStationLivePlaybackView: View {
     }
 
     private func suspendPlaybackForBackground() {
-        guard hasAppeared, !hasStartedClosing, !isBackgrounded else { return }
+        guard hasStartedPlayback, !hasStartedClosing, !isBackgrounded else { return }
         isBackgrounded = true
         viewportSettings.close()
         qualityCardRequested = false
@@ -878,7 +864,7 @@ struct EPGStationLivePlaybackView: View {
 #if canImport(UIKit)
         guard UIApplication.shared.applicationState == .active else { return }
 #endif
-        guard hasAppeared, isBackgrounded, !hasStartedClosing else { return }
+        guard hasStartedPlayback, isBackgrounded, !hasStartedClosing else { return }
         isBackgrounded = false
         store.resumeFromBackground()
         updateContinuousDisplay()
