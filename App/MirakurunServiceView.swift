@@ -154,6 +154,7 @@ struct MirakurunServiceView: View {
                 }
             }
         }
+        .navigationFormViewport()
         .appNavigationTitle(Text("Mirakurun直接視聴"))
         .onAppear {
             if !didPrepareDraft {
