@@ -37,7 +37,10 @@ struct SMBPlaybackLibraryView: View {
             PlaybackHandoffView {
                 SMBResumePlaybackView(item: session.item,
                     onBeginning: { resumeStore.remove(session.resumeID) },
-                    onContinuousDisplayChanged: { idleTimer.setNeedsContinuousDisplay($0) },
+                    onContinuousDisplayChanged: { needed in
+                        guard playback?.id == session.id else { return }
+                        idleTimer.setNeedsContinuousDisplay(needed)
+                    },
                     onProgress: { seconds, duration, ended in
                         // Capture this session's ID, never the current selection.
                         resumeStore.save(session.resumeID, seconds: seconds,
