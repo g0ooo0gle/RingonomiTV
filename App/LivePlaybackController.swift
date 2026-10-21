@@ -116,6 +116,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
     private var lastLogUptime: Double?
     private var lastLogPictures = 0
     private var pendingStateLogDate = Date.distantPast
+    private var waitingDiagnosticDate = Date.distantPast
 #endif
     private var audioSourceID: UUID?
     private var audioTrackIDsByOptionID: [String: Int32] = [:]
@@ -211,6 +212,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         lastLogUptime = nil
         lastLogPictures = 0
         pendingStateLogDate = .distantPast
+        waitingDiagnosticDate = .distantPast
 #endif
         waitingSince = Date()
         isLoading = true
@@ -387,9 +389,15 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
     nonisolated func mediaPlayerTimeChanged(_ notification: Notification) {
         Task { @MainActor [weak self] in self?.updateStatus() }
     }
-    private func beginWaiting() {
+    private func beginWaiting(reason: String = "operation") {
         guard !isSuspendedForBackground else { return }
-        if !isLoading { waitingSince = Date(); gate.reset() }
+        if !isLoading {
+#if DEBUG
+            logWaitingDiagnostic(reason: reason, force: true)
+#endif
+            waitingSince = Date()
+            gate.reset()
+        }
         isLoading = true
         player.audio?.isMuted = true
         status = "読み込み中…"
@@ -808,6 +816,10 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
             }
 #endif
         } else {
+#if DEBUG
+            logWaitingDiagnostic(reason: player.time.intValue > 0
+                ? "statistics_unavailable" : "timeline_unavailable")
+#endif
             // Keep timeout monitoring alive, but do not turn an unavailable
             // native statistics read into a new zero baseline.
             audioBaselinePending = true
@@ -815,7 +827,9 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         }
         // Losing the video output entirely must close the gate as well as a
         // stalled picture counter. Otherwise audio can continue over black video.
-        if !isLoading, !wantsPause, Date().timeIntervalSince(lastFrameDate) > 1.5 { beginWaiting() }
+        if !isLoading, !wantsPause, Date().timeIntervalSince(lastFrameDate) > 1.5 {
+            beginWaiting(reason: "video_progress_stalled")
+        }
         if isLoading, Date().timeIntervalSince(waitingSince) > 30 {
             fail("読み込みがタイムアウトしました。接続を確認して再試行してください。")
             return
@@ -833,6 +847,36 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
             }
         }
     }
+
+#if DEBUG
+    // No URLs, program names, or track names are logged. Waiting diagnostics
+    // also run when the normal frame log cannot obtain a usable sample.
+    private func logWaitingDiagnostic(reason: String, force: Bool = false) {
+        let now = Date()
+        guard force || now.timeIntervalSince(waitingDiagnosticDate) >= 5 else { return }
+        waitingDiagnosticDate = now
+        let size = player.videoSize
+        var counters = "unavailable"
+        switch player.state {
+        case .buffering, .playing, .paused:
+            if let media = player.media {
+                let stats = media.statistics
+                counters = "pictures=\(stats.displayedPictures) decodedAudio=\(stats.decodedAudio) playedAudio=\(stats.playedAudioBuffers)"
+            }
+        default:
+            break
+        }
+        let frameAge = lastFrameDate == .distantPast
+            ? "none" : String(format: "%.2f", now.timeIntervalSince(lastFrameDate))
+        print("RingonomiLiveWaiting: reason=\(reason) state=\(player.state.rawValue)"
+            + " timeMS=\(player.time.intValue) videoOut=\(player.hasVideoOut)"
+            + " size=\(size.width)x\(size.height) \(counters)"
+            + " lastPictures=\(lastPictures) frameAge=\(frameAge)"
+            + " tracks=\(player.numberOfAudioTracks) audioID=\(player.currentAudioTrackIndex)"
+            + " pendingAudio=\(pendingAudioSelection != nil) recoveringAudio=\(audioRecoveryPending)"
+            + " loading=\(isLoading) paused=\(wantsPause)")
+    }
+#endif
 
     private func requestPlayerStop() {
         guard !stopRequested, player.state != .stopped else { return }
