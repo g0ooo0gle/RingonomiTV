@@ -308,7 +308,10 @@ struct PlaybackView: View {
         print("RingonomiPlaybackBegin: target=\(seconds)")
 #endif
 #if canImport(TVVLCKit)
-        if item.recordingID != nil { recordingController.configureNowPlaying(title: item.title) }
+        if item.recordingID != nil {
+            recordingController.configureHTTPAuthentication(client: item.client)
+            recordingController.configureNowPlaying(title: item.title)
+        } else { controller.configureHTTPAuthentication(client: item.client) }
         if let id = item.resumeID {
             let store = resumeStore
             let mediaStatus = item.recordingStatus
@@ -377,9 +380,15 @@ struct PlaybackView: View {
             recordingController.pictureInPicture.stopBeforeClosing { success in
                 if success {
                     recordingController.flushPosition()
-                    recordingController.finishClosing()
-                } else { isClosing = false }
-                onClose(request, success)
+                    closeTask = Task { @MainActor in
+                        await recordingController.finishClosing()
+                        onClose(request, true)
+                        closeTask = nil
+                    }
+                } else {
+                    isClosing = false
+                    onClose(request, false)
+                }
             }
         } else {
             closeTask = Task { @MainActor in

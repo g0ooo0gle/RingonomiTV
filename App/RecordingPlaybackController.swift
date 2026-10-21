@@ -30,6 +30,19 @@ final class RecordingPlaybackController: ObservableObject {
     private var commercialNoticeUntil = 0.0
     private var commercialUndoUntil = 0.0
     private var currentURL: URL?
+    private var mediaConnection: PlaybackMediaConnection?
+    private var mediaResolution: Task<Void, Never>?
+
+    func configureHTTPAuthentication(client: RingonomiClient) {
+        guard currentURL == nil else { return }
+        mediaConnection?.invalidate()
+        mediaConnection = client.usesHTTPBasicAuthentication ? PlaybackMediaConnection(client: client) : nil
+    }
+
+    private func invalidateMediaConnection() {
+        mediaResolution?.cancel(); mediaResolution = nil
+        mediaConnection?.invalidate()
+    }
     // SwiftUI may dismantle the representable while queued KVO/asset tasks
     // are still waiting on the main actor.  This gate keeps those callbacks
     // from touching published state after teardown.
@@ -380,6 +393,7 @@ final class RecordingPlaybackController: ObservableObject {
     }
     func load(_ url: URL, preservingEndState: Bool = false) {
         guard !isClosingPermanently, !isSuspendedForBackground, currentURL != url else { return }
+        invalidateMediaConnection()
         let keepEnded = reachedEnd && (preservingEndState || isChangingQuality)
         isStopped = false
         isSuspendedForBackground = false
@@ -419,6 +433,36 @@ final class RecordingPlaybackController: ObservableObject {
 #endif
             return
         }
+        let expected = generation
+        if let mediaConnection {
+            // No old asset may preroll while its replacement URL is pending.
+            timer?.cancel(); timer = nil
+            captions.stop()
+            player.replaceCurrentItem(with: nil)
+            preparing = true
+            prerolled = false
+            playbackStartRequested = false
+            beginWaiting()
+            mediaResolution = Task { @MainActor [weak self] in
+                do {
+                    let resolved = try await mediaConnection.resolve(source: url, kind: .playlist) { [weak self] error in
+                        guard let self, self.generation == expected else { return }
+                        self.fail(error.localizedDescription)
+                    }
+                    guard let self, !Task.isCancelled, self.generation == expected,
+                          !self.isStopped, !self.isSuspendedForBackground else { return }
+                    self.installItem(resolved, expected: expected)
+                } catch {
+                    guard let self, !Task.isCancelled, !(error is CancellationError),
+                          self.generation == expected else { return }
+                    self.fail(error.localizedDescription)
+                }
+            }
+        } else { installItem(url, expected: expected) }
+    }
+
+    private func installItem(_ url: URL, expected: Int) {
+        guard generation == expected, !isStopped, !isSuspendedForBackground else { return }
         let item = AVPlayerItem(url: url)
         item.preferredForwardBufferDuration = 3
         captions.attach(to: item, targetSeconds: targetSeconds)
@@ -427,7 +471,6 @@ final class RecordingPlaybackController: ObservableObject {
         playbackStartRequested = false
         beginWaiting()
         player.replaceCurrentItem(with: item)
-        let expected = generation
         observations.append(item.observe(\.status, options: [.initial, .new]) { [weak self] _, _ in
             Task { @MainActor [weak self] in self?.itemStatusChanged(expected) }
         })
@@ -476,6 +519,7 @@ final class RecordingPlaybackController: ObservableObject {
         }
 
         isSuspendedForBackground = true
+        invalidateMediaConnection()
 #if DEBUG
         print("RingonomiRecordingLifecycle: suspended target=\(targetSeconds) paused=\(wantsPause) ended=\(reachedEnd)")
 #endif
@@ -715,6 +759,7 @@ final class RecordingPlaybackController: ObservableObject {
     }
     func prepareQualityChange() {
         guard !isStopped, !isSuspendedForBackground else { return }
+        invalidateMediaConnection()
         flushPosition()
         if !isLoading { targetSeconds = safeTime() }
         captions.reset(for: targetSeconds)
@@ -970,6 +1015,7 @@ final class RecordingPlaybackController: ObservableObject {
     }
     private func fail(_ message: String) {
         guard !isStopped, !isSuspendedForBackground, failure == nil else { return }
+        invalidateMediaConnection()
         clearCommercialSkipNotice()
         checkpoint(force: true)
         if !preparing, !isLoading { targetSeconds = safeTime() }
@@ -997,13 +1043,15 @@ final class RecordingPlaybackController: ObservableObject {
     }
     /// Called only after the native PiP close acknowledgment. A queued
     /// representable update must not reopen an input the host has released.
-    func finishClosing() {
+    func finishClosing() async {
         isClosingPermanently = true
         stop()
+        await mediaConnection?.stop()
     }
 
     func stop() {
         guard !pictureInPicture.ownsPlayback else { return }
+        invalidateMediaConnection()
         remoteControls.deactivate()
         pictureInPicture.invalidate()
         // `onDisappear`/the explicit close path normally flushes first.  Keep

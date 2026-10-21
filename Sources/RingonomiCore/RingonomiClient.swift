@@ -292,6 +292,8 @@ public struct RingonomiClient: Sendable {
         } else { httpBasicScope = nil; httpBasicTransport = nil }
     }
 
+    public var usesHTTPBasicAuthentication: Bool { httpBasicTransport != nil }
+
     /// A distinct relay belongs to one decoder generation. Merely creating it
     /// sends no request and does not change an existing playback session.
     public func makeAuthenticatedMediaRelay() throws -> HTTPMediaRelay? {

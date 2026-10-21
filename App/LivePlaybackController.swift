@@ -21,6 +21,20 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
     // SwiftUI re-evaluates `videoRect` without parsing from the getter.
     @Published private(set) var videoGeometryRevision = 0
     private var currentURL: URL?
+    private var resolvedMediaURL: URL?
+    private var mediaConnection: PlaybackMediaConnection?
+    private var mediaResolution: Task<Void, Never>?
+
+    func configureHTTPAuthentication(client: RingonomiClient) {
+        guard currentURL == nil else { return }
+        mediaConnection?.invalidate()
+        mediaConnection = client.usesHTTPBasicAuthentication ? PlaybackMediaConnection(client: client) : nil
+    }
+
+    private func invalidateMediaConnection() {
+        mediaResolution?.cancel(); mediaResolution = nil
+        mediaConnection?.invalidate()
+    }
     // A cancelled monitor/delegate callback can still be queued on the main
     // actor while SwiftUI is dismantling the representable.  Teardown must
     // not publish into that invalidating graph.
@@ -169,6 +183,8 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
 
     func prepareQualityChange() {
         guard !isStopped, !isSuspendedForBackground else { return }
+        invalidateMediaConnection()
+        resolvedMediaURL = nil
         // Ignore callbacks from the old media until SwiftUI supplies the new URL.
         pendingLoadURL = nil
         pendingLoadGeneration = 0
@@ -191,6 +207,8 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         isSuspendedForBackground = false
         player.delegate = self
         isChangingQuality = false
+        invalidateMediaConnection()
+        resolvedMediaURL = mediaConnection == nil ? url : nil
         currentURL = url
         loadGeneration &+= 1
         let expectedLoadGeneration = loadGeneration
@@ -223,6 +241,24 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
                 do { try await Task.sleep(for: .milliseconds(250)) } catch { break }
                 guard let self else { return }
                 self.updateStatus(expectedLoadGeneration: expectedLoadGeneration)
+            }
+        }
+        if let mediaConnection {
+            mediaResolution = Task { @MainActor [weak self] in
+                do {
+                    let resolved = try await mediaConnection.resolve(source: url, kind: .media) { [weak self] error in
+                        guard let self, self.loadGeneration == expectedLoadGeneration else { return }
+                        self.fail(error.localizedDescription)
+                    }
+                    guard let self, !Task.isCancelled, self.loadGeneration == expectedLoadGeneration,
+                          !self.isStopped, !self.isSuspendedForBackground else { return }
+                    self.resolvedMediaURL = resolved
+                    self.startPendingLoadIfReady(for: expectedLoadGeneration)
+                } catch {
+                    guard let self, !Task.isCancelled, !(error is CancellationError),
+                          self.loadGeneration == expectedLoadGeneration else { return }
+                    self.fail(error.localizedDescription)
+                }
             }
         }
         startPendingLoadIfReady(for: expectedLoadGeneration)
@@ -260,7 +296,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
 
     private func startPendingLoadIfReady(for expectedGeneration: Int? = nil) {
         guard !isStopped, !isSuspendedForBackground, !isChangingQuality, failure == nil,
-              let url = pendingLoadURL,
+              let url = pendingLoadURL, let resolvedMediaURL,
               pendingLoadGeneration == loadGeneration,
               currentURL == url else { return }
         if let expectedGeneration,
@@ -282,7 +318,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         pendingLoadURL = nil
         pendingLoadGeneration = 0
         stopRequested = false
-        player.media = VLCMedia(url: url)
+        player.media = VLCMedia(url: resolvedMediaURL)
         if let videoSurface { player.drawable = videoSurface }
         player.audio?.isMuted = true
 #if DEBUG
@@ -313,6 +349,8 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
     func suspendForBackground() {
         guard !isStopped, !isSuspendedForBackground, currentURL != nil, failure == nil else { return }
         isSuspendedForBackground = true
+        invalidateMediaConnection()
+        resolvedMediaURL = nil
         pendingLoadURL = nil
         pendingLoadGeneration = 0
         loadGeneration &+= 1
@@ -350,6 +388,8 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
 
     func stop() {
         guard !isStopped else { return }
+        invalidateMediaConnection()
+        resolvedMediaURL = nil
         monitor?.cancel()
         monitor = nil
         stopTask?.cancel()
@@ -375,6 +415,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
     func stopBeforeClosing() async -> Bool {
         isClosingPermanently = true
         stop()
+        await mediaConnection?.stop()
         for _ in 0..<100 {
             if player.state == .stopped { return true }
             do { try await Task.sleep(for: .milliseconds(50)) }
@@ -912,6 +953,8 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
 
     private func fail(_ message: String) {
         guard !isStopped, failure == nil else { return }
+        invalidateMediaConnection()
+        resolvedMediaURL = nil
         pendingLoadURL = nil
         pendingLoadGeneration = 0
         loadGeneration &+= 1
