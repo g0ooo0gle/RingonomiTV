@@ -40,7 +40,6 @@ struct PlaybackTopControls: View {
     let commentStoreLoading: Bool
     let commentReload: () -> Void
     let liveCommentReload: () -> Void
-    let reloadLiveCaptions: () -> Void
     let quality: String
     let isActive: Bool
     let isLoading: Bool
@@ -56,27 +55,33 @@ struct PlaybackTopControls: View {
     let close: () -> Void
     let openViewport: () -> Void
     @FocusState.Binding var focus: PlaybackControlFocus?
+    @Binding var isCaptionOverlayPresented: Bool
     @Binding var isQualityOverlayPresented: Bool
 
     private var captionsEnabled: Bool { isRecording ? recordingCaptionsEnabled : liveCaptionsEnabled }
 
     var body: some View {
         HStack(spacing: 24) {
-            Menu(captionsEnabled ? "字幕：表示" : "字幕：非表示") {
-                Button(captionsEnabled ? "字幕を非表示にする" : "字幕を表示する") {
-                    if isRecording { recordingCaptionsEnabled.toggle() }
-                    else { liveCaptionsEnabled.toggle() }
+            if isRecording {
+                Menu(captionsEnabled ? "字幕：表示" : "字幕：非表示") {
+                    Button(captionsEnabled ? "字幕を非表示にする" : "字幕を表示する") {
+                        recordingCaptionsEnabled.toggle()
+                    }
                 }
-                if !isRecording, liveCaptionsEnabled {
-                    Button("映像と字幕を再読み込み", action: reloadLiveCaptions)
-                        .disabled(isLoading || failure != nil)
-                        .accessibilityIdentifier("playback.captionReload")
+                .focused($focus, equals: .captions)
+                .accessibilityLabel("録画の字幕")
+                .accessibilityValue(captionsEnabled ? "表示" : "非表示")
+                .accessibilityIdentifier("playback.captions")
+            } else {
+                Button(captionsEnabled ? "字幕：表示" : "字幕：非表示") {
+                    focus = nil
+                    isCaptionOverlayPresented = true
                 }
+                .focused($focus, equals: .captions)
+                .accessibilityLabel("ライブの字幕")
+                .accessibilityValue(captionsEnabled ? "表示" : "非表示")
+                .accessibilityIdentifier("playback.captions")
             }
-            .focused($focus, equals: .captions)
-            .accessibilityLabel(isRecording ? "録画の字幕" : "ライブの字幕")
-            .accessibilityValue(captionsEnabled ? "表示" : "非表示")
-            .accessibilityIdentifier("playback.captions")
 
             if isRecording {
                 Menu(recordingCommentsEnabled ? "実況：表示" : "実況：非表示") {
@@ -171,14 +176,17 @@ struct PlaybackTopControls: View {
         .frame(maxWidth: .infinity)
         // Keep the top controls in the current playback view hierarchy while
         // the quality card is hosted by the full-screen player ZStack.
-        .disabled(isQualityOverlayPresented)
-        .allowsHitTesting(!isQualityOverlayPresented)
-        .accessibilityHidden(isQualityOverlayPresented)
+        .disabled(isQualityOverlayPresented || isCaptionOverlayPresented)
+        .allowsHitTesting(!isQualityOverlayPresented && !isCaptionOverlayPresented)
+        .accessibilityHidden(isQualityOverlayPresented || isCaptionOverlayPresented)
         .focusSection()
         .onChange(of: isActive) { _, active in
             // Loading and failure states remove the top panel's active focus.
             // Close the card without trying to focus a disabled quality button.
-            if !active { isQualityOverlayPresented = false }
+            if !active {
+                isQualityOverlayPresented = false
+                isCaptionOverlayPresented = false
+            }
         }
     }
 

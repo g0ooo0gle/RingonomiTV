@@ -68,6 +68,7 @@ struct PlaybackView: View {
     @StateObject private var viewportSettings = VideoViewportSettings()
     @State private var visiblePanel: PlaybackPanel?
     @State private var isQualityOverlayPresented = false
+    @State private var isCaptionOverlayPresented = false
     @State private var isSceneSearchPresented = false
     @State private var sceneSearchPosition = 0.0
     @State private var panelBeforeLoading: PlaybackPanel?
@@ -120,6 +121,7 @@ struct PlaybackView: View {
     private var audioOptions: [PlaybackAudioOption] { isRecording ? recordingController.audioOptions : controller.audioOptions }
     private var selectedAudioID: String? { isRecording ? recordingController.selectedAudioID : controller.selectedAudioID }
     private var audioSelectionError: String? { isRecording ? recordingController.audioSelectionError : controller.audioSelectionError }
+    private var isPlaybackChoicePresented: Bool { isQualityOverlayPresented || isCaptionOverlayPresented }
     private var acceptsInlineInput: Bool {
         !isClosing && !isMiniPlayer && !recordingController.pictureInPicture.isDetached && !recordingController.pictureInPicture.isTransitioning
     }
@@ -140,7 +142,7 @@ struct PlaybackView: View {
                                    ? hasStarted && !isClosing && !isLoading && failure == nil
                                    : isRecording && !isClosing && recordingController.canControlPictureInPicture)
     }
-    private var surfaceIsFocusable: Bool { acceptsInlineInput && visiblePanel == nil && !isLoading && failure == nil && !isSceneSearchPresented && !viewportSettings.isPresented }
+    private var surfaceIsFocusable: Bool { acceptsInlineInput && visiblePanel == nil && !isLoading && failure == nil && !isSceneSearchPresented && !viewportSettings.isPresented && !isPlaybackChoicePresented }
 #endif
     private var needsContinuousDisplay: Bool {
 #if canImport(TVVLCKit)
@@ -191,6 +193,7 @@ struct PlaybackView: View {
                 closeViewport(restoreFocus: false)
                 finishSceneSearch(restoreFocus: false, preparePlayback: false)
                 isQualityOverlayPresented = false
+                isCaptionOverlayPresented = false
                 visiblePanel = nil
                 panelBeforeLoading = nil
                 playbackFocus = nil
@@ -337,6 +340,7 @@ struct PlaybackView: View {
         finishSceneSearch(restoreFocus: false, preparePlayback: false)
 #endif
         isQualityOverlayPresented = false
+        isCaptionOverlayPresented = false
         guard hasStarted else { return }
 #if canImport(TVVLCKit)
         if isRecording {
@@ -375,6 +379,7 @@ struct PlaybackView: View {
 #endif
         visiblePanel = nil
         isQualityOverlayPresented = false
+        isCaptionOverlayPresented = false
         isSeeking = false
 #if canImport(TVVLCKit)
         if isRecording {
@@ -515,6 +520,27 @@ struct PlaybackView: View {
                 .allowsHitTesting(panelIsVisible(.bottom))
                 .accessibilityHidden(!panelIsVisible(.bottom))
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            if isCaptionOverlayPresented {
+                PlaybackCaptionChoicesView(
+                    enabled: liveCaptionsEnabled,
+                    canReload: !isLoading && failure == nil,
+                    onSelect: { enabled in
+                        liveCaptionsEnabled = enabled
+                        dismissCaptionOverlay(restoreFocus: true)
+                    },
+                    onReload: {
+                        guard !isLoading, failure == nil else { return }
+                        dismissCaptionOverlay(restoreFocus: false)
+                        controller.retry()
+                    },
+                    onClose: { dismissCaptionOverlay(restoreFocus: true) }
+                )
+                .padding(.top, 64)
+                .padding(.trailing, 64)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .transition(.opacity)
+                .zIndex(2)
+            }
             if isQualityOverlayPresented {
                 QualityChoicesView(
                     currentQuality: quality,
@@ -582,6 +608,7 @@ struct PlaybackView: View {
                 closeViewport(restoreFocus: false)
                 finishSceneSearch(restoreFocus: false)
                 isQualityOverlayPresented = false
+                isCaptionOverlayPresented = false
                 if panelBeforeLoading == nil, let visiblePanel {
                     panelBeforeLoading = visiblePanel
                 }
@@ -624,7 +651,7 @@ struct PlaybackView: View {
             if lastReadyPlaybackFocus == .audio {
                 lastReadyPlaybackFocus = .captions
             }
-            guard audioLostFocus, panelIsVisible(.top), !isQualityOverlayPresented else { return }
+            guard audioLostFocus, panelIsVisible(.top), !isPlaybackChoicePresented else { return }
             playbackFocus = focusForPanel(.top)
         }
         .onChange(of: failure) { _, failure in
@@ -635,6 +662,7 @@ struct PlaybackView: View {
                 closeViewport(restoreFocus: false)
                 finishSceneSearch(restoreFocus: false)
                 isQualityOverlayPresented = false
+                isCaptionOverlayPresented = false
                 panelBeforeLoading = nil
                 visiblePanel = nil
                 isSeeking = false
@@ -672,7 +700,7 @@ struct PlaybackView: View {
 #if DEBUG
             print("RingonomiPlaybackCommand: playPause")
 #endif
-            guard acceptsInlineInput, !isSceneSearchPresented, !viewportSettings.isPresented else { return }
+            guard acceptsInlineInput, !isPlaybackChoicePresented, !isSceneSearchPresented, !viewportSettings.isPresented else { return }
             if isRecording { recordingController.togglePause() } else { controller.togglePause() }
         }
         .task(id: CommentRequestID(server: item.client.baseURL, recordingID: item.recordingID,
@@ -773,7 +801,6 @@ struct PlaybackView: View {
                 commentStoreLoading: commentStore.loading,
                 commentReload: { commentReload &+= 1 },
                 liveCommentReload: { liveCommentReload &+= 1 },
-                reloadLiveCaptions: { controller.retry() },
                 quality: quality,
                 isActive: panelIsVisible(.top),
                 isLoading: isLoading,
@@ -798,17 +825,18 @@ struct PlaybackView: View {
                 close: close,
                 openViewport: presentViewport,
                 focus: $playbackFocus,
+                isCaptionOverlayPresented: $isCaptionOverlayPresented,
                 isQualityOverlayPresented: $isQualityOverlayPresented
             )
         }
         .padding(36)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.black.opacity(0.82))
-        .disabled(isQualityOverlayPresented)
-        .allowsHitTesting(!isQualityOverlayPresented)
-        .accessibilityHidden(isQualityOverlayPresented)
+        .disabled(isPlaybackChoicePresented)
+        .allowsHitTesting(!isPlaybackChoicePresented)
+        .accessibilityHidden(isPlaybackChoicePresented)
         .onMoveCommand { direction in
-            guard !isQualityOverlayPresented,
+            guard !isPlaybackChoicePresented,
                   panelIsVisible(.top), let playbackFocus,
                   focusBelongs(playbackFocus, to: .top) else { return }
             switch direction {
@@ -952,6 +980,7 @@ struct PlaybackView: View {
     private func presentViewport() {
         guard !isLoading, failure == nil, !isSceneSearchPresented else { return }
         isQualityOverlayPresented = false
+        isCaptionOverlayPresented = false
         playbackFocus = nil
         viewportSettings.open()
     }
@@ -1032,6 +1061,12 @@ struct PlaybackView: View {
         quality = value
     }
 
+    private func dismissCaptionOverlay(restoreFocus: Bool) {
+        guard isCaptionOverlayPresented else { return }
+        isCaptionOverlayPresented = false
+        if restoreFocus, panelIsVisible(.top) { playbackFocus = .captions }
+    }
+
     private func dismissQualityOverlay(restoreFocus: Bool) {
         guard isQualityOverlayPresented else { return }
         isQualityOverlayPresented = false
@@ -1059,7 +1094,7 @@ struct PlaybackView: View {
 
     private func handleExitCommand() {
 #if DEBUG
-        print("RingonomiPlaybackExit: card=\(isQualityOverlayPresented) panel=\(visiblePanel.map { $0 == .top ? "top" : "bottom" } ?? "hidden") focus=\(playbackFocus?.rawValue ?? "none")")
+        print("RingonomiPlaybackExit: card=\(isQualityOverlayPresented || isCaptionOverlayPresented) panel=\(visiblePanel.map { $0 == .top ? "top" : "bottom" } ?? "hidden") focus=\(playbackFocus?.rawValue ?? "none")")
 #endif
 #if canImport(TVVLCKit)
         guard acceptsInlineInput else { return }
@@ -1067,6 +1102,8 @@ struct PlaybackView: View {
             closeViewport()
         } else if isSceneSearchPresented {
             finishSceneSearch()
+        } else if isCaptionOverlayPresented {
+            dismissCaptionOverlay(restoreFocus: true)
         } else if isQualityOverlayPresented {
             dismissQualityOverlay(restoreFocus: true)
         } else if visiblePanel != nil {
