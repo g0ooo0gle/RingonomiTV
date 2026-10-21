@@ -51,14 +51,15 @@ struct PlaybackTopControls: View {
     let pictureInPictureBusy: Bool
     let startPictureInPicture: () -> Void
     let startMiniPlayer: () -> Void
-    let selectAudio: (String) -> Void
     let close: () -> Void
     let openViewport: () -> Void
     @FocusState.Binding var focus: PlaybackControlFocus?
+    @Binding var isAudioOverlayPresented: Bool
     @Binding var isCaptionOverlayPresented: Bool
     @Binding var isQualityOverlayPresented: Bool
 
     private var captionsEnabled: Bool { isRecording ? recordingCaptionsEnabled : liveCaptionsEnabled }
+    private var isChoicePresented: Bool { isAudioOverlayPresented || isCaptionOverlayPresented || isQualityOverlayPresented }
 
     var body: some View {
         HStack(spacing: 24) {
@@ -126,11 +127,17 @@ struct PlaybackTopControls: View {
             }
 
             if audioOptions.count > 1 {
-                PlaybackAudioMenu(options: audioOptions,
-                                  selectedID: selectedAudioID,
-                                  isDisabled: isLoading || failure != nil,
-                                  onSelect: selectAudio)
+                Button("音声") {
+                    focus = nil
+                    isAudioOverlayPresented = true
+#if DEBUG
+                    print("RingonomiAudioOverlay: opened")
+#endif
+                }
                 .focused($focus, equals: .audio)
+                .accessibilityLabel("音声を選択")
+                .accessibilityValue(audioOptions.first(where: { $0.id == selectedAudioID })?.name ?? "選択情報なし")
+                .accessibilityIdentifier("playback.audio")
             }
 
             Button("画質：\(quality)") {
@@ -175,17 +182,18 @@ struct PlaybackTopControls: View {
         }
         .frame(maxWidth: .infinity)
         // Keep the top controls in the current playback view hierarchy while
-        // the quality card is hosted by the full-screen player ZStack.
-        .disabled(isQualityOverlayPresented || isCaptionOverlayPresented)
-        .allowsHitTesting(!isQualityOverlayPresented && !isCaptionOverlayPresented)
-        .accessibilityHidden(isQualityOverlayPresented || isCaptionOverlayPresented)
+        // a selection card is hosted by the full-screen player ZStack.
+        .disabled(isChoicePresented)
+        .allowsHitTesting(!isChoicePresented)
+        .accessibilityHidden(isChoicePresented)
         .focusSection()
         .onChange(of: isActive) { _, active in
             // Loading and failure states remove the top panel's active focus.
-            // Close the card without trying to focus a disabled quality button.
+            // Close the card without trying to focus a disabled selection button.
             if !active {
                 isQualityOverlayPresented = false
                 isCaptionOverlayPresented = false
+                isAudioOverlayPresented = false
             }
         }
     }

@@ -69,6 +69,7 @@ struct PlaybackView: View {
     @State private var visiblePanel: PlaybackPanel?
     @State private var isQualityOverlayPresented = false
     @State private var isCaptionOverlayPresented = false
+    @State private var isAudioOverlayPresented = false
     @State private var isSceneSearchPresented = false
     @State private var sceneSearchPosition = 0.0
     @State private var panelBeforeLoading: PlaybackPanel?
@@ -121,7 +122,7 @@ struct PlaybackView: View {
     private var audioOptions: [PlaybackAudioOption] { isRecording ? recordingController.audioOptions : controller.audioOptions }
     private var selectedAudioID: String? { isRecording ? recordingController.selectedAudioID : controller.selectedAudioID }
     private var audioSelectionError: String? { isRecording ? recordingController.audioSelectionError : controller.audioSelectionError }
-    private var isPlaybackChoicePresented: Bool { isQualityOverlayPresented || isCaptionOverlayPresented }
+    private var isPlaybackChoicePresented: Bool { isQualityOverlayPresented || isCaptionOverlayPresented || isAudioOverlayPresented }
     private var acceptsInlineInput: Bool {
         !isClosing && !isMiniPlayer && !recordingController.pictureInPicture.isDetached && !recordingController.pictureInPicture.isTransitioning
     }
@@ -192,8 +193,7 @@ struct PlaybackView: View {
             if mini {
                 closeViewport(restoreFocus: false)
                 finishSceneSearch(restoreFocus: false, preparePlayback: false)
-                isQualityOverlayPresented = false
-                isCaptionOverlayPresented = false
+                closeSelectionCards()
                 visiblePanel = nil
                 panelBeforeLoading = nil
                 playbackFocus = nil
@@ -209,6 +209,7 @@ struct PlaybackView: View {
             if detached {
                 closeViewport(restoreFocus: false)
                 finishSceneSearch(restoreFocus: false, preparePlayback: false)
+                closeSelectionCards()
                 visiblePanel = nil
                 playbackFocus = nil
             } else if !isClosing {
@@ -219,6 +220,7 @@ struct PlaybackView: View {
             onPictureInPictureNoticeChanged(notice)
         }
         .onChange(of: recordingController.pictureInPicture.isTransitioning) { _, transitioning in
+            if transitioning { closeSelectionCards() }
             playbackFocus = !transitioning && acceptsInlineInput ? readyFocus : nil
         }
         .onChange(of: pictureInPictureTransport, initial: true) { _, state in
@@ -339,8 +341,7 @@ struct PlaybackView: View {
 #if canImport(TVVLCKit)
         finishSceneSearch(restoreFocus: false, preparePlayback: false)
 #endif
-        isQualityOverlayPresented = false
-        isCaptionOverlayPresented = false
+        closeSelectionCards()
         guard hasStarted else { return }
 #if canImport(TVVLCKit)
         if isRecording {
@@ -365,6 +366,12 @@ struct PlaybackView: View {
 #endif
     }
 
+    private func closeSelectionCards() {
+        isQualityOverlayPresented = false
+        isCaptionOverlayPresented = false
+        isAudioOverlayPresented = false
+    }
+
     private func close() {
         guard !isClosing, let request = onCloseStarted() else { return }
         isClosing = true
@@ -378,8 +385,7 @@ struct PlaybackView: View {
         finishSceneSearch(restoreFocus: false, preparePlayback: false)
 #endif
         visiblePanel = nil
-        isQualityOverlayPresented = false
-        isCaptionOverlayPresented = false
+        closeSelectionCards()
         isSeeking = false
 #if canImport(TVVLCKit)
         if isRecording {
@@ -520,6 +526,20 @@ struct PlaybackView: View {
                 .allowsHitTesting(panelIsVisible(.bottom))
                 .accessibilityHidden(!panelIsVisible(.bottom))
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            if isAudioOverlayPresented {
+                PlaybackAudioChoicesView(
+                    options: audioOptions,
+                    selectedID: selectedAudioID,
+                    isEnabled: acceptsInlineInput && !isLoading && failure == nil,
+                    onSelect: finishAudioSelection,
+                    onClose: { dismissAudioOverlay(restoreFocus: true) }
+                )
+                .padding(.top, 64)
+                .padding(.trailing, 64)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .transition(.opacity)
+                .zIndex(2)
+            }
             if isCaptionOverlayPresented {
                 PlaybackCaptionChoicesView(
                     enabled: liveCaptionsEnabled,
@@ -607,8 +627,7 @@ struct PlaybackView: View {
             if loading {
                 closeViewport(restoreFocus: false)
                 finishSceneSearch(restoreFocus: false)
-                isQualityOverlayPresented = false
-                isCaptionOverlayPresented = false
+                closeSelectionCards()
                 if panelBeforeLoading == nil, let visiblePanel {
                     panelBeforeLoading = visiblePanel
                 }
@@ -644,9 +663,11 @@ struct PlaybackView: View {
         .onChange(of: controller.isPaused) { _, _ in updateLiveCommentClock() }
         .onChange(of: audioOptions) { _, options in
             // A stream can lose an alternate track without starting a new load.
-            // Do not leave focus pointing at the audio menu that just vanished.
+            // Do not leave focus pointing at the audio button that vanished.
             guard options.count < 2 else { return }
-            let audioLostFocus = playbackFocus == .audio
+            let cardWasPresented = isAudioOverlayPresented
+            dismissAudioOverlay(restoreFocus: false)
+            let audioLostFocus = cardWasPresented || playbackFocus == .audio
                 || (playbackFocus == nil && lastReadyPlaybackFocus == .audio)
             if lastReadyPlaybackFocus == .audio {
                 lastReadyPlaybackFocus = .captions
@@ -661,8 +682,7 @@ struct PlaybackView: View {
                 if isRecording { recordingController.pictureInPicture.returnToInline() }
                 closeViewport(restoreFocus: false)
                 finishSceneSearch(restoreFocus: false)
-                isQualityOverlayPresented = false
-                isCaptionOverlayPresented = false
+                closeSelectionCards()
                 panelBeforeLoading = nil
                 visiblePanel = nil
                 isSeeking = false
@@ -681,6 +701,7 @@ struct PlaybackView: View {
             }
         }
         .onChange(of: item.id) { _, _ in
+            closeSelectionCards()
             viewportSettings.close()
             viewportSettings.reset()
         }
@@ -818,13 +839,10 @@ struct PlaybackView: View {
                     guard hasStarted, !isLoading, failure == nil, acceptsInlineInput else { return }
                     onMiniPlayerChanged(true)
                 },
-                selectAudio: { id in
-                    if isRecording { recordingController.selectAudioTrack(id: id) }
-                    else { controller.selectAudioTrack(id: id) }
-                },
                 close: close,
                 openViewport: presentViewport,
                 focus: $playbackFocus,
+                isAudioOverlayPresented: $isAudioOverlayPresented,
                 isCaptionOverlayPresented: $isCaptionOverlayPresented,
                 isQualityOverlayPresented: $isQualityOverlayPresented
             )
@@ -979,8 +997,7 @@ struct PlaybackView: View {
 
     private func presentViewport() {
         guard !isLoading, failure == nil, !isSceneSearchPresented else { return }
-        isQualityOverlayPresented = false
-        isCaptionOverlayPresented = false
+        closeSelectionCards()
         playbackFocus = nil
         viewportSettings.open()
     }
@@ -1061,6 +1078,28 @@ struct PlaybackView: View {
         quality = value
     }
 
+    private func finishAudioSelection(_ id: String) {
+        guard isAudioOverlayPresented else { return }
+        guard acceptsInlineInput, !isLoading, failure == nil,
+              audioOptions.contains(where: { $0.id == id }) else {
+            dismissAudioOverlay(restoreFocus: true)
+            return
+        }
+        // Closing first also handles selecting the already-active track,
+        // which does not trigger a new loading/focus transition.
+        dismissAudioOverlay(restoreFocus: true)
+        if isRecording { recordingController.selectAudioTrack(id: id) }
+        else { controller.selectAudioTrack(id: id) }
+    }
+
+    private func dismissAudioOverlay(restoreFocus: Bool) {
+        guard isAudioOverlayPresented else { return }
+        isAudioOverlayPresented = false
+        if restoreFocus, panelIsVisible(.top) {
+            playbackFocus = audioOptions.count > 1 ? .audio : focusForPanel(.top)
+        }
+    }
+
     private func dismissCaptionOverlay(restoreFocus: Bool) {
         guard isCaptionOverlayPresented else { return }
         isCaptionOverlayPresented = false
@@ -1094,7 +1133,7 @@ struct PlaybackView: View {
 
     private func handleExitCommand() {
 #if DEBUG
-        print("RingonomiPlaybackExit: card=\(isQualityOverlayPresented || isCaptionOverlayPresented) panel=\(visiblePanel.map { $0 == .top ? "top" : "bottom" } ?? "hidden") focus=\(playbackFocus?.rawValue ?? "none")")
+        print("RingonomiPlaybackExit: card=\(isQualityOverlayPresented || isCaptionOverlayPresented || isAudioOverlayPresented) panel=\(visiblePanel.map { $0 == .top ? "top" : "bottom" } ?? "hidden") focus=\(playbackFocus?.rawValue ?? "none")")
 #endif
 #if canImport(TVVLCKit)
         guard acceptsInlineInput else { return }
@@ -1102,6 +1141,8 @@ struct PlaybackView: View {
             closeViewport()
         } else if isSceneSearchPresented {
             finishSceneSearch()
+        } else if isAudioOverlayPresented {
+            dismissAudioOverlay(restoreFocus: true)
         } else if isCaptionOverlayPresented {
             dismissCaptionOverlay(restoreFocus: true)
         } else if isQualityOverlayPresented {

@@ -47,6 +47,7 @@ struct MirakurunPlaybackView: View {
     @State private var hasStartedClosing = false
     @State private var closeFailure: String?
     @State private var closeTask: Task<Void, Never>?
+    @State private var isAudioChoicesPresented = false
     @StateObject private var viewportSettings = VideoViewportSettings()
 #if canImport(TVVLCKit)
     @StateObject private var controller = PlaybackController()
@@ -66,13 +67,22 @@ struct MirakurunPlaybackView: View {
 
     private var isMenuVisible: Bool {
         acceptsInlineInput && menuVisible && !isLoading && failure == nil
-            && !viewportSettings.isPresented
+            && !viewportSettings.isPresented && !isAudioChoicesPresented
     }
 
     private var acceptsInlineInput: Bool { !isMiniPlayer && !isClosing }
     private var readyFocus: MirakurunPlaybackFocus {
         failure != nil ? .retry : (isLoading ? .loadingClose : .surface)
     }
+#if canImport(TVVLCKit)
+    private var selectedAudioName: String {
+        controller.audioOptions.first(where: { $0.id == controller.selectedAudioID })?.name ?? "選択情報なし"
+    }
+
+    private var audioChoicesEnabled: Bool {
+        acceptsInlineInput && !isLoading && failure == nil && controller.audioOptions.count > 1
+    }
+#endif
 #if canImport(TVVLCKit)
     private var transport: PlaybackTransportState {
         PlaybackTransportState(isPaused: controller.isPaused,
@@ -116,6 +126,20 @@ struct MirakurunPlaybackView: View {
                 )
                 .zIndex(5)
             }
+            if isAudioChoicesPresented {
+                PlaybackAudioChoicesView(
+                    options: controller.audioOptions,
+                    selectedID: controller.selectedAudioID,
+                    isEnabled: audioChoicesEnabled,
+                    onSelect: selectAudioChoice,
+                    onClose: closeAudioChoices
+                )
+                .padding(.top, 64)
+                .padding(.trailing, 64)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .transition(.opacity)
+                .zIndex(6)
+            }
 #else
             VStack(spacing: 24) {
                 Text("TS再生ライブラリが必要です")
@@ -133,10 +157,14 @@ struct MirakurunPlaybackView: View {
         .onAppear {
             hasStartedPlayback = true
             updateContinuousDisplay()
+            if acceptsInlineInput, focus == nil {
+                focus = isMenuVisible ? .playPause : readyFocus
+            }
         }
         .onDisappear {
             // A library detail sheet can temporarily cover the shared host.
             // Keep its decoder, idle request and final close acknowledgement.
+            isAudioChoicesPresented = false
             viewportSettings.close()
         }
         .onExitCommand(perform: handleExitCommand)
@@ -144,6 +172,7 @@ struct MirakurunPlaybackView: View {
             if request != nil { close() }
         }
         .onChange(of: isMiniPlayer) { _, mini in
+            isAudioChoicesPresented = false
             viewportSettings.close()
             menuVisible = false
             focus = !mini && !isClosing ? readyFocus : nil
@@ -171,6 +200,7 @@ struct MirakurunPlaybackView: View {
 #if canImport(TVVLCKit)
         .onChange(of: controller.isLoading, initial: true) { _, loading in
             if loading {
+                isAudioChoicesPresented = false
                 viewportSettings.close()
                 menuVisible = false
                 focus = acceptsInlineInput ? .loadingClose : nil
@@ -181,6 +211,7 @@ struct MirakurunPlaybackView: View {
         }
         .onChange(of: failure) { _, newFailure in
             if newFailure != nil {
+                isAudioChoicesPresented = false
                 viewportSettings.close()
             }
             menuVisible = false
@@ -199,12 +230,19 @@ struct MirakurunPlaybackView: View {
             controller.togglePause()
         }
         .onChange(of: controller.audioOptions) { _, options in
-            if isMenuVisible, options.count < 2, focus == .audio || focus == nil {
+            guard options.count < 2 else { return }
+            if isAudioChoicesPresented {
+                isAudioChoicesPresented = false
+            }
+            guard acceptsInlineInput, !isLoading, failure == nil,
+                  !viewportSettings.isPresented else { return }
+            if menuVisible, (focus == .audio || focus == nil) {
                 focus = .playPause
             }
         }
 #endif
         .onChange(of: item.id) { _, _ in
+            isAudioChoicesPresented = false
             viewportSettings.reset()
             viewportSettings.close()
         }
@@ -220,7 +258,8 @@ struct MirakurunPlaybackView: View {
         }
 #if canImport(TVVLCKit)
         .onPlayPauseCommand {
-            guard acceptsInlineInput, !hasStartedClosing, failure == nil, !viewportSettings.isPresented else { return }
+            guard acceptsInlineInput, !hasStartedClosing, failure == nil, !viewportSettings.isPresented,
+                  !isAudioChoicesPresented else { return }
             controller.togglePause()
         }
 #endif
@@ -233,20 +272,24 @@ struct MirakurunPlaybackView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .ignoresSafeArea()
             .focusable(
-                acceptsInlineInput && !isLoading && failure == nil && !isMenuVisible && !viewportSettings.isPresented,
+                acceptsInlineInput && !isLoading && failure == nil && !isMenuVisible
+                    && !isAudioChoicesPresented && !viewportSettings.isPresented,
                 interactions: .activate
             )
             .focusEffectDisabled()
             .focused($focus, equals: .surface)
             .allowsHitTesting(
-                acceptsInlineInput && !isLoading && failure == nil && !isMenuVisible && !viewportSettings.isPresented
+                acceptsInlineInput && !isLoading && failure == nil && !isMenuVisible
+                    && !isAudioChoicesPresented && !viewportSettings.isPresented
             )
             .accessibilityHidden(
-                !acceptsInlineInput || isLoading || failure != nil || isMenuVisible || viewportSettings.isPresented
+                !acceptsInlineInput || isLoading || failure != nil || isMenuVisible
+                    || isAudioChoicesPresented || viewportSettings.isPresented
             )
             .accessibilityLabel("Mirakurun再生メニュー")
             .onMoveCommand { direction in
-                guard acceptsInlineInput, !isLoading, failure == nil, !viewportSettings.isPresented else { return }
+                guard acceptsInlineInput, !isLoading, failure == nil,
+                      !isAudioChoicesPresented, !viewportSettings.isPresented else { return }
                 switch direction {
                 case .up, .down:
                     showMenu()
@@ -292,11 +335,14 @@ struct MirakurunPlaybackView: View {
                 .focused($focus, equals: .playPause)
 
                 if controller.audioOptions.count > 1 {
-                    PlaybackAudioMenu(options: controller.audioOptions,
-                                      selectedID: controller.selectedAudioID,
-                                      isDisabled: isLoading || failure != nil,
-                                      onSelect: { controller.selectAudioTrack(id: $0) })
+                    Button("音声") {
+                        openAudioChoices()
+                    }
                     .focused($focus, equals: .audio)
+                    .disabled(isLoading || failure != nil)
+                    .accessibilityLabel("音声を選択")
+                    .accessibilityValue(selectedAudioName)
+                    .accessibilityIdentifier("playback.audio")
                 }
 
                 Button("画面調整", action: openViewport)
@@ -361,7 +407,8 @@ struct MirakurunPlaybackView: View {
     }
 
     private func showMenu() {
-        guard acceptsInlineInput, !isLoading, failure == nil, !viewportSettings.isPresented else { return }
+        guard acceptsInlineInput, !isLoading, failure == nil,
+              !isAudioChoicesPresented, !viewportSettings.isPresented else { return }
         menuVisible = true
         focus = .playPause
     }
@@ -373,6 +420,10 @@ struct MirakurunPlaybackView: View {
 
     private func handleExitCommand() {
         guard acceptsInlineInput else { return }
+        if isAudioChoicesPresented {
+            closeAudioChoices()
+            return
+        }
         if viewportSettings.isPresented {
             closeViewport()
             return
@@ -388,6 +439,7 @@ struct MirakurunPlaybackView: View {
         guard !isClosing, let request = onCloseStarted() else { return }
         hasStartedClosing = true
         isClosing = true
+        isAudioChoicesPresented = false
         menuVisible = false
         focus = nil
         viewportSettings.close()
@@ -410,6 +462,7 @@ struct MirakurunPlaybackView: View {
 
     private func openViewport() {
         guard acceptsInlineInput, !isLoading, failure == nil else { return }
+        isAudioChoicesPresented = false
         viewportSettings.open()
         focus = nil
     }
@@ -422,12 +475,41 @@ struct MirakurunPlaybackView: View {
         }
     }
 
+    private func openAudioChoices() {
+        guard audioChoicesEnabled else { return }
+        focus = nil
+        isAudioChoicesPresented = true
+    }
+
+    private func closeAudioChoices() {
+        isAudioChoicesPresented = false
+        guard acceptsInlineInput, !isLoading, failure == nil else {
+            menuVisible = false
+            focus = nil
+            return
+        }
+        menuVisible = true
+        focus = controller.audioOptions.count > 1 ? .audio : .playPause
+    }
+
+    private func selectAudioChoice(id: String) {
+        guard isAudioChoicesPresented else { return }
+        guard audioChoicesEnabled,
+              controller.audioOptions.contains(where: { $0.id == id }) else {
+            closeAudioChoices()
+            return
+        }
+        closeAudioChoices()
+        controller.selectAudioTrack(id: id)
+    }
+
     private func updateContinuousDisplay() {
         onContinuousDisplayChanged(hasStartedPlayback && needsContinuousDisplay)
     }
 
     private func suspendPlaybackForBackground() {
         guard hasStartedPlayback, !hasStartedClosing else { return }
+        isAudioChoicesPresented = false
         viewportSettings.close()
         controller.suspendForBackground()
     }

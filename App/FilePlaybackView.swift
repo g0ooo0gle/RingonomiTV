@@ -50,6 +50,7 @@ struct FilePlaybackView: View {
     @State private var visiblePanel: FilePlaybackPanel?
     @State private var isSeeking = false
     @State private var seekDraft = 0.0
+    @State private var isAudioChoicesPresented = false
     @StateObject private var viewportSettings = VideoViewportSettings()
     @FocusState private var playbackFocus: FilePlaybackFocus?
 
@@ -95,7 +96,13 @@ struct FilePlaybackView: View {
             .environment(\.colorScheme, .dark)
             .tint(.cyan)
             .onAppear {
-                guard !hasStartedPlayback else { return }
+                if hasStartedPlayback {
+                    if acceptsInlineInput, playbackFocus == nil {
+                        playbackFocus = controller.isLoading || failure != nil
+                            ? readyFocus : visiblePanel.map(focusForPanel) ?? .surface
+                    }
+                    return
+                }
                 hasStartedPlayback = true
                 if closeRequest != nil { close(); return }
                 startPlayback()
@@ -116,6 +123,7 @@ struct FilePlaybackView: View {
 #endif
             .onChange(of: item) { _, newItem in
                 guard !hasStartedClosing else { return }
+                isAudioChoicesPresented = false
                 viewportSettings.reset()
                 controller.start(
                     item: newItem,
@@ -139,6 +147,7 @@ struct FilePlaybackView: View {
                 // A covering detail sheet is not the end of this session.
                 // Explicit close owns teardown and its stop acknowledgement;
                 // application notifications own background suspension.
+                isAudioChoicesPresented = false
                 viewportSettings.close()
             }
 #else
@@ -171,6 +180,14 @@ struct FilePlaybackView: View {
     }
     private var playbackNotice: String? {
         isMiniPlayer ? failure ?? (controller.isLoading ? "映像と音声を準備しています…" : nil) : nil
+    }
+
+    private var selectedAudioName: String {
+        controller.audioOptions.first(where: { $0.id == controller.selectedAudioID })?.name ?? "選択情報なし"
+    }
+
+    private var audioChoicesEnabled: Bool {
+        acceptsInlineInput && !controller.isLoading && failure == nil && controller.audioOptions.count > 1
     }
 
     private var playerBody: some View {
@@ -238,6 +255,21 @@ struct FilePlaybackView: View {
                 )
                 .zIndex(5)
             }
+
+            if isAudioChoicesPresented {
+                PlaybackAudioChoicesView(
+                    options: controller.audioOptions,
+                    selectedID: controller.selectedAudioID,
+                    isEnabled: audioChoicesEnabled,
+                    onSelect: selectAudioChoice,
+                    onClose: closeAudioChoices
+                )
+                .padding(.top, 64)
+                .padding(.trailing, 64)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .transition(.opacity)
+                .zIndex(6)
+            }
         }
         .defaultFocus($playbackFocus, .surface)
         .onExitCommand {
@@ -247,13 +279,14 @@ struct FilePlaybackView: View {
             handleExitCommand()
         }
         .onPlayPauseCommand {
-            guard acceptsInlineInput, !viewportSettings.isPresented else { return }
+            guard acceptsInlineInput, !viewportSettings.isPresented, !isAudioChoicesPresented else { return }
             controller.togglePause()
         }
         .onChange(of: closeRequest, initial: true) { _, request in
             if request != nil { close() }
         }
         .onChange(of: isMiniPlayer) { _, mini in
+            isAudioChoicesPresented = false
             viewportSettings.close()
             isSeeking = false
             visiblePanel = nil
@@ -279,6 +312,7 @@ struct FilePlaybackView: View {
         }
         .onChange(of: controller.isLoading, initial: true) { _, loading in
             if loading {
+                isAudioChoicesPresented = false
                 viewportSettings.close()
                 isSeeking = false
                 visiblePanel = nil
@@ -295,6 +329,7 @@ struct FilePlaybackView: View {
         }
         .onChange(of: failure, initial: true) { _, failure in
             if failure != nil {
+                isAudioChoicesPresented = false
                 viewportSettings.close()
                 isSeeking = false
                 visiblePanel = nil
@@ -307,6 +342,7 @@ struct FilePlaybackView: View {
         .onChange(of: controller.isEnded, initial: true) { _, ended in
             guard ended,
                   !controller.isLoading, failure == nil else { return }
+            isAudioChoicesPresented = false
             viewportSettings.close()
             isSeeking = false
             if isMiniPlayer { onMiniPlayerChanged?(false) }
@@ -316,20 +352,31 @@ struct FilePlaybackView: View {
             }
         }
         .onChange(of: controller.audioOptions) { _, options in
-            guard options.count < 2, panelIsVisible(.top),
-                  playbackFocus == .audio || playbackFocus == nil else { return }
-            playbackFocus = focusForPanel(.top)
+            if options.count < 2 {
+                if isAudioChoicesPresented {
+                    isAudioChoicesPresented = false
+                }
+                guard acceptsInlineInput, !controller.isLoading, failure == nil,
+                      !viewportSettings.isPresented else { return }
+                if visiblePanel == .top,
+                   (playbackFocus == .audio || playbackFocus == nil) {
+                    playbackFocus = focusForPanel(.top)
+                }
+                return
+            }
         }
         .onChange(of: visiblePanel) { _, panel in
 #if DEBUG
             print("RingonomiFilePanel: panel=\(String(describing: panel)) focus=\(String(describing: playbackFocus)) loading=\(controller.isLoading) failure=\(failure != nil)")
 #endif
             guard acceptsInlineInput, let panel, !viewportSettings.isPresented,
+                  !isAudioChoicesPresented,
                   !controller.isLoading, failure == nil else { return }
             playbackFocus = focusForPanel(panel)
         }
         .onChange(of: viewportSettings.isPresented) { _, isPresented in
             if isPresented {
+                isAudioChoicesPresented = false
                 playbackFocus = nil
             } else {
                 restoreFocusAfterViewport()
@@ -347,7 +394,7 @@ struct FilePlaybackView: View {
     }
 
     private var surfaceIsFocusable: Bool {
-        acceptsInlineInput && visiblePanel == nil && !viewportSettings.isPresented
+        acceptsInlineInput && visiblePanel == nil && !viewportSettings.isPresented && !isAudioChoicesPresented
             && !controller.isLoading && failure == nil
     }
 
@@ -388,11 +435,14 @@ struct FilePlaybackView: View {
                 Text(controller.status)
                     .font(.caption)
                 if controller.audioOptions.count > 1 {
-                    PlaybackAudioMenu(options: controller.audioOptions,
-                                      selectedID: controller.selectedAudioID,
-                                      isDisabled: controller.isLoading || failure != nil,
-                                      onSelect: { controller.selectAudioTrack(id: $0) })
+                    Button("音声") {
+                        openAudioChoices()
+                    }
                     .focused($playbackFocus, equals: .audio)
+                    .disabled(controller.isLoading || failure != nil)
+                    .accessibilityLabel("音声を選択")
+                    .accessibilityValue(selectedAudioName)
+                    .accessibilityIdentifier("playback.audio")
                 }
                 Button("画面調整", action: openViewport)
                     .focused($playbackFocus, equals: .viewport)
@@ -535,6 +585,7 @@ struct FilePlaybackView: View {
 
     private func suspendPlaybackForBackground() {
         guard hasStartedPlayback, !hasStartedClosing else { return }
+        isAudioChoicesPresented = false
         viewportSettings.close()
         controller.suspendForBackground()
     }
@@ -558,7 +609,7 @@ struct FilePlaybackView: View {
     }
 
     private func panelIsVisible(_ panel: FilePlaybackPanel) -> Bool {
-        acceptsInlineInput && visiblePanel == panel && !viewportSettings.isPresented
+        acceptsInlineInput && visiblePanel == panel && !viewportSettings.isPresented && !isAudioChoicesPresented
             && !controller.isLoading && failure == nil
     }
 
@@ -571,7 +622,7 @@ struct FilePlaybackView: View {
     }
 
     private func setPanel(_ panel: FilePlaybackPanel) {
-        guard acceptsInlineInput else { return }
+        guard acceptsInlineInput, !isAudioChoicesPresented else { return }
         isSeeking = false
         if reduceMotion {
             visiblePanel = panel
@@ -600,6 +651,10 @@ struct FilePlaybackView: View {
 
     private func handleExitCommand() {
         guard acceptsInlineInput else { return }
+        if isAudioChoicesPresented {
+            closeAudioChoices()
+            return
+        }
         if viewportSettings.isPresented {
             closeViewport()
             return
@@ -625,6 +680,7 @@ struct FilePlaybackView: View {
 
     private func beginMiniPlayer() {
         guard acceptsInlineInput, !controller.isLoading, !controller.isEnded, failure == nil else { return }
+        isAudioChoicesPresented = false
         viewportSettings.close()
         visiblePanel = nil
         isSeeking = false
@@ -644,6 +700,7 @@ struct FilePlaybackView: View {
         hasStartedClosing = true
         isClosing = true
         closeFailure = nil
+        isAudioChoicesPresented = false
         viewportSettings.close()
         onContinuousDisplayChanged(false)
         visiblePanel = nil
@@ -670,6 +727,7 @@ struct FilePlaybackView: View {
 
     private func openViewport() {
         guard acceptsInlineInput, !controller.isLoading, failure == nil else { return }
+        isAudioChoicesPresented = false
         viewportSettings.open()
         playbackFocus = nil
     }
@@ -688,6 +746,36 @@ struct FilePlaybackView: View {
         } else if visiblePanel == .top {
             playbackFocus = .viewport
         }
+    }
+
+    private func openAudioChoices() {
+        guard audioChoicesEnabled else { return }
+        playbackFocus = nil
+        isAudioChoicesPresented = true
+    }
+
+    private func closeAudioChoices() {
+        isAudioChoicesPresented = false
+        guard acceptsInlineInput, !controller.isLoading, failure == nil else {
+            playbackFocus = nil
+            return
+        }
+        guard controller.audioOptions.count > 1 else {
+            playbackFocus = visiblePanel == .top ? focusForPanel(.top) : .surface
+            return
+        }
+        playbackFocus = visiblePanel == .top ? .audio : .surface
+    }
+
+    private func selectAudioChoice(id: String) {
+        guard isAudioChoicesPresented else { return }
+        guard audioChoicesEnabled,
+              controller.audioOptions.contains(where: { $0.id == id }) else {
+            closeAudioChoices()
+            return
+        }
+        closeAudioChoices()
+        controller.selectAudioTrack(id: id)
     }
 
     private func timestamp(_ seconds: Double) -> String {
