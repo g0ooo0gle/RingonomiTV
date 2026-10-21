@@ -72,6 +72,7 @@ final class RecordingPlaybackController: ObservableObject {
     private var waitingSince: Date?
     private var lastLog = Date.distantPast
     private var durationHint: Double?
+    private var recordingStatus: String?
     private var lastTrustedPosition: Double?
     private var lastTrustedDuration: Double?
     private var lastCheckpoint = Date.distantPast
@@ -347,9 +348,10 @@ final class RecordingPlaybackController: ObservableObject {
         selectAudioTrack(id: preferredID, forcedPause: wantsPause)
     }
     /// 動画を読み込み始める前に一度だけ設定する。
-    func configurePosition(seconds: Double, durationHint: Double?, onCheckpoint: @escaping (Double, Double?, Bool) -> Void) {
+    func configurePosition(seconds: Double, durationHint: Double?, status: String? = nil, onCheckpoint: @escaping (Double, Double?, Bool) -> Void) {
         guard currentURL == nil else { return }
         self.durationHint = durationHint
+        self.recordingStatus = status
         targetSeconds = RecordingResumePolicy.clamp(seconds: seconds, duration: durationHint) ?? 0
         self.onCheckpoint = onCheckpoint
         updateTime()
@@ -477,24 +479,6 @@ final class RecordingPlaybackController: ObservableObject {
         observations.append(player.observe(\.timeControlStatus, options: [.new]) { [weak self] _, _ in
             Task { @MainActor [weak self] in self?.playbackStateChanged() }
         })
-        endToken = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
-            Task { @MainActor [weak self, weak item] in
-                guard let self, let item, !self.isStopped, !self.isSuspendedForBackground,
-                      !self.isChangingQuality, !self.preparing,
-                      self.player.currentItem === item else { return }
-                self.status = "再生終了（再生ボタンで最初から）"
-                self.player.pause()
-                self.wantsPause = true
-                self.isLoading = false
-                self.waitingSince = nil
-                self.reachedEnd = true
-                self.pictureInPicture.returnToInline()
-                self.checkpoint(force: true)
-#if DEBUG
-                print("RingonomiRecordingEnded: reached time=\(self.safeTime())")
-#endif
-            }
-        }
         if clockToken == nil {
             clockToken = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.25, preferredTimescale: 600), queue: .main) { [weak self] _ in
                 Task { @MainActor [weak self] in self?.updateTime() }
@@ -597,16 +581,46 @@ final class RecordingPlaybackController: ObservableObject {
         default: break
         }
     }
+    private func observePlaybackEnd(on item: AVPlayerItem, generation expected: Int) {
+        if let endToken { NotificationCenter.default.removeObserver(endToken) }
+        endToken = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self, weak item] in
+                guard let self, let item, !self.isStopped, !self.isSuspendedForBackground,
+                      !self.isChangingQuality, !self.preparing, !self.reachedEnd,
+                      self.generation == expected,
+                      self.player.currentItem === item else { return }
+                // A notification can be posted after replay has reused this
+                // item. A known duration lets us reject that stale EOF while
+                // keeping authoritative ends for unknown-length media.
+                let duration = item.duration.seconds
+                if duration.isFinite, duration > 0,
+                   self.safeTime() < duration - min(1, duration / 2) { return }
+                self.finishPlayback(at: self.safeTime())
+            }
+        }
+    }
+
     private func preparePosition(_ expected: Int) {
         guard !isStopped, !isSuspendedForBackground, !isChangingQuality,
               expected == generation, preparing, !prerolled, !preparationInFlight,
               player.status == .readyToPlay,
-              player.currentItem?.status == .readyToPlay else { return }
+              let item = player.currentItem, item.status == .readyToPlay else { return }
+        // Capture each seek/replay generation so a delayed end notification
+        // from the same AVPlayerItem cannot terminate its next playback.
+        observePlaybackEnd(on: item, generation: expected)
         preparationInFlight = true
         player.pause()
-        // The new HLS item may have a different duration from the catalog.
-        // Clamp again after it becomes ready so EOF is never a seek target.
-        targetSeconds = RecordingResumePolicy.clamp(seconds: targetSeconds, duration: durationSeconds) ?? 0
+        // Use only the ready asset's duration to distinguish an explicit end
+        // seek from normal playback. A catalog hint cannot prove media EOF.
+        let mediaDuration = player.currentItem?.duration.seconds
+        let seeksToEnd = RecordingSeekPolicy.isEndTarget(
+            seconds: targetSeconds, duration: mediaDuration, status: recordingStatus
+        )
+        if seeksToEnd, let mediaDuration {
+            targetSeconds = mediaDuration
+        } else {
+            targetSeconds = RecordingResumePolicy.clamp(seconds: targetSeconds, duration: durationSeconds) ?? 0
+        }
         let target = CMTime(seconds: targetSeconds, preferredTimescale: 600)
         guard target.isValid, target.isNumeric else {
             fail("再生位置を読み込めませんでした。最初から再生し直してください。")
@@ -617,6 +631,11 @@ final class RecordingPlaybackController: ObservableObject {
                 guard let self, !self.isStopped, self.generation == expected, self.preparing else { return }
                 guard finished, self.player.status == .readyToPlay else {
                     self.fail("再生位置を読み込めませんでした。再試行してください。")
+                    return
+                }
+                if seeksToEnd {
+                    // No future frames exist to satisfy preroll at EOF.
+                    self.finishPlayback(at: self.targetSeconds)
                     return
                 }
                 // readyToPlayと停止状態を確認してから呼び、APIの例外条件を避ける。
@@ -645,6 +664,31 @@ final class RecordingPlaybackController: ObservableObject {
             }
         }
     }
+    /// Both natural EOF and an explicit end seek use the same terminal state.
+    private func finishPlayback(at seconds: Double) {
+        generation += 1
+        cancelPreparation()
+        preparing = false
+        prerolled = false
+        playbackStartRequested = false
+        advancedSincePreroll = false
+        targetSeconds = seconds
+        lastTrustedPosition = seconds
+        lastTrustedDuration = durationSeconds
+        wantsPause = true
+        reachedEnd = true
+        isLoading = false
+        waitingSince = nil
+        captions.reset(for: seconds)
+        status = "再生終了（再生ボタンで最初から）"
+        pictureInPicture.returnToInline()
+        updateTime()
+        checkpoint(force: true)
+#if DEBUG
+        print("RingonomiRecordingEnded: reached time=\(seconds)")
+#endif
+    }
+
     private func revealWhenReady() {
         guard !isStopped, !isSuspendedForBackground, !isChangingQuality,
               failure == nil, preparing, prerolled,

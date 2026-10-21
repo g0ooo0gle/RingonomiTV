@@ -319,7 +319,7 @@ struct PlaybackView: View {
         if let id = item.resumeID {
             let store = resumeStore
             let mediaStatus = item.recordingStatus
-            recordingController.configurePosition(seconds: seconds, durationHint: item.durationHint) {
+            recordingController.configurePosition(seconds: seconds, durationHint: item.durationHint, status: mediaStatus) {
                 position, duration, reachedEnd in
                 store.save(id, seconds: position, duration: duration, status: mediaStatus, reachedEnd: reachedEnd)
             }
