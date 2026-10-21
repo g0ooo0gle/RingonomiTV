@@ -40,6 +40,31 @@ public struct BackendResponseStream: Sendable, AsyncSequence, CustomStringConver
             if basic != nil { return try await basic!.next() }
             return try await standard!.next()
         }
+
+        /// Reads a bounded chunk while preserving the same single-consumer
+        /// and cancellation semantics as `next()`.
+        public mutating func nextChunk(maximumBytes: Int = 32 * 1024) async throws -> Data? {
+            guard (1...(256 * 1024)).contains(maximumBytes) else {
+                throw HTTPBasicTransportError.invalidLimit
+            }
+            // The Basic stream already has a bounded implementation that
+            // preserves its cancellation state. Keep that path intact. The
+            // URLSession path can read directly from AsyncBytes, avoiding a
+            // second async wrapper for every byte in a live MPEG-TS chunk.
+            if basic != nil {
+                return try await basic!.nextChunk(maximumBytes: maximumBytes)
+            }
+            try Task.checkCancellation()
+            var data = Data()
+            data.reserveCapacity(maximumBytes)
+            while data.count < maximumBytes {
+                try Task.checkCancellation()
+                guard let byte = try await standard!.next() else { break }
+                data.append(byte)
+            }
+            try Task.checkCancellation()
+            return data.isEmpty ? nil : data
+        }
         public var description: String { "BackendResponseStream.AsyncIterator(<redacted>)" }
         public var debugDescription: String { description }
         public var customMirror: Mirror { Mirror(self, unlabeledChildren: ["<redacted>"]) }

@@ -14,6 +14,8 @@ extension HTTPMediaRelay: PlaybackMediaRelaying {}
 public final class PlaybackMediaConnection: CustomStringConvertible,
     CustomDebugStringConvertible, CustomReflectable {
     private let makeRelay: @Sendable () throws -> (any PlaybackMediaRelaying)?
+    private var liveClient: RingonomiClient?
+    private var captionSink: (@MainActor @Sendable (LiveCaptionBatch) -> Void)?
     private let failurePollInterval: Duration
     private var generation = UUID()
     private var relay: (any PlaybackMediaRelaying)?
@@ -22,6 +24,14 @@ public final class PlaybackMediaConnection: CustomStringConvertible,
 
     public convenience init(client: RingonomiClient) {
         self.init(makeRelay: { try client.makeAuthenticatedMediaRelay() })
+    }
+
+    /// Live TS bytes are inspected before the same bytes reach the decoder.
+    public convenience init(liveClient: RingonomiClient,
+                            onCaptionBatch: @escaping @MainActor @Sendable (LiveCaptionBatch) -> Void) {
+        self.init(makeRelay: { nil })
+        self.liveClient = liveClient
+        captionSink = onCaptionBatch
     }
 
     internal init(makeRelay: @escaping @Sendable () throws -> (any PlaybackMediaRelaying)?,
@@ -44,7 +54,16 @@ public final class PlaybackMediaConnection: CustomStringConvertible,
         await retirement?.value
         try Task.checkCancellation()
         guard generation == expected else { throw CancellationError() }
-        guard let relay = try makeRelay() else { return source }
+        let candidate: (any PlaybackMediaRelaying)?
+        if let liveClient {
+            candidate = LiveCaptionRelay(client: liveClient) { [weak self] batch in
+                guard !Task.isCancelled else { return }
+                await self?.receive(batch, generation: expected)
+            }
+        } else {
+            candidate = try makeRelay()
+        }
+        guard let relay = candidate else { return source }
         self.relay = relay
         return try await withTaskCancellationHandler {
             do {
@@ -97,6 +116,11 @@ public final class PlaybackMediaConnection: CustomStringConvertible,
     public func stop() async {
         invalidate()
         await retirement?.value
+    }
+
+    private func receive(_ batch: LiveCaptionBatch, generation expected: UUID) {
+        guard generation == expected, !Task.isCancelled else { return }
+        captionSink?(batch)
     }
 
     private func invalidate(ifCurrent expected: UUID) {

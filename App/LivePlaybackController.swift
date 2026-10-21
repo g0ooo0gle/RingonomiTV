@@ -20,20 +20,26 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
     // Incremented after the background track metadata read completes so
     // SwiftUI re-evaluates `videoRect` without parsing from the getter.
     @Published private(set) var videoGeometryRevision = 0
+    let captions = LiveCaptionController()
+    private var usesLiveCaptionRelay = false
     private var currentURL: URL?
     private var resolvedMediaURL: URL?
     private var mediaConnection: PlaybackMediaConnection?
     private var mediaResolution: Task<Void, Never>?
 
-    func configureHTTPAuthentication(client: RingonomiClient) {
+    func configureLiveConnection(client: RingonomiClient) {
         guard currentURL == nil else { return }
         mediaConnection?.invalidate()
-        mediaConnection = client.usesHTTPBasicAuthentication ? PlaybackMediaConnection(client: client) : nil
+        usesLiveCaptionRelay = true
+        mediaConnection = PlaybackMediaConnection(liveClient: client) { [weak self] batch in
+            self?.captions.accept(batch)
+        }
     }
 
     private func invalidateMediaConnection() {
         mediaResolution?.cancel(); mediaResolution = nil
         mediaConnection?.invalidate()
+        captions.stop()
     }
     // A cancelled monitor/delegate callback can still be queued on the main
     // actor while SwiftUI is dismantling the representable.  Teardown must
@@ -210,6 +216,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         invalidateMediaConnection()
         resolvedMediaURL = mediaConnection == nil ? url : nil
         currentURL = url
+        if usesLiveCaptionRelay { captions.prepare() }
         loadGeneration &+= 1
         let expectedLoadGeneration = loadGeneration
         pendingLoadURL = url
@@ -858,7 +865,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
                 let elapsed = lastLogUptime.map { uptime - $0 } ?? 0
                 let rate = elapsed > 0 && pictures >= lastLogPictures
                     ? String(format: "%.1f", Double(pictures - lastLogPictures) / elapsed) : "n/a"
-                print("RingonomiTVLive: pictures=\(pictures) loading=\(isLoading) muted=\(player.audio?.isMuted == true) uptime=\(uptime) fps=\(rate) state=\(player.state.rawValue)")
+                print("RingonomiTVLive: pictures=\(pictures) loading=\(isLoading) muted=\(player.audio?.isMuted == true) uptime=\(uptime) timeMS=\(player.time.intValue) fps=\(rate) state=\(player.state.rawValue)")
                 lastLogUptime = uptime
                 lastLogPictures = pictures
             }
@@ -883,6 +890,10 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
             return
         }
         let size = player.videoSize
+        if usesLiveCaptionRelay {
+            captions.tick(seconds: Double(player.time.intValue) / 1_000, frameSize: size,
+                          isReady: !isLoading && failure == nil)
+        }
         if failure != nil { status = "再生できません" }
         else if isLoading { status = "読み込み中…" }
         else {

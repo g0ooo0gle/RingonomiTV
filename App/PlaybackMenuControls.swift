@@ -33,12 +33,14 @@ enum PlaybackPanel: Equatable {
 struct PlaybackTopControls: View {
     let isRecording: Bool
     @Binding var recordingCaptionsEnabled: Bool
+    @Binding var liveCaptionsEnabled: Bool
     @Binding var recordingCommentsEnabled: Bool
     @Binding var liveCommentsEnabled: Bool
     @Binding var liveCommentDelay: Double
     let commentStoreLoading: Bool
     let commentReload: () -> Void
     let liveCommentReload: () -> Void
+    let reloadLiveCaptions: () -> Void
     let quality: String
     let isActive: Bool
     let isLoading: Bool
@@ -56,19 +58,27 @@ struct PlaybackTopControls: View {
     @FocusState.Binding var focus: PlaybackControlFocus?
     @Binding var isQualityOverlayPresented: Bool
 
+    private var captionsEnabled: Bool { isRecording ? recordingCaptionsEnabled : liveCaptionsEnabled }
+
     var body: some View {
         HStack(spacing: 24) {
-            if isRecording {
-                Menu(recordingCaptionsEnabled ? "字幕：表示" : "字幕：非表示") {
-                    Button(recordingCaptionsEnabled ? "字幕を非表示にする" : "字幕を表示する") {
-                        recordingCaptionsEnabled.toggle()
-                    }
+            Menu(captionsEnabled ? "字幕：表示" : "字幕：非表示") {
+                Button(captionsEnabled ? "字幕を非表示にする" : "字幕を表示する") {
+                    if isRecording { recordingCaptionsEnabled.toggle() }
+                    else { liveCaptionsEnabled.toggle() }
                 }
-                .focused($focus, equals: .captions)
-                .accessibilityLabel("録画の字幕")
-                .accessibilityValue(recordingCaptionsEnabled ? "表示" : "非表示")
-                .accessibilityIdentifier("playback.captions")
+                if !isRecording, liveCaptionsEnabled {
+                    Button("映像と字幕を再読み込み", action: reloadLiveCaptions)
+                        .disabled(isLoading || failure != nil)
+                        .accessibilityIdentifier("playback.captionReload")
+                }
+            }
+            .focused($focus, equals: .captions)
+            .accessibilityLabel(isRecording ? "録画の字幕" : "ライブの字幕")
+            .accessibilityValue(captionsEnabled ? "表示" : "非表示")
+            .accessibilityIdentifier("playback.captions")
 
+            if isRecording {
                 Menu(recordingCommentsEnabled ? "実況：表示" : "実況：非表示") {
                     Button(recordingCommentsEnabled ? "実況を非表示にする" : "実況を表示する") {
                         recordingCommentsEnabled.toggle()

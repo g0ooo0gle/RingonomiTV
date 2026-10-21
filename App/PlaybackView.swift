@@ -75,6 +75,7 @@ struct PlaybackView: View {
     @State private var didSetInitialPlaybackFocus = false
     @State private var lastReadyPlaybackFocus: PlaybackControlFocus?
     @FocusState private var playbackFocus: PlaybackControlFocus?
+    @AppStorage("liveCaptionsEnabled") private var liveCaptionsEnabled = true
     @AppStorage("recordingCaptionsEnabled") private var recordingCaptionsEnabled = true
     @AppStorage("recordingCommentsEnabled") private var recordingCommentsEnabled = false
     @AppStorage("liveCommentsEnabled") private var liveCommentsEnabled = false
@@ -311,7 +312,7 @@ struct PlaybackView: View {
         if item.recordingID != nil {
             recordingController.configureHTTPAuthentication(client: item.client)
             recordingController.configureNowPlaying(title: item.title)
-        } else { controller.configureHTTPAuthentication(client: item.client) }
+        } else { controller.configureLiveConnection(client: item.client) }
         if let id = item.resumeID {
             let store = resumeStore
             let mediaStatus = item.recordingStatus
@@ -438,6 +439,12 @@ struct PlaybackView: View {
                                                videoRect: controller.videoRect,
                                                isPaused: controller.isPaused || isLoading,
                                                isVisible: !isLoading && failure == nil)
+                            .ignoresSafeArea()
+                    }
+                    if !isRecording, liveCaptionsEnabled {
+                        LiveCaptionOverlay(controller: controller.captions,
+                                           videoRect: controller.videoRect,
+                                           isVisible: !isLoading && failure == nil)
                             .ignoresSafeArea()
                     }
                     if isRecording, recordingCaptionsEnabled {
@@ -615,7 +622,7 @@ struct PlaybackView: View {
             let audioLostFocus = playbackFocus == .audio
                 || (playbackFocus == nil && lastReadyPlaybackFocus == .audio)
             if lastReadyPlaybackFocus == .audio {
-                lastReadyPlaybackFocus = isRecording ? .captions : .comments
+                lastReadyPlaybackFocus = .captions
             }
             guard audioLostFocus, panelIsVisible(.top), !isQualityOverlayPresented else { return }
             playbackFocus = focusForPanel(.top)
@@ -655,6 +662,9 @@ struct PlaybackView: View {
 #endif
         }
         .onChange(of: liveCommentDelay) { _, _ in updateLiveCommentClock() }
+        .task(id: liveCaptionsEnabled) {
+            controller.captions.setEnabled(liveCaptionsEnabled)
+        }
         .task(id: recordingCaptionsEnabled) {
             recordingController.captions.setEnabled(recordingCaptionsEnabled)
         }
@@ -741,6 +751,7 @@ struct PlaybackView: View {
                         .font(.caption)
                         .foregroundStyle(.orange)
                 }
+                if !isRecording, liveCaptionsEnabled { LiveCaptionStatus(controller: controller.captions) }
                 if isRecording, recordingCaptionsEnabled,
                    let captionStatus = recordingController.captions.status {
                     Text(captionStatus).font(.caption)
@@ -755,12 +766,14 @@ struct PlaybackView: View {
             PlaybackTopControls(
                 isRecording: isRecording,
                 recordingCaptionsEnabled: $recordingCaptionsEnabled,
+                liveCaptionsEnabled: $liveCaptionsEnabled,
                 recordingCommentsEnabled: $recordingCommentsEnabled,
                 liveCommentsEnabled: $liveCommentsEnabled,
                 liveCommentDelay: $liveCommentDelay,
                 commentStoreLoading: commentStore.loading,
                 commentReload: { commentReload &+= 1 },
                 liveCommentReload: { liveCommentReload &+= 1 },
+                reloadLiveCaptions: { controller.retry() },
                 quality: quality,
                 isActive: panelIsVisible(.top),
                 isLoading: isLoading,
@@ -900,7 +913,7 @@ struct PlaybackView: View {
         }
         switch panel {
         case .top:
-            return isRecording ? .captions : .comments
+            return .captions
         case .bottom:
             if isRecording {
                 return recordingController.durationSeconds.map { _ in .seek } ?? .backward
