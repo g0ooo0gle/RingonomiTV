@@ -456,14 +456,21 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         let playedAudioBuffers: Int
     }
 
-    private var currentNativeStatistics: NativePlaybackStatistics? {
+    private var canReadNativeStatistics: Bool {
         switch player.state {
-        case .buffering, .playing, .paused:
-            break
+        // VLC can keep ESAdded as its last state after a new broadcast track
+        // appears. It does not imply a stopped decoder. Video output and
+        // actual frame/audio counters must still pass the readiness gate.
+        case .buffering, .playing, .paused, .esAdded:
+            return true
         default:
-            return nil
+            return false
         }
-        guard let media = player.media, player.hasVideoOut else { return nil }
+    }
+
+    private var currentNativeStatistics: NativePlaybackStatistics? {
+        guard canReadNativeStatistics,
+              let media = player.media, player.hasVideoOut else { return nil }
         let size = player.videoSize
         guard size.width.isFinite, size.height.isFinite,
               size.width > 0, size.height > 0 else { return nil }
@@ -857,14 +864,9 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         waitingDiagnosticDate = now
         let size = player.videoSize
         var counters = "unavailable"
-        switch player.state {
-        case .buffering, .playing, .paused:
-            if let media = player.media {
-                let stats = media.statistics
-                counters = "pictures=\(stats.displayedPictures) decodedAudio=\(stats.decodedAudio) playedAudio=\(stats.playedAudioBuffers)"
-            }
-        default:
-            break
+        if canReadNativeStatistics, let media = player.media {
+            let stats = media.statistics
+            counters = "pictures=\(stats.displayedPictures) decodedAudio=\(stats.decodedAudio) playedAudio=\(stats.playedAudioBuffers)"
         }
         let frameAge = lastFrameDate == .distantPast
             ? "none" : String(format: "%.2f", now.timeIntervalSince(lastFrameDate))
