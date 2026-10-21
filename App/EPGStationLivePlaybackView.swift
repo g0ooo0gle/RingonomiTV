@@ -146,7 +146,7 @@ struct EPGStationLivePlaybackView: View {
             .tint(.cyan)
     }
 
-    private var playbackContent: some View {
+    private var playbackLayout: some View {
         ZStack {
 #if canImport(TVVLCKit)
             if let displayedURL {
@@ -213,6 +213,10 @@ struct EPGStationLivePlaybackView: View {
             }
         }
         .background(.black)
+    }
+
+    private var playbackPresentation: some View {
+        playbackLayout
         .onAppear {
             guard !hasAppeared else { return }
             hasAppeared = true
@@ -298,6 +302,10 @@ struct EPGStationLivePlaybackView: View {
                 resumePlaybackFromBackground()
             }
         }
+    }
+
+    private var playbackContent: some View {
+        playbackPresentation
         .onChange(of: store.isLoading, initial: true) { _, loading in
             guard !hasStartedClosing else { return }
             if effectiveFailure != nil {
