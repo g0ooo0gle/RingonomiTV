@@ -69,6 +69,7 @@ struct PlaybackView: View {
     @State private var visiblePanel: PlaybackPanel?
     @State private var isQualityOverlayPresented = false
     @State private var isCaptionOverlayPresented = false
+    @State private var isCommentOverlayPresented = false
     @State private var isAudioOverlayPresented = false
     @State private var isChapterOverlayPresented = false
     @State private var chapterReload = 0
@@ -126,7 +127,7 @@ struct PlaybackView: View {
     private var audioOptions: [PlaybackAudioOption] { isRecording ? recordingController.audioOptions : controller.audioOptions }
     private var selectedAudioID: String? { isRecording ? recordingController.selectedAudioID : controller.selectedAudioID }
     private var audioSelectionError: String? { isRecording ? recordingController.audioSelectionError : controller.audioSelectionError }
-    private var isPlaybackChoicePresented: Bool { isQualityOverlayPresented || isCaptionOverlayPresented || isAudioOverlayPresented || isChapterOverlayPresented }
+    private var isPlaybackChoicePresented: Bool { isCommentOverlayPresented || isQualityOverlayPresented || isCaptionOverlayPresented || isAudioOverlayPresented || isChapterOverlayPresented }
     private var acceptsInlineInput: Bool {
         !isClosing && !isMiniPlayer && !recordingController.pictureInPicture.isDetached && !recordingController.pictureInPicture.isTransitioning
     }
@@ -371,6 +372,7 @@ struct PlaybackView: View {
     }
 
     private func closeSelectionCards() {
+        isCommentOverlayPresented = false
         isQualityOverlayPresented = false
         isCaptionOverlayPresented = false
         isAudioOverlayPresented = false
@@ -534,6 +536,14 @@ struct PlaybackView: View {
                 .allowsHitTesting(panelIsVisible(.bottom))
                 .accessibilityHidden(!panelIsVisible(.bottom))
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            if isCommentOverlayPresented {
+                commentCard
+                    .padding(.top, 64)
+                    .padding(.trailing, 64)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    .transition(.opacity)
+                    .zIndex(2)
+            }
             if isChapterOverlayPresented {
                 chapterCard
                 .padding(.top, 64)
@@ -805,6 +815,41 @@ struct PlaybackView: View {
                                              delay: commentDelay)
     }
 
+    private var commentCard: some View {
+        PlaybackCommentChoicesView(
+            isRecording: isRecording,
+            enabled: isRecording ? recordingCommentsEnabled : liveCommentsEnabled,
+            delay: commentDelay,
+            loading: isRecording ? commentStore.loading : liveCommentStore.loading,
+            status: isRecording ? commentStore.status : liveCommentStore.status,
+            onSetEnabled: { enabled in
+                guard canUseCommentCard else { return }
+                dismissCommentOverlay(restoreFocus: true)
+                if isRecording { recordingCommentsEnabled = enabled }
+                else { liveCommentsEnabled = enabled }
+            },
+            onSetDelay: { delay in
+                guard canUseCommentCard, !isRecording, liveCommentsEnabled,
+                      [0.0, 1, 2, 3, 5, 10].contains(delay) else { return }
+                dismissCommentOverlay(restoreFocus: true)
+                liveCommentDelay = delay
+            },
+            onReload: {
+                guard canUseCommentCard else { return }
+                if isRecording {
+                    guard recordingCommentsEnabled, !commentStore.loading else { return }
+                    dismissCommentOverlay(restoreFocus: true)
+                    commentReload &+= 1
+                } else {
+                    guard liveCommentsEnabled, !liveCommentStore.loading else { return }
+                    dismissCommentOverlay(restoreFocus: true)
+                    liveCommentReload &+= 1
+                }
+            },
+            onClose: { dismissCommentOverlay(restoreFocus: true) }
+        )
+    }
+
     private var chapterCard: some View {
         RecordingChapterCard(
             store: chapterStore,
@@ -888,12 +933,9 @@ struct PlaybackView: View {
                 isRecording: isRecording,
                 recordingCaptionsEnabled: $recordingCaptionsEnabled,
                 liveCaptionsEnabled: $liveCaptionsEnabled,
-                recordingCommentsEnabled: $recordingCommentsEnabled,
-                liveCommentsEnabled: $liveCommentsEnabled,
-                liveCommentDelay: $liveCommentDelay,
-                commentStoreLoading: commentStore.loading,
-                commentReload: { commentReload &+= 1 },
-                liveCommentReload: { liveCommentReload &+= 1 },
+                recordingCommentsEnabled: recordingCommentsEnabled,
+                liveCommentsEnabled: liveCommentsEnabled,
+                openComments: presentCommentChoices,
                 quality: quality,
                 isActive: panelIsVisible(.top),
                 isLoading: isLoading,
@@ -914,6 +956,7 @@ struct PlaybackView: View {
                 close: close,
                 openViewport: presentViewport,
                 focus: $playbackFocus,
+                isCommentOverlayPresented: $isCommentOverlayPresented,
                 isAudioOverlayPresented: $isAudioOverlayPresented,
                 isCaptionOverlayPresented: $isCaptionOverlayPresented,
                 isQualityOverlayPresented: $isQualityOverlayPresented
@@ -1183,6 +1226,29 @@ struct PlaybackView: View {
         }
     }
 
+    private var canUseCommentCard: Bool {
+        isCommentOverlayPresented && acceptsInlineInput && !isLoading && failure == nil
+            && panelIsVisible(.top)
+    }
+
+    private func presentCommentChoices() {
+        guard acceptsInlineInput, panelIsVisible(.top), !isPlaybackChoicePresented,
+              !isSceneSearchPresented, !viewportSettings.isPresented else { return }
+        playbackFocus = nil
+        isCommentOverlayPresented = true
+#if DEBUG
+        print("RingonomiCommentCard: opened")
+#endif
+    }
+
+    private func dismissCommentOverlay(restoreFocus: Bool) {
+        guard isCommentOverlayPresented else { return }
+        isCommentOverlayPresented = false
+        if restoreFocus, acceptsInlineInput, panelIsVisible(.top) {
+            playbackFocus = .comments
+        }
+    }
+
     private func finishAudioSelection(_ id: String) {
         guard isAudioOverlayPresented else { return }
         guard acceptsInlineInput, !isLoading, failure == nil,
@@ -1238,7 +1304,7 @@ struct PlaybackView: View {
 
     private func handleExitCommand() {
 #if DEBUG
-        print("RingonomiPlaybackExit: card=\(isQualityOverlayPresented || isCaptionOverlayPresented || isAudioOverlayPresented || isChapterOverlayPresented) panel=\(visiblePanel.map { $0 == .top ? "top" : "bottom" } ?? "hidden") focus=\(playbackFocus?.rawValue ?? "none")")
+        print("RingonomiPlaybackExit: card=\(isCommentOverlayPresented || isQualityOverlayPresented || isCaptionOverlayPresented || isAudioOverlayPresented || isChapterOverlayPresented) panel=\(visiblePanel.map { $0 == .top ? "top" : "bottom" } ?? "hidden") focus=\(playbackFocus?.rawValue ?? "none")")
 #endif
 #if canImport(TVVLCKit)
         guard acceptsInlineInput else { return }
@@ -1246,6 +1312,8 @@ struct PlaybackView: View {
             closeViewport()
         } else if isSceneSearchPresented {
             finishSceneSearch()
+        } else if isCommentOverlayPresented {
+            dismissCommentOverlay(restoreFocus: true)
         } else if isChapterOverlayPresented {
             dismissChapterOverlay(restoreFocus: true)
         } else if isAudioOverlayPresented {

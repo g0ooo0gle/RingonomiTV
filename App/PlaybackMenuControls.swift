@@ -34,12 +34,9 @@ struct PlaybackTopControls: View {
     let isRecording: Bool
     @Binding var recordingCaptionsEnabled: Bool
     @Binding var liveCaptionsEnabled: Bool
-    @Binding var recordingCommentsEnabled: Bool
-    @Binding var liveCommentsEnabled: Bool
-    @Binding var liveCommentDelay: Double
-    let commentStoreLoading: Bool
-    let commentReload: () -> Void
-    let liveCommentReload: () -> Void
+    let recordingCommentsEnabled: Bool
+    let liveCommentsEnabled: Bool
+    let openComments: () -> Void
     let quality: String
     let isActive: Bool
     let isLoading: Bool
@@ -54,12 +51,13 @@ struct PlaybackTopControls: View {
     let close: () -> Void
     let openViewport: () -> Void
     @FocusState.Binding var focus: PlaybackControlFocus?
+    @Binding var isCommentOverlayPresented: Bool
     @Binding var isAudioOverlayPresented: Bool
     @Binding var isCaptionOverlayPresented: Bool
     @Binding var isQualityOverlayPresented: Bool
 
     private var captionsEnabled: Bool { isRecording ? recordingCaptionsEnabled : liveCaptionsEnabled }
-    private var isChoicePresented: Bool { isAudioOverlayPresented || isCaptionOverlayPresented || isQualityOverlayPresented }
+    private var isChoicePresented: Bool { isCommentOverlayPresented || isAudioOverlayPresented || isCaptionOverlayPresented || isQualityOverlayPresented }
 
     var body: some View {
         HStack(spacing: 24) {
@@ -84,47 +82,11 @@ struct PlaybackTopControls: View {
                 .accessibilityIdentifier("playback.captions")
             }
 
-            if isRecording {
-                Menu(recordingCommentsEnabled ? "実況：表示" : "実況：非表示") {
-                    Button(recordingCommentsEnabled ? "実況を非表示にする" : "実況を表示する") {
-                        recordingCommentsEnabled.toggle()
-                    }
-                    if recordingCommentsEnabled {
-                        Button("過去ログを再取得") { commentReload() }
-                            .disabled(commentStoreLoading)
-                    }
-                }
+            Button(commentsEnabled ? "実況：表示" : "実況：非表示", action: openComments)
                 .focused($focus, equals: .comments)
-                .accessibilityLabel("録画の実況")
-                .accessibilityValue(recordingCommentsEnabled ? "表示" : "非表示")
+                .accessibilityLabel(isRecording ? "録画の実況" : "ライブの実況")
+                .accessibilityValue(commentsEnabled ? "表示" : "非表示")
                 .accessibilityIdentifier("playback.comments")
-            } else {
-                Menu(liveCommentsEnabled ? "実況：表示" : "実況：非表示") {
-                    Button(liveCommentsEnabled ? "実況を非表示にする" : "実況を表示する") {
-                        liveCommentsEnabled.toggle()
-                    }
-                    if liveCommentsEnabled {
-                        Menu("表示の遅延：\(Int(safeDelay))秒") {
-                            ForEach([0, 1, 2, 3, 5, 10], id: \.self) { value in
-                                Button(value == Int(safeDelay) ? "✓ \(value)秒" : "\(value)秒") {
-                                    liveCommentDelay = Double(value)
-                                }
-                                .accessibilityLabel("\(value)秒")
-                                .accessibilityValue(value == Int(safeDelay) ? "選択中" : "未選択")
-                                .accessibilityIdentifier("playback.commentDelay.\(value)")
-                            }
-                        }
-                        .accessibilityLabel("実況表示の遅延")
-                        .accessibilityValue("\(Int(safeDelay))秒")
-                        .accessibilityIdentifier("playback.commentDelay")
-                        Button("実況に再接続") { liveCommentReload() }
-                    }
-                }
-                .focused($focus, equals: .comments)
-                .accessibilityLabel("ライブの実況")
-                .accessibilityValue(liveCommentsEnabled ? "表示" : "非表示")
-                .accessibilityIdentifier("playback.comments")
-            }
 
             if audioOptions.count > 1 {
                 Button("音声") {
@@ -191,6 +153,7 @@ struct PlaybackTopControls: View {
             // Loading and failure states remove the top panel's active focus.
             // Close the card without trying to focus a disabled selection button.
             if !active {
+                isCommentOverlayPresented = false
                 isQualityOverlayPresented = false
                 isCaptionOverlayPresented = false
                 isAudioOverlayPresented = false
@@ -198,8 +161,8 @@ struct PlaybackTopControls: View {
         }
     }
 
-    private var safeDelay: Double {
-        liveCommentDelay.isFinite ? min(10, max(0, liveCommentDelay)) : 2
+    private var commentsEnabled: Bool {
+        isRecording ? recordingCommentsEnabled : liveCommentsEnabled
     }
 }
 
