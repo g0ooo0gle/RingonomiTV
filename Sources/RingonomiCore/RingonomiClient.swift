@@ -271,10 +271,40 @@ public enum ConnectionError: Error, LocalizedError, Equatable, Sendable {
 public struct RingonomiClient: Sendable {
     public let baseURL: URL
     public let accessToken: BackendAccessToken?
+    internal let httpBasicCredential: HTTPBasicCredential?
+    internal let httpBasicScope: HTTPBasicAuthenticationScope?
+    internal let httpBasicTransport: HTTPBasicTransport?
 
-    public init(address: String, accessToken: BackendAccessToken? = nil) throws {
+    public init(address: String, accessToken: BackendAccessToken? = nil,
+                httpBasicCredential: HTTPBasicCredential? = nil,
+                sessionConfiguration: URLSessionConfiguration? = nil) throws {
         baseURL = try BackendURLRules.normalize(address)
+        guard accessToken == nil || httpBasicCredential == nil else {
+            throw HTTPBasicAuthenticationError.conflictingAuthorization
+        }
         self.accessToken = accessToken
+        self.httpBasicCredential = httpBasicCredential
+        if let httpBasicCredential {
+            let scope = try HTTPBasicAuthenticationScope(address: baseURL.absoluteString)
+            httpBasicScope = scope
+            httpBasicTransport = try HTTPBasicTransport(scope: scope, credential: httpBasicCredential,
+                                                       sessionConfiguration: sessionConfiguration)
+        } else { httpBasicScope = nil; httpBasicTransport = nil }
+    }
+
+    /// A distinct relay belongs to one decoder generation. Merely creating it
+    /// sends no request and does not change an existing playback session.
+    public func makeAuthenticatedMediaRelay() throws -> HTTPMediaRelay? {
+        try httpBasicTransport?.makeMediaRelay()
+    }
+
+    internal func basicTransport(using session: URLSession) throws -> HTTPBasicTransport? {
+        guard let httpBasicTransport, let httpBasicScope, let httpBasicCredential else { return nil }
+        if session === URLSession.shared { return httpBasicTransport }
+        // Honor explicit test/host session configuration while retaining the
+        // same redirect, cookie, trust, and credential-store restrictions.
+        return try HTTPBasicTransport(scope: httpBasicScope, credential: httpBasicCredential,
+                                      sessionConfiguration: session.configuration)
     }
     public func endpoint(_ components: [String]) -> URL {
         components.reduce(baseURL) { $0.appendingPathComponent($1) }
@@ -320,7 +350,7 @@ public struct RingonomiClient: Sendable {
     public func channels(using urlSession: URLSession = .shared) async throws -> [Channel] {
         var request = URLRequest(url: endpoint(["api", "channels"]))
         request.timeoutInterval = 20
-        let responseData: (URLSession.AsyncBytes, URLResponse)
+        let responseData: (BackendResponseStream, URLResponse)
         do {
             responseData = try await backendBytes(for: request, using: urlSession)
         } catch let error as ConnectionError where error == .http(0) {
@@ -331,7 +361,7 @@ public struct RingonomiClient: Sendable {
         }
         let bytes = responseData.0
         let response = responseData.1
-        defer { bytes.task.cancel() }
+        defer { bytes.cancel() }
         guard let http = response as? HTTPURLResponse else {
             throw ConnectionError.invalidResponse
         }

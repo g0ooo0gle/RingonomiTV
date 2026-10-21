@@ -81,7 +81,7 @@ private extension RingonomiClient {
         using session: URLSession
     ) async throws -> Data {
         try Task.checkCancellation()
-        let bytesAndResponse: (URLSession.AsyncBytes, URLResponse)
+        let bytesAndResponse: (BackendResponseStream, URLResponse)
         do {
             bytesAndResponse = try await backendBytes(for: request, using: session)
         } catch {
@@ -96,7 +96,7 @@ private extension RingonomiClient {
         // Keep this immediately after acquiring AsyncBytes: HTTP status,
         // headers, decoding, cancellation, and every other exit path must
         // release the underlying URLSession task.
-        defer { bytes.task.cancel() }
+        defer { bytes.cancel() }
         try Task.checkCancellation()
 
         guard let http = response as? HTTPURLResponse else {

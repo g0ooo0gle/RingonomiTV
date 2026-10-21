@@ -98,11 +98,24 @@ public final class HTTPBasicTransport: Sendable, CustomStringConvertible,
     /// The stream retains this connection until reading ends. Cancel it when
     /// playback stops, a generation changes, or the body is no longer needed.
     public func bytes(for request: URLRequest) async throws -> HTTPBasicResponseStream {
+        try await responseBytes(for: request, allowsHTTPErrorResponse: false)
+    }
+
+    /// API decoders retain their typed status/error-detail contracts. Redirects
+    /// and authentication challenges are still rejected before exposing a body.
+    internal func apiBytes(for request: URLRequest) async throws -> HTTPBasicResponseStream {
+        try await responseBytes(for: request, allowsHTTPErrorResponse: true)
+    }
+
+    private func responseBytes(for request: URLRequest, allowsHTTPErrorResponse: Bool) async throws -> HTTPBasicResponseStream {
         try Task.checkCancellation()
         if isInvalidated { throw CancellationError() }
         var authorized = try scope.authorizing(request, credential: credential)
         authorized.cachePolicy = .reloadIgnoringLocalCacheData
-        authorized.timeoutInterval = 20
+        guard request.timeoutInterval.isFinite, request.timeoutInterval > 0 else {
+            throw HTTPBasicTransportError.invalidTimeout
+        }
+        authorized.timeoutInterval = min(request.timeoutInterval, 20)
         let delegate = HTTPBasicTaskDelegate()
         do {
             let (bytes, response) = try await session.bytes(for: authorized, delegate: delegate)
@@ -123,7 +136,8 @@ public final class HTTPBasicTransport: Sendable, CustomStringConvertible,
                 if http.statusCode == 401 || http.statusCode == 407 {
                     throw HTTPBasicTransportError.authenticationRequired
                 }
-                guard (200..<300).contains(http.statusCode) else {
+                guard (200..<300).contains(http.statusCode) ||
+                        (allowsHTTPErrorResponse && (400..<600).contains(http.statusCode)) else {
                     throw HTTPBasicTransportError.httpStatus(http.statusCode)
                 }
                 return HTTPBasicResponseStream(bytes: bytes, response: http, owner: self)
@@ -151,14 +165,36 @@ public final class HTTPBasicTransport: Sendable, CustomStringConvertible,
         maximumBytes: Int = HTTPBasicTransport.maximumDataBytes,
         maximumDuration: Duration = .seconds(30)
     ) async throws -> (Data, HTTPURLResponse) {
-        guard (1...Self.maximumDataBytes).contains(maximumBytes) else {
+        try await responseData(for: request, maximumBytes: maximumBytes,
+                               maximumDuration: maximumDuration, allowsHTTPErrorResponse: false,
+                               maximumAllowedBytes: Self.maximumDataBytes)
+    }
+
+    internal func apiData(for request: URLRequest, maximumBytes: Int = HTTPBasicTransport.maximumDataBytes) async throws -> (Data, HTTPURLResponse) {
+        guard request.timeoutInterval.isFinite, request.timeoutInterval > 0 else {
+            throw HTTPBasicTransportError.invalidTimeout
+        }
+        return try await responseData(for: request, maximumBytes: maximumBytes,
+                                      maximumDuration: .seconds(min(request.timeoutInterval, 30)),
+                                      allowsHTTPErrorResponse: true, maximumAllowedBytes: 32 * 1024 * 1024)
+    }
+
+    internal func makeMediaRelay() throws -> HTTPMediaRelay {
+        try HTTPMediaRelay(scope: scope, credential: credential, sessionConfiguration: session.configuration)
+    }
+
+    private func responseData(for request: URLRequest, maximumBytes: Int,
+                              maximumDuration: Duration, allowsHTTPErrorResponse: Bool,
+                              maximumAllowedBytes: Int) async throws -> (Data, HTTPURLResponse) {
+        guard (1...maximumAllowedBytes).contains(maximumBytes) else {
             throw HTTPBasicTransportError.invalidLimit
         }
         guard maximumDuration > .zero, maximumDuration <= .seconds(120) else {
             throw HTTPBasicTransportError.invalidTimeout
         }
         return try await withThrowingTaskGroup(of: (Data, HTTPURLResponse).self) { group in
-            group.addTask { try await self.readData(for: request, maximumBytes: maximumBytes) }
+            group.addTask { try await self.readData(for: request, maximumBytes: maximumBytes,
+                                                   allowsHTTPErrorResponse: allowsHTTPErrorResponse) }
             group.addTask {
                 try await Task.sleep(for: maximumDuration)
                 throw HTTPBasicTransportError.timedOut
@@ -171,9 +207,10 @@ public final class HTTPBasicTransport: Sendable, CustomStringConvertible,
 
     private func readData(
         for request: URLRequest,
-        maximumBytes: Int
+        maximumBytes: Int,
+        allowsHTTPErrorResponse: Bool
     ) async throws -> (Data, HTTPURLResponse) {
-        let stream = try await bytes(for: request)
+        let stream = try await responseBytes(for: request, allowsHTTPErrorResponse: allowsHTTPErrorResponse)
         let response = stream.response
         defer { stream.cancel() }
         if response.expectedContentLength > Int64(maximumBytes) {

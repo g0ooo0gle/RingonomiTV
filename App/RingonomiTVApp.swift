@@ -6,6 +6,7 @@ struct RingonomiTVApp: App {
     init() {
 #if DEBUG
         AccountKeychain.checkStorage(arguments: ProcessInfo.processInfo.arguments)
+        HTTPBasicCredentialsKeychain.checkStorage(arguments: ProcessInfo.processInfo.arguments)
         PlaybackAccessibilityDiagnostics.start(arguments: ProcessInfo.processInfo.arguments)
 #endif
     }

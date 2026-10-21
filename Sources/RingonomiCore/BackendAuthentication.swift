@@ -322,6 +322,9 @@ public extension RingonomiClient {
     internal func backendAuthorizedRequest(_ request: URLRequest) throws -> URLRequest {
         guard let url = request.url else { throw ConnectionError.invalidAddress }
         guard BackendURLRules.isSafeRequestURL(url) else { throw ConnectionError.invalidAddress }
+        if let httpBasicScope, let httpBasicCredential {
+            return try httpBasicScope.authorizing(request, credential: httpBasicCredential)
+        }
         var authorized = request
         // The account API is bearer-token based.  Do not let a caller's
         // session cookie or credential store silently become another auth
@@ -354,31 +357,8 @@ public extension RingonomiClient {
     func backendBytes(
         for request: URLRequest,
         using urlSession: URLSession = .shared
-    ) async throws -> (URLSession.AsyncBytes, URLResponse) {
-        let prepared = try backendAuthorizedRequest(request)
-        let delegate = BackendRedirectDelegate(
-            baseURL: baseURL,
-            mode: .api,
-            authorizationValue: accessToken?.authorizationValue
-        )
-        let session = Self.transportSession(for: urlSession)
-        do {
-            let (bytes, response) = try await session.bytes(for: prepared, delegate: delegate)
-            if delegate.rejected {
-                bytes.task.cancel()
-                throw ConnectionError.redirectRejected
-            }
-            guard response is HTTPURLResponse else {
-                bytes.task.cancel()
-                throw ConnectionError.http(0)
-            }
-            return (bytes, response)
-        } catch let error as ConnectionError {
-            throw error
-        } catch {
-            if delegate.rejected { throw ConnectionError.redirectRejected }
-            throw error
-        }
+    ) async throws -> (BackendResponseStream, URLResponse) {
+        try await performBackendBytes(request, using: urlSession, redirectMode: .api)
     }
 
     /// Log in through the HTTPS-only account endpoint.  A client that already
@@ -388,6 +368,7 @@ public extension RingonomiClient {
         password: String,
         using urlSession: URLSession = .shared
     ) async throws -> BackendAccessToken {
+        guard httpBasicCredential == nil else { throw HTTPBasicAuthenticationError.conflictingAuthorization }
         guard accessToken == nil else { throw ConnectionError.authenticationAlreadyConfigured }
         guard !username.isEmpty,
               username.utf8.count <= 1024,
@@ -414,7 +395,7 @@ public extension RingonomiClient {
         do {
             try Self.validateSuccessResponse(response)
         } catch {
-            bytes.task.cancel()
+            bytes.cancel()
             throw error
         }
         let data = try await Self.readBounded(bytes, maximumBytes: 64 * 1024)
@@ -439,7 +420,7 @@ public extension RingonomiClient {
         do {
             try Self.validateSuccessResponse(response)
         } catch {
-            bytes.task.cancel()
+            bytes.cancel()
             throw error
         }
         let data = try await Self.readBounded(bytes, maximumBytes: 64 * 1024)
@@ -457,6 +438,13 @@ public extension RingonomiClient {
         using urlSession: URLSession,
         redirectMode: BackendRedirectMode
     ) async throws -> (Data, URLResponse) {
+        if let transport = try basicTransport(using: urlSession) {
+            // A full timetable contains more metadata than paginated lists.
+            // Keep its allowance separate from playlists and ordinary APIs.
+            let isTimetable = request.url?.path == endpoint(["api", "programs", "timetable"]).path
+            let maximumBytes = isTimetable ? 32 * 1024 * 1024 : HTTPBasicTransport.maximumDataBytes
+            return try await transport.apiData(for: request, maximumBytes: maximumBytes)
+        }
         let prepared = try backendAuthorizedRequest(request)
         let delegate = BackendRedirectDelegate(
             baseURL: baseURL,
@@ -481,7 +469,11 @@ public extension RingonomiClient {
         _ request: URLRequest,
         using urlSession: URLSession,
         redirectMode: BackendRedirectMode
-    ) async throws -> (URLSession.AsyncBytes, URLResponse) {
+    ) async throws -> (BackendResponseStream, URLResponse) {
+        if let transport = try basicTransport(using: urlSession) {
+            let bytes = try await transport.apiBytes(for: request)
+            return (BackendResponseStream(bytes), bytes.response)
+        }
         let prepared = try backendAuthorizedRequest(request)
         let delegate = BackendRedirectDelegate(
             baseURL: baseURL,
@@ -499,7 +491,7 @@ public extension RingonomiClient {
                 bytes.task.cancel()
                 throw ConnectionError.http(0)
             }
-            return (bytes, response)
+            return (BackendResponseStream(bytes), response)
         } catch let error as ConnectionError {
             throw error
         } catch {
@@ -528,10 +520,10 @@ public extension RingonomiClient {
     }
 
     private static func readBounded(
-        _ bytes: URLSession.AsyncBytes,
+        _ bytes: BackendResponseStream,
         maximumBytes: Int
     ) async throws -> Data {
-        defer { bytes.task.cancel() }
+        defer { bytes.cancel() }
         var data = Data()
         data.reserveCapacity(min(maximumBytes, 16 * 1024))
         for try await byte in bytes {
