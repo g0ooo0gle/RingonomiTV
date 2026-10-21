@@ -34,6 +34,7 @@ final class RecordingPlaybackController: ObservableObject {
     // are still waiting on the main actor.  This gate keeps those callbacks
     // from touching published state after teardown.
     private var isStopped = false
+    private var isClosingPermanently = false
     // Background transitions keep the SwiftUI controller alive, but the
     // AVPlayer item, observers, and preparation tasks are released until the
     // app becomes active again.  Repeated lifecycle notifications are safe.
@@ -367,6 +368,7 @@ final class RecordingPlaybackController: ObservableObject {
         }
     }
     func attach(_ layer: AVPlayerLayer) {
+        guard !isClosingPermanently else { return }
         layerObservation?.invalidate()
         videoLayer = layer
         layer.player = player
@@ -377,7 +379,7 @@ final class RecordingPlaybackController: ObservableObject {
         }
     }
     func load(_ url: URL, preservingEndState: Bool = false) {
-        guard !isSuspendedForBackground, currentURL != url else { return }
+        guard !isClosingPermanently, !isSuspendedForBackground, currentURL != url else { return }
         let keepEnded = reachedEnd && (preservingEndState || isChangingQuality)
         isStopped = false
         isSuspendedForBackground = false
@@ -993,6 +995,13 @@ final class RecordingPlaybackController: ObservableObject {
         player.cancelPendingPrerolls()
         player.currentItem?.cancelPendingSeeks()
     }
+    /// Called only after the native PiP close acknowledgment. A queued
+    /// representable update must not reopen an input the host has released.
+    func finishClosing() {
+        isClosingPermanently = true
+        stop()
+    }
+
     func stop() {
         guard !pictureInPicture.ownsPlayback else { return }
         remoteControls.deactivate()

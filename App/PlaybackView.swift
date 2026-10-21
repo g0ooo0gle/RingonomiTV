@@ -377,7 +377,7 @@ struct PlaybackView: View {
             recordingController.pictureInPicture.stopBeforeClosing { success in
                 if success {
                     recordingController.flushPosition()
-                    recordingController.stop()
+                    recordingController.finishClosing()
                 } else { isClosing = false }
                 onClose(request, success)
             }
