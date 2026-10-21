@@ -8,6 +8,7 @@ struct GuideGridView: View {
     let returnFocusRevision: Int
     let onSelect: (GuideProgram, GuideChannel) -> Void
     let onLeaveGrid: () -> Void
+    let onExitGrid: () -> Void
     @State private var position = GuideGridFocus()
     @State private var scrollX: CGFloat = 0
     @State private var scrollY: CGFloat = 0
@@ -85,7 +86,7 @@ struct GuideGridView: View {
                 hasFocus = false
                 onSelect(entry.program, layout.columns[position.column].channel)
             }
-            .onExitCommand { hasFocus = false; onLeaveGrid() }
+            .onExitCommand { hasFocus = false; onExitGrid() }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(accessibilityLabel)
             .accessibilityValue(accessibilityValue)

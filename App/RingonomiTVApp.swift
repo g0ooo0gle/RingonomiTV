@@ -32,6 +32,7 @@ struct LibraryView: View {
     }
     @StateObject private var playbackIdleTimer = PlaybackIdleTimer()
     @State private var selectedTab = 0
+    @FocusState private var playerControlFocus: PlayerControlFocus?
     @State private var settingsPath: [SettingsDestination] = []
     @StateObject private var reservations = ReservationStore()
     @StateObject private var keywords = KeywordReservationStore()
@@ -272,8 +273,11 @@ struct LibraryView: View {
                             playbackPresentation.toggleDetachedPause()
                         }
                         .disabled(!playbackPresentation.transport.canToggle || playbackPresentation.closeRequest != nil)
+                        .focused($playerControlFocus, equals: .playPause)
                         Button("全画面へ戻る") { playbackPresentation.restoreInline() }
+                            .focused($playerControlFocus, equals: .restore)
                         Button("再生を終了") { playbackPresentation.present(nil) }
+                            .focused($playerControlFocus, equals: .close)
                     }
                     .disabled(playbackPresentation.closeRequest != nil)
                 }
@@ -318,7 +322,16 @@ struct LibraryView: View {
         .environment(\.playbackHandoff, PlaybackHandoff(stopPrevious: { [weak playbackPresentation] in
             await playbackPresentation?.stopForAnotherPlayer() ?? true
         }))
+        .onChange(of: playbackPresentation.exposesLibrary) { _, exposed in
+            if !exposed { playerControlFocus = nil }
+        }
+        .onChange(of: playbackPresentation.controlsFocusRequest) { _, request in
+            guard request != nil, playbackPresentation.exposesLibrary,
+                  playbackPresentation.closeRequest == nil else { return }
+            playerControlFocus = .restore
+        }
         .onChange(of: playbackPresentation.current?.id) { _, id in
+            playerControlFocus = nil
             if id == nil {
                 playbackIdleTimer.setNeedsContinuousDisplay(false)
                 // Refresh current-program labels after watching while the
@@ -496,6 +509,8 @@ struct LibraryView: View {
                             savedPosition: savedPosition, recordedFileID: recording.recordedVideo.id)
     }
 }
+
+private enum PlayerControlFocus: Hashable { case playPause, restore, close }
 
 private struct ConnectionLoadKey: Hashable {
     let address: String

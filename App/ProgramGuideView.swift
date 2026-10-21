@@ -22,6 +22,7 @@ struct ProgramGuideView: View {
     @State private var jumpRevision = 0
     @State private var returnFocusRevision = 0
     @State private var loadedRequest: String?
+    @EnvironmentObject private var playbackPresentation: PlaybackPresentationStore
     @FocusState private var refreshFocused: Bool
 
     private var requestKey: String { "\(address)|\(channelType)|\(dayOffset)|\(revision)" }
@@ -111,6 +112,14 @@ struct ProgramGuideView: View {
             }
         }
     }
+    private func leaveGridForBack() {
+        if playbackPresentation.exposesLibrary {
+            playbackPresentation.requestControlsFocus()
+        } else {
+            refreshFocused = true
+        }
+    }
+
     private var hasContent: Bool {
         if isSearching { return !searchResults.isEmpty }
         if presentation == "grid" { return gridLayout.columns.contains { !$0.entries.isEmpty } }
@@ -122,6 +131,8 @@ struct ProgramGuideView: View {
                 selected = GuideSelection(program: program, channel: channel)
             } onLeaveGrid: {
                 refreshFocused = true
+            } onExitGrid: {
+                leaveGridForBack()
             }.id(requestKey + "|\(includeSubchannels)")
         } else {
             List {

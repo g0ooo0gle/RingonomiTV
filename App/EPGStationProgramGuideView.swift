@@ -176,6 +176,14 @@ struct EPGStationProgramGuideView: View {
         }
     }
 
+    private func leaveGridForBack() {
+        if playbackPresentation.exposesLibrary {
+            playbackPresentation.requestControlsFocus()
+        } else {
+            refreshFocused = true
+        }
+    }
+
     private var connectionControls: some View {
         HStack(spacing: 18) {
             TextField("EPGStation URL（例：http://ホスト:8888）", text: $draftAddress)
@@ -244,7 +252,8 @@ struct EPGStationProgramGuideView: View {
                 jumpRevision: jumpRevision,
                 returnFocusRevision: returnFocusRevision,
                 onSelect: { program, channel in openProgram(program, channel: channel) },
-                onLeaveGrid: { refreshFocused = true }
+                onLeaveGrid: { refreshFocused = true },
+                onExitGrid: leaveGridForBack
             )
             .id(requestKey)
         } else {

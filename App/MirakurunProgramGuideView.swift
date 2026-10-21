@@ -110,6 +110,14 @@ struct MirakurunProgramGuideView: View {
         }
     }
 
+    private func leaveGridForBack() {
+        if playbackPresentation.exposesLibrary {
+            playbackPresentation.requestControlsFocus()
+        } else {
+            refreshFocused = true
+        }
+    }
+
     private var connectionControls: some View {
         HStack(spacing: 18) {
             TextField("Mirakurun URL（例：http://ホスト:40772）", text: $draftAddress)
@@ -152,7 +160,8 @@ struct MirakurunProgramGuideView: View {
         if !isSearching, presentation == "grid", !response.channels.isEmpty {
             GuideGridView(layout: layout, jumpRevision: jumpRevision,
                           returnFocusRevision: returnFocusRevision,
-                          onSelect: openProgram, onLeaveGrid: { refreshFocused = true })
+                          onSelect: openProgram, onLeaveGrid: { refreshFocused = true },
+                          onExitGrid: leaveGridForBack)
                 .id(requestKey)
         } else {
             List {

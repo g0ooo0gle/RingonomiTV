@@ -265,6 +265,23 @@ struct PlaybackPresentationCheck {
         store.cancelSessions(for: .epgStationLive)
         store.didClose(epgLive.id, request: bothLive, success: true)
         try expect(store.current == nil, "EPG live connection invalidates both current and pending")
+        store.requestControlsFocus()
+        try expect(store.controlsFocusRequest == nil, "empty host ignores focus requests")
+        store.presentEPGStationLive(epgLive)
+        store.requestControlsFocus()
+        try expect(store.controlsFocusRequest == nil, "full player does not expose library controls")
+        store.setMiniPlayer(true, for: epgLive.id)
+        store.requestControlsFocus()
+        let focusRequest = store.controlsFocusRequest
+        try expect(focusRequest != nil, "guide Menu can focus mini controls")
+        store.requestControlsFocus()
+        try expect(store.controlsFocusRequest != focusRequest, "repeated guide exit issues fresh focus request")
+        let lastFocus = store.controlsFocusRequest
+        let focusClose = store.beginClosing(epgLive.id)!
+        store.requestControlsFocus()
+        try expect(store.controlsFocusRequest == lastFocus, "closing host ignores focus requests")
+        store.didClose(epgLive.id, request: focusClose, success: true)
+        try expect(store.controlsFocusRequest == nil, "closed host drops stale focus request")
         print("PASS: \(checks) playback presentation checks")
     }
 }

@@ -58,6 +58,7 @@ final class PlaybackPresentationStore: ObservableObject {
     @Published private(set) var current: PlaybackSession?
     @Published private(set) var closeRequest: UUID?
     @Published private(set) var restoreRequest: UUID?
+    @Published private(set) var controlsFocusRequest: UUID?
     @Published private(set) var togglePauseRequest: UInt64 = 0
     @Published private(set) var transport = PlaybackTransportState()
     @Published private(set) var isDetached = false
@@ -155,6 +156,13 @@ final class PlaybackPresentationStore: ObservableObject {
         togglePauseRequest &+= 1
     }
 
+    /// A guide captures directional movement within its time grid. Menu can
+    /// return focus to the exposed playback controls without walking to day end.
+    func requestControlsFocus() {
+        guard current != nil, exposesLibrary, closeRequest == nil else { return }
+        controlsFocusRequest = UUID()
+    }
+
     func restoreInline() {
         guard current != nil, exposesLibrary, closeRequest == nil else { return }
         isMiniPlayer = false
@@ -169,6 +177,7 @@ final class PlaybackPresentationStore: ObservableObject {
             isDetached = false
             isMiniPlayer = false
             restoreRequest = nil
+            controlsFocusRequest = nil
             notice = nil
             togglePauseRequest = 0
             transport = PlaybackTransportState()
