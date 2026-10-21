@@ -4,6 +4,7 @@ import Foundation
 // SwiftUI observable state are compiled directly from the application sources.
 struct Playback { let id = UUID(); let title = "Recording fixture" }
 struct MirakurunPlaybackSelection { let id = UUID(); let title = "Live fixture" }
+struct EPGStationPlaybackSession { let id = UUID(); let title = "EPG recording fixture" }
 
 @main
 struct PlaybackPresentationCheck {
@@ -106,6 +107,42 @@ struct PlaybackPresentationCheck {
         try expect(!cancelledResult, "cancelled handoff returns without leaked continuation")
         store.didClose(second.id, request: cancelledRequest, success: true)
         try expect(store.current == nil, "stop remains valid after a waiter cancels")
+        // An origin invalidation must not discard another backend's queued item.
+        let epg = EPGStationPlaybackSession()
+        store.presentEPGStationRecording(epg)
+        try expect(store.current?.id == epg.id && store.current?.title == epg.title,
+                   "EPG recording identity and title reach the host")
+        try expect(store.current?.konomi == nil, "EPG recording does not masquerade as Konomi")
+        store.setMiniPlayer(true, for: epg.id)
+        store.setTransport(PlaybackTransportState(isPaused: true, canToggle: true), for: epg.id)
+        store.restoreInline()
+        try expect(store.current?.id == epg.id && !store.isMiniPlayer && store.transport.isPaused,
+                   "EPG restore preserves selection and pause intent")
+        store.presentMirakurun(second)
+        let epgStop = try await waitForRequest(store)
+        store.cancelSession(epg.id)
+        try expect(store.closeRequest == epgStop, "origin cancellation coalesces existing native stop")
+        store.didClose(epg.id, request: epgStop, success: true)
+        try expect(store.current?.id == second.id,
+                   "invalidated old origin preserves a queued different backend")
+
+        store.presentEPGStationRecording(epg)
+        let liveStop = try await waitForRequest(store)
+        store.cancelSession(epg.id)
+        store.cancelSession(second.id)
+        store.didClose(second.id, request: liveStop, success: true)
+        try expect(store.current == nil, "both invalidated origins cannot resurrect either session")
+
+        store.presentEPGStationRecording(epg)
+        store.setMiniPlayer(true, for: epg.id)
+        store.present(first)
+        let epgToKonomi = try await waitForRequest(store)
+        try expect(store.current?.id == epg.id, "EPG remains owned while its final bookmark flushes")
+        store.didClose(epg.id, request: epgToKonomi, success: true)
+        try expect(store.current?.id == first.id && !store.exposesLibrary,
+                   "EPG to Konomi waits for matching stop acknowledgment")
+        store.setTransport(PlaybackTransportState(isPaused: true, canToggle: true), for: epg.id)
+        try expect(store.transport == PlaybackTransportState(), "late EPG transport cannot affect successor")
         print("PASS: \(checks) playback presentation checks")
     }
 }

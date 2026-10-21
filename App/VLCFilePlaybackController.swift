@@ -96,6 +96,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
     private var smbEndConfirmed = false
     private var wantsPause = false
     private var isStopped = false
+    private var isClosingPermanently = false
     private var isSuspendedForBackground = false
     private var generation = 0
     private var isRetiringPlayer = false
@@ -189,6 +190,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
     }
 
     func attachSurface(_ view: UIView) {
+        guard !isClosingPermanently else { return }
         videoSurface = view
         player.drawable = view
     }
@@ -245,6 +247,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         onContinuousDisplayChanged: @escaping (Bool) -> Void,
         onProgress: @escaping (Double, Double?, Bool) -> Void
     ) {
+        guard !isClosingPermanently else { return }
         self.onContinuousDisplayChanged = onContinuousDisplayChanged
         self.onProgress = onProgress
 
@@ -522,6 +525,19 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         requestPlayerStop()
         holdPlayerUntilStopped()
         videoSurface = nil
+    }
+
+    /// Flush the trusted bookmark while the host still owns this session,
+    /// then wait before allowing another backend to create its decoder.
+    func stopBeforeClosing() async -> Bool {
+        isClosingPermanently = true
+        stop()
+        for _ in 0..<100 {
+            if player.state == .stopped { return true }
+            do { try await Task.sleep(for: .milliseconds(50)) }
+            catch { return false }
+        }
+        return player.state == .stopped
     }
 
     nonisolated func mediaPlayerStateChanged(_ notification: Notification) {

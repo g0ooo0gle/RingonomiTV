@@ -4,17 +4,20 @@ import SwiftUI
 enum PlaybackSession: Identifiable {
     case konomi(Playback)
     case mirakurun(MirakurunPlaybackSelection)
+    case epgStationRecording(EPGStationPlaybackSession)
 
     var id: UUID {
         switch self {
         case .konomi(let item): item.id
         case .mirakurun(let item): item.id
+        case .epgStationRecording(let item): item.id
         }
     }
     var title: String {
         switch self {
         case .konomi(let item): item.title
         case .mirakurun(let item): item.title
+        case .epgStationRecording(let item): item.title
         }
     }
     var konomi: Playback? {
@@ -47,6 +50,10 @@ final class PlaybackPresentationStore: ObservableObject {
         presentSession(.mirakurun(playback))
     }
 
+    func presentEPGStationRecording(_ playback: EPGStationPlaybackSession) {
+        presentSession(.epgStationRecording(playback))
+    }
+
     private func presentSession(_ playback: PlaybackSession?) {
         guard let current else {
             self.current = playback
@@ -67,8 +74,12 @@ final class PlaybackPresentationStore: ObservableObject {
 
     /// Connection changes can invalidate a selection still waiting for handoff.
     func cancelSession(_ id: UUID) {
-        if current?.id == id { present(nil) }
-        else if pending?.id == id { pending = nil; hasPending = true }
+        if current?.id == id {
+            // Invalidating the origin must not discard a newer selection
+            // from a different backend already waiting for this stop.
+            if !hasPending { pending = nil; hasPending = true }
+            _ = beginClosing(id)
+        } else if pending?.id == id { pending = nil; hasPending = true }
     }
 
     func setDetached(_ detached: Bool, for id: UUID) {

@@ -35,7 +35,7 @@ struct LibraryView: View {
     @State private var settingsPath: [SettingsDestination] = []
     @StateObject private var reservations = ReservationStore()
     @StateObject private var keywords = KeywordReservationStore()
-    @StateObject private var resumeStore = RecordingResumeStore()
+    @StateObject private var resumeStore = RecordingResumeStore.forApplication()
     @StateObject private var account = BackendAccountStore(storage: AccountKeychain())
     @StateObject private var liveFavorites = LiveChannelFavoritesStore()
     @State private var loadGeneration = UUID()
@@ -312,6 +312,7 @@ struct LibraryView: View {
             if playbackPresentation.exposesLibrary { playbackPresentation.toggleDetachedPause() }
         }
         .environmentObject(playbackPresentation)
+        .environmentObject(resumeStore)
         .environment(\.playbackHandoff, PlaybackHandoff(stopPrevious: { [weak playbackPresentation] in
             await playbackPresentation?.stopForAnotherPlayer() ?? true
         }))
@@ -404,6 +405,26 @@ struct LibraryView: View {
                                   onTransportChanged: { playbackPresentation.setTransport($0, for: item.id) }) { needsDisplay in
                 updateContinuousDisplay(needsDisplay, for: item.id)
             }
+        case .epgStationRecording(let session):
+            FilePlaybackView(item: session.item,
+                             closeRequest: playbackPresentation.closeRequest,
+                             restoreRequest: playbackPresentation.restoreRequest,
+                             togglePauseRequest: playbackPresentation.togglePauseRequest,
+                             isMiniPlayer: playbackPresentation.isMiniPlayer,
+                             onMiniPlayerChanged: { playbackPresentation.setMiniPlayer($0, for: session.id) },
+                             onCloseStarted: { playbackPresentation.beginClosing(session.id) },
+                             onClose: { playbackPresentation.didClose(session.id, request: $0, success: $1) },
+                             onNoticeChanged: { playbackPresentation.setNotice($0, for: session.id) },
+                             onTransportChanged: { playbackPresentation.setTransport($0, for: session.id) },
+                             onContinuousDisplayChanged: { updateContinuousDisplay($0, for: session.id) },
+                             onProgress: { position, duration, ended in
+                                 guard playbackPresentation.current?.id == session.id else { return }
+                                 resumeStore.save(session.resumeID, seconds: position, duration: duration,
+                                                  status: session.status, reachedEnd: ended)
+#if DEBUG
+                                 print("RingonomiEPGStationProgress: seconds=\(position) duration=\(duration ?? -1) ended=\(ended)")
+#endif
+                             })
         }
     }
 
