@@ -467,7 +467,7 @@ struct PlaybackView: View {
                     if let failure {
                         Text(failure).multilineTextAlignment(.center)
                         HStack(spacing: 24) {
-                            Button("再試行") {
+                            Button(closeFailure == nil ? "再試行" : "もう一度閉じる") {
                                 if closeFailure != nil { close() }
                                 else if isRecording { recordingController.retry() }
                                 else { controller.retry() }
