@@ -13,6 +13,7 @@ private struct SMBEditCredentialsContext: Identifiable {
 struct SMBLibraryView: View {
     let onOpen: (SMBConnection, SMBLibraryEntry) -> Void
     let playbackActive: Bool
+    let isConnectionInUse: (UUID) -> Bool
 
     @StateObject private var library: SMBLibraryStore
     @State private var showingAdd = false
@@ -39,10 +40,12 @@ struct SMBLibraryView: View {
 
     init(
         playbackActive: Bool = false,
+        isConnectionInUse: @escaping (UUID) -> Bool = { _ in false },
         onOpen: @escaping (SMBConnection, SMBLibraryEntry) -> Void = { _, _ in }
     ) {
         self.onOpen = onOpen
         self.playbackActive = playbackActive
+        self.isConnectionInUse = isConnectionInUse
         _library = StateObject(wrappedValue: SMBLibraryStore())
     }
 
@@ -259,9 +262,11 @@ struct SMBLibraryView: View {
             Button("認証情報を変更") {
                 beginCredentialEdit(connection)
             }
+            .disabled(isConnectionInUse(connection.id))
             Button("共有を削除", role: .destructive) {
                 pendingDelete = connection
             }
+            .disabled(isConnectionInUse(connection.id))
         } label: {
             HStack(spacing: 12) {
                 Image(systemName: "ellipsis.circle")
@@ -323,6 +328,10 @@ struct SMBLibraryView: View {
     }
 
     private func beginCredentialEdit(_ connection: SMBConnection) {
+        guard !isConnectionInUse(connection.id) else {
+            message = "この共有の再生を終了してから変更してください。"
+            return
+        }
         do {
             let credentials = try keychain.load(for: connection)
             editingContext = SMBEditCredentialsContext(
@@ -335,6 +344,9 @@ struct SMBLibraryView: View {
     }
 
     private func updateCredentials(_ credentials: SMBCredentials?, for connection: SMBConnection) -> String? {
+        guard !isConnectionInUse(connection.id) else {
+            return "この共有の再生を終了してから変更してください。"
+        }
         do {
             try keychain.save(credentials, for: connection)
             editingContext = nil
@@ -348,6 +360,10 @@ struct SMBLibraryView: View {
     }
 
     private func deleteConnection(_ connection: SMBConnection) {
+        guard !isConnectionInUse(connection.id) else {
+            message = "この共有の再生を終了してから削除してください。"
+            return
+        }
         do {
             // Remove credentials first. If this fails, leave the saved share
             // intact so the user can retry without losing its location.
@@ -600,7 +616,11 @@ struct SMBFolderView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            if directory.loading {
+            if playbackActive, directory.loadedPath == nil {
+                Text("再生を終了すると、フォルダーを読み込めます。")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if directory.loading {
                 loadingView
             } else if directory.cancelled {
                 cancelledView
@@ -640,7 +660,7 @@ struct SMBFolderView: View {
             }
             ToolbarItem(placement: .automatic) {
                 Button("更新") { reload() }
-                    .disabled(directory.loading)
+                    .disabled(directory.loading || playbackActive)
             }
         }
         .toolbarBackground(.visible, for: .navigationBar)
@@ -903,6 +923,10 @@ struct SMBFolderView: View {
     }
 
     private func navigate(to newPath: SMBRelativePath) {
+        guard !playbackActive else {
+            message = "再生を終了してからフォルダーを移動してください。"
+            return
+        }
         guard newPath != currentPath else { return }
         restoreEntryPath = nil
         focusedEntryID = nil

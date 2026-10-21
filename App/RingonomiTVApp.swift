@@ -36,6 +36,7 @@ struct LibraryView: View {
     @StateObject private var reservations = ReservationStore()
     @StateObject private var keywords = KeywordReservationStore()
     @StateObject private var resumeStore = RecordingResumeStore.forApplication()
+    @StateObject private var smbResumeStore = SMBResumeStore.playbackStore()
     @StateObject private var account = BackendAccountStore(storage: AccountKeychain())
     @StateObject private var liveFavorites = LiveChannelFavoritesStore()
     @State private var loadGeneration = UUID()
@@ -313,6 +314,7 @@ struct LibraryView: View {
         }
         .environmentObject(playbackPresentation)
         .environmentObject(resumeStore)
+        .environmentObject(smbResumeStore)
         .environment(\.playbackHandoff, PlaybackHandoff(stopPrevious: { [weak playbackPresentation] in
             await playbackPresentation?.stopForAnotherPlayer() ?? true
         }))
@@ -405,6 +407,30 @@ struct LibraryView: View {
                                   onTransportChanged: { playbackPresentation.setTransport($0, for: item.id) }) { needsDisplay in
                 updateContinuousDisplay(needsDisplay, for: item.id)
             }
+        case .smb(let session):
+            SMBResumePlaybackView(item: session.item,
+                                  closeRequest: playbackPresentation.closeRequest,
+                                  restoreRequest: playbackPresentation.restoreRequest,
+                                  togglePauseRequest: playbackPresentation.togglePauseRequest,
+                                  isMiniPlayer: playbackPresentation.isMiniPlayer,
+                                  onMiniPlayerChanged: { playbackPresentation.setMiniPlayer($0, for: session.id) },
+                                  onCloseStarted: { playbackPresentation.beginClosing(session.id) },
+                                  onClose: { playbackPresentation.didClose(session.id, request: $0, success: $1) },
+                                  onNoticeChanged: { playbackPresentation.setNotice($0, for: session.id) },
+                                  onTransportChanged: { playbackPresentation.setTransport($0, for: session.id) },
+                                  onBeginning: {
+                                      guard playbackPresentation.current?.id == session.id else { return }
+                                      smbResumeStore.remove(session.resumeID)
+                                  },
+                                  onContinuousDisplayChanged: { updateContinuousDisplay($0, for: session.id) },
+                                  onProgress: { position, duration, ended in
+                                      guard playbackPresentation.current?.id == session.id else { return }
+                                      smbResumeStore.save(session.resumeID, seconds: position,
+                                                          duration: duration, reachedEnd: ended)
+#if DEBUG
+                                      print("RingonomiSMBProgress: seconds=\(position) duration=\(duration ?? -1) ended=\(ended)")
+#endif
+                                  })
         case .epgStationRecording(let session):
             FilePlaybackView(item: session.item,
                              closeRequest: playbackPresentation.closeRequest,

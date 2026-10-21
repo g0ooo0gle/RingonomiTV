@@ -4,6 +4,7 @@ enum PlaybackBackend {
     case konomi
     case mirakurun
     case epgStationRecording
+    case smb
 }
 
 /// The selected backend keeps its own decoder and transport semantics.
@@ -11,12 +12,14 @@ enum PlaybackSession: Identifiable {
     case konomi(Playback)
     case mirakurun(MirakurunPlaybackSelection)
     case epgStationRecording(EPGStationPlaybackSession)
+    case smb(SMBPlaybackSession)
 
     var id: UUID {
         switch self {
         case .konomi(let item): item.id
         case .mirakurun(let item): item.id
         case .epgStationRecording(let item): item.id
+        case .smb(let item): item.id
         }
     }
     var title: String {
@@ -24,6 +27,7 @@ enum PlaybackSession: Identifiable {
         case .konomi(let item): item.title
         case .mirakurun(let item): item.title
         case .epgStationRecording(let item): item.title
+        case .smb(let item): item.title
         }
     }
     var backend: PlaybackBackend {
@@ -31,7 +35,11 @@ enum PlaybackSession: Identifiable {
         case .konomi: .konomi
         case .mirakurun: .mirakurun
         case .epgStationRecording: .epgStationRecording
+        case .smb: .smb
         }
+    }
+    var smbConnectionID: UUID? {
+        if case .smb(let item) = self { item.connectionID } else { nil }
     }
     var konomi: Playback? {
         if case .konomi(let item) = self { item } else { nil }
@@ -65,6 +73,15 @@ final class PlaybackPresentationStore: ObservableObject {
 
     func presentEPGStationRecording(_ playback: EPGStationPlaybackSession) {
         presentSession(.epgStationRecording(playback))
+    }
+
+    func presentSMB(_ playback: SMBPlaybackSession) {
+        presentSession(.smb(playback))
+    }
+
+    /// A queued file already owns its connection snapshot, even before decoding.
+    func usesSMBConnection(_ id: UUID) -> Bool {
+        current?.smbConnectionID == id || pending?.smbConnectionID == id
     }
 
     private func presentSession(_ playback: PlaybackSession?) {
