@@ -70,196 +70,196 @@ struct LibraryView: View {
         colorStyle.palette(for: appearanceMode.preferredColorScheme ?? systemColorScheme)
     }
     var body: some View {
-        TabView(selection: $selectedTab) {
-            NavigationStack {
-                LiveChannelLibraryView(
-                    channels: channels, loading: loading, error: channelError,
-                    configured: !effectiveAddress.isEmpty, favorites: liveFavorites,
-                    onRefresh: { Task { await refresh() } },
-                    onPlay: { channel in
-                        do {
-                            let client = try RingonomiClient.connected(to: effectiveAddress)
-                            playback = Playback(client: client, channelID: channel.displayChannelId, recordingID: nil, title: channel.name, initialQuality: quality)
-                        } catch { self.error = error.localizedDescription }
+        VStack(spacing: 0) {
+            TabView(selection: $selectedTab) {
+                NavigationStack {
+                    LiveChannelLibraryView(
+                        channels: channels, loading: loading, error: channelError,
+                        configured: !effectiveAddress.isEmpty, favorites: liveFavorites,
+                        onRefresh: { Task { await refresh() } },
+                        onPlay: { channel in
+                            do {
+                                let client = try RingonomiClient.connected(to: effectiveAddress)
+                                playback = Playback(client: client, channelID: channel.displayChannelId, recordingID: nil, title: channel.name, initialQuality: quality)
+                            } catch { self.error = error.localizedDescription }
+                        }
+                    )
+                    .id(connectionKey)
+                }.tabItem { Label("ライブ", systemImage: "tv") }.tag(0)
+                RecordingLibraryView(address: effectiveAddress, resumeStore: resumeStore) { recording, client in
+                    openRecording(recording, client: client)
+                }.id(connectionKey).tabItem { Label("録画", systemImage: "film") }.tag(1)
+                ProgramGuideView(address: effectiveAddress, reservations: reservations) { channel in
+                    do {
+                        let client = try RingonomiClient.connected(to: effectiveAddress)
+                        playback = Playback(client: client, channelID: channel.displayChannelId,
+                                            recordingID: nil, title: channel.name, initialQuality: quality)
+                    } catch { self.error = error.localizedDescription }
+                }.id(connectionKey).tabItem { Label("番組表", systemImage: "calendar") }.tag(2)
+                ReservationListView(address: effectiveAddress, store: reservations, keywords: keywords)
+                    .id(connectionKey)
+                    .tabItem { Label("予約", systemImage: "record.circle") }.tag(3)
+                NavigationStack(path: $settingsPath) {
+                    Form {
+                        TextField("視聴サーバーURL（ポート番号を含む）", text: $draftAddress)
+                            .textInputAutocapitalization(.never).autocorrectionDisabled()
+                            .disabled(reservations.saving || keywords.saving || account.isBusy)
+                        Picker("画質", selection: $quality) {
+                            ForEach(["1080p", "720p", "540p", "360p"], id: \.self) { Text($0) }
+                        }
+                        Toggle("番組表に副チャンネルを表示", isOn: $guideSubchannels)
+                        Button("接続して読み込む") { applyConnection() }
+                            .disabled(loading || account.isBusy || reservations.saving || keywords.saving)
+                        Text("Apple TVのIPではなく、視聴サーバーのURLを入力してください。")
+                        if loading { ProgressView() }
+                        if let error { Text(error).foregroundStyle(.red) }
+                        if let channelError { Text(channelError).foregroundStyle(.red) }
+                        AppearanceSettingsFields(modeValue: $appearanceValue, styleValue: $colorStyleValue)
+                        AppSection("Mirakurun") {
+                            NavigationLink("Mirakurunの番組表") { MirakurunProgramGuideView() }
+                            NavigationLink("Mirakurun直接視聴") {
+                                MirakurunServiceView()
+                            }
+                            Text("Mirakurunのサービス一覧から、raw TSを直接再生します。")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        AppSection("EPGStation") {
+                            NavigationLink("EPGStationの番組表") { EPGStationProgramGuideView() }
+                            NavigationLink("EPGStationの録画") {
+                                EPGStationLibraryView()
+                            }
+                            NavigationLink("EPGStationの予約") {
+                                EPGStationReservationListView()
+                            }
+                            NavigationLink("EPGStationのキーワード予約") { EPGStationRuleListView() }
+                            Text("EPGStationの録画一覧から、保存済みの動画を再生します。")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        AppSection("ファイルライブラリ") {
+                            NavigationLink("SMB共有の動画") { SMBPlaybackLibraryView() }
+                        }
+                        AccountSettingsView(address: effectiveAddress, account: account)
+                            .disabled(reservations.saving || keywords.saving)
                     }
-                )
-                .id(connectionKey)
-            }.tabItem { Label("ライブ", systemImage: "tv") }.tag(0)
-            RecordingLibraryView(address: effectiveAddress, resumeStore: resumeStore) { recording, client in
-                openRecording(recording, client: client)
-            }.id(connectionKey).tabItem { Label("録画", systemImage: "film") }.tag(1)
-            ProgramGuideView(address: effectiveAddress, reservations: reservations) { channel in
-                do {
-                    let client = try RingonomiClient.connected(to: effectiveAddress)
-                    playback = Playback(client: client, channelID: channel.displayChannelId,
-                                        recordingID: nil, title: channel.name, initialQuality: quality)
-                } catch { self.error = error.localizedDescription }
-            }.id(connectionKey).tabItem { Label("番組表", systemImage: "calendar") }.tag(2)
-            ReservationListView(address: effectiveAddress, store: reservations, keywords: keywords)
-                .id(connectionKey)
-                .tabItem { Label("予約", systemImage: "record.circle") }.tag(3)
-            NavigationStack(path: $settingsPath) {
-                Form {
-                    TextField("視聴サーバーURL（ポート番号を含む）", text: $draftAddress)
-                        .textInputAutocapitalization(.never).autocorrectionDisabled()
-                        .disabled(reservations.saving || keywords.saving || account.isBusy)
-                    Picker("画質", selection: $quality) {
-                        ForEach(["1080p", "720p", "540p", "360p"], id: \.self) { Text($0) }
-                    }
-                    Toggle("番組表に副チャンネルを表示", isOn: $guideSubchannels)
-                    Button("接続して読み込む") { applyConnection() }
-                        .disabled(loading || account.isBusy || reservations.saving || keywords.saving)
-                    Text("Apple TVのIPではなく、視聴サーバーのURLを入力してください。")
-                    if loading { ProgressView() }
-                    if let error { Text(error).foregroundStyle(.red) }
-                    if let channelError { Text(channelError).foregroundStyle(.red) }
-                    AppearanceSettingsFields(modeValue: $appearanceValue, styleValue: $colorStyleValue)
-                    AppSection("Mirakurun") {
-                        NavigationLink("Mirakurunの番組表") { MirakurunProgramGuideView() }
-                        NavigationLink("Mirakurun直接視聴") {
+                    .navigationFormViewport()
+                    .appNavigationTitle(Text("設定"))
+                    .navigationDestination(for: SettingsDestination.self) { destination in
+                        switch destination {
+                        case .mirakurun:
                             MirakurunServiceView()
-                        }
-                        Text("Mirakurunのサービス一覧から、raw TSを直接再生します。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    AppSection("EPGStation") {
-                        NavigationLink("EPGStationの番組表") { EPGStationProgramGuideView() }
-                        NavigationLink("EPGStationの録画") {
+                        case .mirakurunGuide:
+                            MirakurunProgramGuideView()
+                        case .epgstation:
                             EPGStationLibraryView()
-                        }
-                        NavigationLink("EPGStationの予約") {
+                        case .epgstationReservations:
                             EPGStationReservationListView()
+                        case .epgstationRules:
+                            EPGStationRuleListView()
+                        case .epgstationGuide:
+                            EPGStationProgramGuideView()
+                        case .smb:
+                            SMBPlaybackLibraryView()
                         }
-                        NavigationLink("EPGStationのキーワード予約") { EPGStationRuleListView() }
-                        Text("EPGStationの録画一覧から、保存済みの動画を再生します。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    AppSection("ファイルライブラリ") {
-                        NavigationLink("SMB共有の動画") { SMBPlaybackLibraryView() }
-                    }
-                    AccountSettingsView(address: effectiveAddress, account: account)
-                        .disabled(reservations.saving || keywords.saving)
-                }
-                .navigationFormViewport()
-                .appNavigationTitle(Text("設定"))
-                .navigationDestination(for: SettingsDestination.self) { destination in
-                    switch destination {
-                    case .mirakurun:
-                        MirakurunServiceView()
-                    case .mirakurunGuide:
-                        MirakurunProgramGuideView()
-                    case .epgstation:
-                        EPGStationLibraryView()
-                    case .epgstationReservations:
-                        EPGStationReservationListView()
-                    case .epgstationRules:
-                        EPGStationRuleListView()
-                    case .epgstationGuide:
-                        EPGStationProgramGuideView()
-                    case .smb:
-                        SMBPlaybackLibraryView()
                     }
                 }
+                .tabItem { Label("設定", systemImage: "gear") }.tag(4)
             }
-            .tabItem { Label("設定", systemImage: "gear") }.tag(4)
-        }
-        .onAppear {
-            if !loadedAddressDraft { draftAddress = address; loadedAddressDraft = true }
-#if DEBUG
-            let arguments = ProcessInfo.processInfo.arguments
-            if arguments.contains("--show-smb") {
-                selectedTab = 4
-                settingsPath = [.smb]
-            }
-            if arguments.contains("--show-mirakurun") || arguments.contains("--play-mirakurun-service") {
-                selectedTab = 4
-                settingsPath = [.mirakurun]
-            }
-            if arguments.contains("--show-mirakurun-guide") {
-                selectedTab = 4
-                settingsPath = [.mirakurunGuide]
-            }
-            if arguments.contains("--show-epgstation") || arguments.contains("--play-epgstation-recording") {
-                selectedTab = 4
-                settingsPath = [.epgstation]
-            }
-            if arguments.contains("--show-epgstation-reservations") || arguments.contains("--epgstation-reservation") {
-                selectedTab = 4
-                settingsPath = [.epgstationReservations]
-            }
-            if arguments.contains("--show-epgstation-rules") || arguments.contains("--epgstation-rule") {
-                selectedTab = 4
-                settingsPath = [.epgstationRules]
-            }
-            if arguments.contains("--show-epgstation-guide") {
-                selectedTab = 4
-                settingsPath = [.epgstationGuide]
-            }
-#endif
-        }
-        .task(id: connectionKey) {
-            channels = []
-            channelError = nil
-            liveFavorites.configure(address: effectiveAddress)
-            playback = nil
-            reservations.invalidateConnection()
-            keywords.invalidateConnection()
-            if effectiveAddress.isEmpty { selectedTab = 4 }
-            else {
-                async let reservationReload: () = reservations.refresh(address: effectiveAddress)
-                async let keywordReload: () = keywords.refresh(address: effectiveAddress)
-                await refresh()
-                _ = await (reservationReload, keywordReload)
-#if DEBUG
-                if ProcessInfo.processInfo.arguments.contains("--show-recordings") { selectedTab = 1 }
-                if ProcessInfo.processInfo.arguments.contains("--show-guide") { selectedTab = 2 }
-                if ProcessInfo.processInfo.arguments.contains("--show-reservations") { selectedTab = 3 }
-                if ProcessInfo.processInfo.arguments.contains("--show-settings") { selectedTab = 4 }
-                if !accountCheckHandled, ProcessInfo.processInfo.arguments.contains("--test-account-invalid-login") {
-                    accountCheckHandled = true
+            .onAppear {
+                if !loadedAddressDraft { draftAddress = address; loadedAddressDraft = true }
+    #if DEBUG
+                let arguments = ProcessInfo.processInfo.arguments
+                if arguments.contains("--show-smb") {
                     selectedTab = 4
-                    // A new fictional username cannot lock out an existing
-                    // account. No password or token is written to the log.
-                    await account.login(address: effectiveAddress,
-                                        username: "ringonomi-check-" + UUID().uuidString,
-                                        password: UUID().uuidString)
-                    let expectedFailure = account.error?.contains("HTTP 401") == true
-                    print("RingonomiAccountLogin: expected401=\(expectedFailure)")
+                    settingsPath = [.smb]
                 }
-#endif
+                if arguments.contains("--show-mirakurun") || arguments.contains("--play-mirakurun-service") {
+                    selectedTab = 4
+                    settingsPath = [.mirakurun]
+                }
+                if arguments.contains("--show-mirakurun-guide") {
+                    selectedTab = 4
+                    settingsPath = [.mirakurunGuide]
+                }
+                if arguments.contains("--show-epgstation") || arguments.contains("--play-epgstation-recording") {
+                    selectedTab = 4
+                    settingsPath = [.epgstation]
+                }
+                if arguments.contains("--show-epgstation-reservations") || arguments.contains("--epgstation-reservation") {
+                    selectedTab = 4
+                    settingsPath = [.epgstationReservations]
+                }
+                if arguments.contains("--show-epgstation-rules") || arguments.contains("--epgstation-rule") {
+                    selectedTab = 4
+                    settingsPath = [.epgstationRules]
+                }
+                if arguments.contains("--show-epgstation-guide") {
+                    selectedTab = 4
+                    settingsPath = [.epgstationGuide]
+                }
+    #endif
             }
-#if DEBUG
-            let arguments = ProcessInfo.processInfo.arguments
-            if arguments.contains("--show-mirakurun") || arguments.contains("--play-mirakurun-service") {
-                selectedTab = 4
-                settingsPath = [.mirakurun]
+            .task(id: connectionKey) {
+                channels = []
+                channelError = nil
+                liveFavorites.configure(address: effectiveAddress)
+                playback = nil
+                reservations.invalidateConnection()
+                keywords.invalidateConnection()
+                if effectiveAddress.isEmpty { selectedTab = 4 }
+                else {
+                    async let reservationReload: () = reservations.refresh(address: effectiveAddress)
+                    async let keywordReload: () = keywords.refresh(address: effectiveAddress)
+                    await refresh()
+                    _ = await (reservationReload, keywordReload)
+    #if DEBUG
+                    if ProcessInfo.processInfo.arguments.contains("--show-recordings") { selectedTab = 1 }
+                    if ProcessInfo.processInfo.arguments.contains("--show-guide") { selectedTab = 2 }
+                    if ProcessInfo.processInfo.arguments.contains("--show-reservations") { selectedTab = 3 }
+                    if ProcessInfo.processInfo.arguments.contains("--show-settings") { selectedTab = 4 }
+                    if !accountCheckHandled, ProcessInfo.processInfo.arguments.contains("--test-account-invalid-login") {
+                        accountCheckHandled = true
+                        selectedTab = 4
+                        // A new fictional username cannot lock out an existing
+                        // account. No password or token is written to the log.
+                        await account.login(address: effectiveAddress,
+                                            username: "ringonomi-check-" + UUID().uuidString,
+                                            password: UUID().uuidString)
+                        let expectedFailure = account.error?.contains("HTTP 401") == true
+                        print("RingonomiAccountLogin: expected401=\(expectedFailure)")
+                    }
+    #endif
+                }
+    #if DEBUG
+                let arguments = ProcessInfo.processInfo.arguments
+                if arguments.contains("--show-mirakurun") || arguments.contains("--play-mirakurun-service") {
+                    selectedTab = 4
+                    settingsPath = [.mirakurun]
+                }
+                if arguments.contains("--show-mirakurun-guide") {
+                    selectedTab = 4
+                    settingsPath = [.mirakurunGuide]
+                }
+                if arguments.contains("--show-epgstation") || arguments.contains("--play-epgstation-recording") {
+                    selectedTab = 4
+                    settingsPath = [.epgstation]
+                }
+                if arguments.contains("--show-epgstation-reservations") || arguments.contains("--epgstation-reservation") {
+                    selectedTab = 4
+                    settingsPath = [.epgstationReservations]
+                }
+                if arguments.contains("--show-epgstation-rules") || arguments.contains("--epgstation-rule") {
+                    selectedTab = 4
+                    settingsPath = [.epgstationRules]
+                }
+    #endif
             }
-            if arguments.contains("--show-mirakurun-guide") {
-                selectedTab = 4
-                settingsPath = [.mirakurunGuide]
+            .task(id: effectiveAddress) {
+                await account.restore(address: effectiveAddress)
             }
-            if arguments.contains("--show-epgstation") || arguments.contains("--play-epgstation-recording") {
-                selectedTab = 4
-                settingsPath = [.epgstation]
-            }
-            if arguments.contains("--show-epgstation-reservations") || arguments.contains("--epgstation-reservation") {
-                selectedTab = 4
-                settingsPath = [.epgstationReservations]
-            }
-            if arguments.contains("--show-epgstation-rules") || arguments.contains("--epgstation-rule") {
-                selectedTab = 4
-                settingsPath = [.epgstationRules]
-            }
-#endif
-        }
-        .task(id: effectiveAddress) {
-            await account.restore(address: effectiveAddress)
-        }
-        .disabled(playback != nil && !playbackPresentation.exposesLibrary)
-        .accessibilityHidden(playback != nil && !playbackPresentation.exposesLibrary)
-        .safeAreaInset(edge: .bottom) {
+            .disabled(playback != nil && !playbackPresentation.exposesLibrary)
+            .accessibilityHidden(playback != nil && !playbackPresentation.exposesLibrary)
             if playbackPresentation.exposesLibrary, let item = playback {
                 VStack(alignment: .leading, spacing: 12) {
                     if let notice = playbackPresentation.notice {
@@ -282,6 +282,8 @@ struct LibraryView: View {
                 .padding(24)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(.ultraThinMaterial)
+                .focusSection()
+                .onExitCommand { playbackPresentation.restoreInline() }
             }
         }
         .overlay {
