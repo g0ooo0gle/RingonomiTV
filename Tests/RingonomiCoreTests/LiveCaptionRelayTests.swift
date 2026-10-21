@@ -1,4 +1,5 @@
 import Foundation
+@preconcurrency import Network
 import XCTest
 @testable import RingonomiCore
 
@@ -8,6 +9,7 @@ private final class LiveCaptionRelayFixtureProtocol: URLProtocol {
         var body = Data()
         var headers: [String: String] = [:]
         var hold = false
+        var holdHeaders = false
     }
 
     private final class State: @unchecked Sendable {
@@ -69,6 +71,7 @@ private final class LiveCaptionRelayFixtureProtocol: URLProtocol {
 
     override func startLoading() {
         let stub = Self.state.response(for: request)
+        if stub.holdHeaders { return }
         guard let url = request.url,
               let response = HTTPURLResponse(url: url, statusCode: stub.status,
                                              httpVersion: "HTTP/1.1", headerFields: stub.headers) else {
@@ -82,6 +85,62 @@ private final class LiveCaptionRelayFixtureProtocol: URLProtocol {
 
     override func stopLoading() {
         Self.state.stopped()
+    }
+}
+
+/// Uses an actual TCP close rather than relying on URLSession's buffered
+/// AsyncBytes cancellation, so the fixture matches a decoder abandoning GET.
+private final class LiveCaptionLoopbackClient: @unchecked Sendable {
+    private let connection: NWConnection
+    private let request: Data
+
+    init(_ url: URL) throws {
+        guard let host = url.host, let port = url.port,
+              let endpoint = NWEndpoint.Port(rawValue: UInt16(port)) else {
+            throw URLError(.badURL)
+        }
+        connection = NWConnection(host: NWEndpoint.Host(host), port: endpoint, using: .tcp)
+        request = Data("GET \(url.path) HTTP/1.1\r\nHost: \(host):\(port)\r\nConnection: close\r\n\r\n".utf8)
+        connection.start(queue: DispatchQueue(label: "fixture.live-caption-client"))
+    }
+
+    deinit { connection.cancel() }
+    func cancel() { connection.cancel() }
+
+    func responseStatus() async -> Int? {
+        let deadline = Task { [connection] in
+            do { try await Task.sleep(for: .seconds(2)) } catch { return }
+            connection.cancel()
+        }
+        defer { deadline.cancel() }
+        return await withTaskCancellationHandler {
+            do {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                    connection.send(content: request, completion: .contentProcessed { error in
+                        if let error { continuation.resume(throwing: error) }
+                        else { continuation.resume() }
+                    })
+                }
+                var header = Data()
+                while header.count < 4096 {
+                    let data: Data = try await withCheckedThrowingContinuation { continuation in
+                        connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { data, _, _, error in
+                            if let error { continuation.resume(throwing: error) }
+                            else { continuation.resume(returning: data ?? Data()) }
+                        }
+                    }
+                    guard !data.isEmpty else { return nil }
+                    header.append(data)
+                    if let end = header.range(of: Data("\r\n\r\n".utf8)) {
+                        guard let text = String(data: header[..<end.lowerBound], encoding: .ascii),
+                              let first = text.components(separatedBy: "\r\n").first else { return nil }
+                        let fields = first.split(separator: " ")
+                        return fields.count >= 2 ? Int(fields[1]) : nil
+                    }
+                }
+            } catch { }
+            return nil
+        } onCancel: { self.connection.cancel() }
     }
 }
 
@@ -119,8 +178,22 @@ final class LiveCaptionRelayTests: XCTestCase, @unchecked Sendable {
         return URLSession(configuration: configuration)
     }
 
-    private func startRelay() async throws -> (LiveCaptionRelay, URL) {
-        let relay = LiveCaptionRelay(client: try client()) { _ in await Task.yield() }
+    private func startRelay(usingStandardTransport: Bool = false) async throws -> (LiveCaptionRelay, URL) {
+        let relay: LiveCaptionRelay
+        if usingStandardTransport {
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.protocolClasses = [LiveCaptionRelayFixtureProtocol.self]
+            configuration.connectionProxyDictionary = [:]
+            configuration.httpCookieStorage = nil
+            configuration.urlCredentialStorage = nil
+            configuration.urlCache = nil
+            let session = URLSession(configuration: configuration)
+            relay = LiveCaptionRelay(client: try RingonomiClient(address: "https://fixture.test/"),
+                                     session: session) { _ in await Task.yield() }
+            addTeardownBlock { session.invalidateAndCancel() }
+        } else {
+            relay = LiveCaptionRelay(client: try client()) { _ in await Task.yield() }
+        }
         addTeardownBlock { await relay.stop() }
         return (relay, try await relay.start(source: liveSource))
     }
@@ -183,8 +256,8 @@ final class LiveCaptionRelayTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(requests.first?.value(forHTTPHeaderField: "Accept"), "video/mp2t")
         XCTAssertEqual(requests.first?.value(forHTTPHeaderField: "Accept-Encoding"), "identity")
         XCTAssertNil(requests.first?.value(forHTTPHeaderField: "Cookie"))
-        let failure = await relay.lastFailure
-        XCTAssertNil(failure)
+        let failure = await waitForFailure(relay)
+        XCTAssertEqual(failure, .connection, "a finite upstream body is an unexpected EOF for a live TS")
     }
 
     func testHEADDoesNotOpenAuthenticatedUpstream() async throws {
@@ -234,6 +307,115 @@ final class LiveCaptionRelayTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(LiveCaptionRelayFixtureProtocol.requests.count, 1)
         let failure = await waitForFailure(relay)
         XCTAssertEqual(failure, .connection)
+    }
+
+    func testMalformedLoopbackRequestDoesNotRecordUpstreamFailure() async throws {
+        LiveCaptionRelayFixtureProtocol.reset { _ in
+            .init(body: Data([0x01]), headers: ["Content-Type": "video/mp2t"])
+        }
+        let (relay, local) = try await startRelay()
+        let session = playerSession()
+        defer { session.invalidateAndCancel() }
+
+        var components = URLComponents(url: local, resolvingAgainstBaseURL: false)!
+        components.path = "/wrong-route"
+        let (data, response) = try await session.data(from: components.url!)
+        XCTAssertTrue(data.isEmpty)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 502)
+        try await Task.sleep(for: .milliseconds(20))
+        let failure = await relay.lastFailure
+        XCTAssertNil(failure)
+    }
+
+    func testOldGETFailureCannotOverwriteReplacementGET() async throws {
+        LiveCaptionRelayFixtureProtocol.reset { _ in
+            LiveCaptionRelayFixtureProtocol.requests.count == 1
+                ? .init(body: Data([0x01]), headers: ["Content-Type": "video/mp2t"])
+                : .init(body: Data([0x02]), headers: ["Content-Type": "video/mp2t"], hold: true)
+        }
+        let (relay, local) = try await startRelay()
+        let first = try LiveCaptionLoopbackClient(local)
+        defer { first.cancel() }
+        let firstStatus = await first.responseStatus()
+        XCTAssertEqual(firstStatus, 200)
+        let oldFailure = await waitForFailure(relay)
+        XCTAssertEqual(oldFailure, .connection)
+
+        let second = try LiveCaptionLoopbackClient(local)
+        defer { second.cancel() }
+        let secondStatus = await second.responseStatus()
+        XCTAssertEqual(secondStatus, 200)
+        let replacementFailure = await relay.lastFailure
+        XCTAssertNil(replacementFailure)
+    }
+
+    func testLocalClientCancellationCanBeReplacedWithoutFailure() async throws {
+        try await assertLocalCancellationReleasesBody(usingStandardTransport: false)
+    }
+
+    func testStandardTransportLocalCancellationReleasesBodyAndLease() async throws {
+        try await assertLocalCancellationReleasesBody(usingStandardTransport: true)
+    }
+
+    private func assertLocalCancellationReleasesBody(usingStandardTransport: Bool) async throws {
+        LiveCaptionRelayFixtureProtocol.reset { _ in
+            .init(body: Data([0x01]), headers: ["Content-Type": "video/mp2t"], hold: true)
+        }
+        let (relay, local) = try await startRelay(usingStandardTransport: usingStandardTransport)
+        let first = try LiveCaptionLoopbackClient(local)
+        let firstStatus = await first.responseStatus()
+        XCTAssertEqual(firstStatus, 200)
+        first.cancel()
+        try await waitForStopCount(1)
+        XCTAssertGreaterThanOrEqual(LiveCaptionRelayFixtureProtocol.stopCount, 1)
+        let firstFailure = await relay.lastFailure
+        XCTAssertNil(firstFailure)
+        try await assertNewGETSucceedsWithoutFailure(relay, local: local)
+    }
+
+    func testLocalCancellationBeforeUpstreamHeadersReleasesLease() async throws {
+        try await assertLocalCancellationReleasesHeaders(usingStandardTransport: false)
+    }
+
+    func testStandardTransportLocalCancellationBeforeHeadersReleasesLease() async throws {
+        try await assertLocalCancellationReleasesHeaders(usingStandardTransport: true)
+    }
+
+    private func assertLocalCancellationReleasesHeaders(usingStandardTransport: Bool) async throws {
+        LiveCaptionRelayFixtureProtocol.reset { _ in
+            LiveCaptionRelayFixtureProtocol.requests.count == 1
+                ? .init(headers: ["Content-Type": "video/mp2t"], holdHeaders: true)
+                : .init(body: Data([0x01]), headers: ["Content-Type": "video/mp2t"], hold: true)
+        }
+        let (relay, local) = try await startRelay(usingStandardTransport: usingStandardTransport)
+        let first = try LiveCaptionLoopbackClient(local)
+        let pending = Task { await first.responseStatus() }
+        try await waitForRequestCount(1)
+        XCTAssertEqual(LiveCaptionRelayFixtureProtocol.requests.count, 1)
+        first.cancel()
+        _ = await pending.value
+        try await waitForStopCount(1)
+        XCTAssertGreaterThanOrEqual(LiveCaptionRelayFixtureProtocol.stopCount, 1)
+        let firstFailure = await relay.lastFailure
+        XCTAssertNil(firstFailure)
+        try await assertNewGETSucceedsWithoutFailure(relay, local: local)
+    }
+
+    private func assertNewGETSucceedsWithoutFailure(_ relay: LiveCaptionRelay, local: URL) async throws {
+        // The actor must release the abandoned GET, not keep returning 503.
+        for _ in 0..<100 {
+            let retry = try LiveCaptionLoopbackClient(local)
+            let status = await retry.responseStatus()
+            if status == 200 {
+                let failure = await relay.lastFailure
+                XCTAssertNil(failure)
+                retry.cancel()
+                return
+            }
+            retry.cancel()
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTFail("Replacement GET never received an upstream response")
     }
 
     func testStopCancelsPendingAuthenticatedStream() async throws {

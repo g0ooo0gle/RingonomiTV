@@ -6,14 +6,17 @@ private actor PlaybackRelayFixture: PlaybackMediaRelaying {
     let local: URL
     let waits: Bool
     let failsStartup: Bool
+    nonisolated let failurePolicy: PlaybackMediaFailurePolicy
     var lastFailure: HTTPMediaRelayFailure?
     private(set) var starts = 0
     private(set) var stops = 0
     private var continuation: CheckedContinuation<URL, Error>?
-    init(_ id: Int, waits: Bool = false, failsStartup: Bool = false) {
+    init(_ id: Int, waits: Bool = false, failsStartup: Bool = false,
+         failurePolicy: PlaybackMediaFailurePolicy = .playerMayRecover) {
         local = URL(string: "http://127.0.0.1:12345/media/fixture-\(id).bin")!
         self.waits = waits
         self.failsStartup = failsStartup
+        self.failurePolicy = failurePolicy
     }
     func start(source: URL, kind: HTTPMediaResourceKind) async throws -> URL {
         starts += 1
@@ -137,6 +140,20 @@ final class PlaybackMediaConnectionTests: XCTestCase {
         await owner.stop()
     }
 
+    func testTerminalConnectionFailureIsReportedForPersistentRelay() async throws {
+        let relay = PlaybackRelayFixture(1, failurePolicy: .connectionIsTerminal)
+        let owner = PlaybackMediaConnection(makeRelay: { relay }, failurePollInterval: .milliseconds(10))
+        var errors: [HTTPMediaRelayFailure] = []
+        _ = try await owner.resolve(source: source, kind: .media) { errors.append($0) }
+        await relay.setFailure(.connection)
+        for _ in 0..<100 {
+            if !errors.isEmpty { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertEqual(errors, [.connection])
+        await owner.stop()
+    }
+
     func testInvalidatedGenerationDoesNotDeliverLateFailure() async throws {
         let relay = PlaybackRelayFixture(1)
         let owner = PlaybackMediaConnection(makeRelay: { relay }, failurePollInterval: .milliseconds(10))
@@ -144,6 +161,17 @@ final class PlaybackMediaConnectionTests: XCTestCase {
         await owner.stop()
         await relay.setFailure(.unsupportedPlaylist)
         try await Task.sleep(for: .milliseconds(25))
+    }
+
+    func testStoppedPersistentRelayDoesNotDeliverLateConnectionFailure() async throws {
+        let relay = PlaybackRelayFixture(1, failurePolicy: .connectionIsTerminal)
+        let owner = PlaybackMediaConnection(makeRelay: { relay }, failurePollInterval: .milliseconds(10))
+        var errors: [HTTPMediaRelayFailure] = []
+        _ = try await owner.resolve(source: source, kind: .media) { errors.append($0) }
+        await owner.stop()
+        await relay.setFailure(.connection)
+        try await Task.sleep(for: .milliseconds(30))
+        XCTAssertTrue(errors.isEmpty)
     }
 
     func testDescriptionsHideServerAndSession() {

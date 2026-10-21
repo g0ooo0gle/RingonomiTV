@@ -1,9 +1,23 @@
 import Foundation
 
+internal enum PlaybackMediaFailurePolicy: Sendable {
+    /// Playlist/segment relays leave recoverable transport errors to the
+    /// native player, which can request the next segment by itself.
+    case playerMayRecover
+    /// A single persistent media resource has no later segment to recover
+    /// from, so a transport failure is terminal for this generation.
+    case connectionIsTerminal
+}
+
 internal protocol PlaybackMediaRelaying: Sendable {
     func start(source: URL, kind: HTTPMediaResourceKind) async throws -> URL
     func stop() async
     var lastFailure: HTTPMediaRelayFailure? { get async }
+    var failurePolicy: PlaybackMediaFailurePolicy { get }
+}
+
+extension PlaybackMediaRelaying {
+    var failurePolicy: PlaybackMediaFailurePolicy { .playerMayRecover }
 }
 
 extension HTTPMediaRelay: PlaybackMediaRelaying {}
@@ -70,6 +84,7 @@ public final class PlaybackMediaConnection: CustomStringConvertible,
                 let local = try await relay.start(source: source, kind: kind)
                 try Task.checkCancellation()
                 guard generation == expected else { throw CancellationError() }
+                let failurePolicy = relay.failurePolicy
                 monitor = Task { @MainActor [weak self] in
                     while !Task.isCancelled {
                         do { try await Task.sleep(for: self?.failurePollInterval ?? .milliseconds(250)) }
@@ -77,11 +92,15 @@ public final class PlaybackMediaConnection: CustomStringConvertible,
                         guard let self, self.generation == expected else { return }
                         let failure = await relay.lastFailure
                         guard self.generation == expected, !Task.isCancelled else { return }
-                        // Players may recover a missed segment or a transient
-                        // transport error. Only nonrecoverable relay policy
-                        // errors replace the decoder's existing error handling.
-                        if failure == .authenticationRequired || failure == .unsupportedPlaylist {
-                            onFailure(failure!)
+                        // Players may recover a missed HLS segment or a
+                        // transient playlist transport error. A persistent
+                        // live TS relay has no later segment to recover from,
+                        // so its connection failure is terminal too.
+                        if let failure,
+                           failure == .authenticationRequired
+                            || failure == .unsupportedPlaylist
+                            || (failure == .connection && failurePolicy == .connectionIsTerminal) {
+                            onFailure(failure)
                             return
                         }
                     }
