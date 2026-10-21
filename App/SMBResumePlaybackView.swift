@@ -18,6 +18,7 @@ struct SMBResumePlaybackView: View {
     let onContinuousDisplayChanged: (Bool) -> Void
     let onProgress: (Double, Double?, Bool) -> Void
 
+    @Environment(\.scenePhase) private var scenePhase
     @State private var selectedItem: FilePlaybackSelection?
     @FocusState private var resumeFocused: Bool
 
@@ -95,6 +96,14 @@ struct SMBResumePlaybackView: View {
         .frame(maxWidth: 900)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24))
         .defaultFocus($resumeFocused, true)
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { resumeFocused = false; return }
+            // The shared overlay does not create a new focus environment as
+            // a modal did. Wait until it is mounted, then choose its first action.
+            await Task.yield()
+            guard !Task.isCancelled, selectedItem == nil, closeRequest == nil else { return }
+            resumeFocused = true
+        }
         .disabled(closeRequest != nil)
         .onExitCommand { cancelChoice() }
     }
