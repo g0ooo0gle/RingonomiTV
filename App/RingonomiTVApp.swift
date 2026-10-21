@@ -274,6 +274,7 @@ struct LibraryView: View {
                         Button("全画面へ戻る") { playbackPresentation.restoreInline() }
                         Button("再生を終了") { playbackPresentation.present(nil) }
                     }
+                    .disabled(playbackPresentation.closeRequest != nil)
                 }
                 // Keep actions left of the system's default lower-right PiP.
                 .frame(maxWidth: 1_100, alignment: .leading)

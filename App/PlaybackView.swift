@@ -48,7 +48,7 @@ struct PlaybackView: View {
     let onContinuousDisplayChanged: (Bool) -> Void
     let closeRequest: UUID?
     let restoreRequest: UUID?
-    let togglePauseRequest: UUID?
+    let togglePauseRequest: UInt64
     let onClose: (Bool) -> Void
     let onDetachedChanged: (Bool) -> Void
     let onPictureInPictureNoticeChanged: (String?) -> Void
@@ -79,7 +79,7 @@ struct PlaybackView: View {
     @State private var commentReload = 0
     @StateObject private var commentStore = RecordingCommentStore()
     init(item: Playback, resumeStore: RecordingResumeStore,
-         closeRequest: UUID?, restoreRequest: UUID?, togglePauseRequest: UUID?,
+         closeRequest: UUID?, restoreRequest: UUID?, togglePauseRequest: UInt64,
          onClose: @escaping (Bool) -> Void,
          onDetachedChanged: @escaping (Bool) -> Void,
          onPictureInPictureNoticeChanged: @escaping (String?) -> Void,
@@ -190,12 +190,14 @@ struct PlaybackView: View {
         .onChange(of: pictureInPictureTransport, initial: true) { _, state in
             onTransportChanged(state)
         }
-        .onChange(of: togglePauseRequest) { _, request in
-            guard request != nil, isRecording, !isClosing else { return }
+        .onChange(of: togglePauseRequest) { previous, current in
+            guard isRecording, !isClosing,
+                  !(current &- previous).isMultiple(of: 2) else { return }
             recordingController.togglePictureInPicturePause()
         }
         .onChange(of: restoreRequest) { _, request in
-            if request != nil { recordingController.pictureInPicture.returnToInline() }
+            guard request != nil, closeRequest == nil, !isClosing else { return }
+            recordingController.pictureInPicture.returnToInline()
         }
         .onChange(of: recordingController.pictureInPicture.endedWhileDetached) { _, ended in
             if ended != nil, failure == nil { close() }

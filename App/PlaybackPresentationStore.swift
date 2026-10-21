@@ -7,7 +7,7 @@ final class PlaybackPresentationStore: ObservableObject {
     @Published private(set) var current: Playback?
     @Published private(set) var closeRequest: UUID?
     @Published private(set) var restoreRequest: UUID?
-    @Published private(set) var togglePauseRequest: UUID?
+    @Published private(set) var togglePauseRequest: UInt64 = 0
     @Published private(set) var transport = PlaybackTransportState()
     @Published private(set) var isDetached = false
     @Published private(set) var notice: String?
@@ -43,10 +43,15 @@ final class PlaybackPresentationStore: ObservableObject {
 
     func togglePictureInPicturePause() {
         guard current != nil, isDetached, closeRequest == nil, transport.canToggle else { return }
-        togglePauseRequest = UUID()
+        // SwiftUI can coalesce multiple inputs into one render. A counter
+        // preserves their parity instead of losing all but the last UUID.
+        togglePauseRequest &+= 1
     }
 
-    func restoreInline() { restoreRequest = UUID() }
+    func restoreInline() {
+        guard current != nil, isDetached, closeRequest == nil else { return }
+        restoreRequest = UUID()
+    }
 
     func didClose(_ id: UUID, success: Bool) {
         guard current?.id == id else { return }
@@ -56,7 +61,7 @@ final class PlaybackPresentationStore: ObservableObject {
             isDetached = false
             restoreRequest = nil
             notice = nil
-            togglePauseRequest = nil
+            togglePauseRequest = 0
             transport = PlaybackTransportState()
         }
         pending = nil
