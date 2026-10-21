@@ -57,6 +57,8 @@ struct PlaybackView: View {
     let onPictureInPictureNoticeChanged: (String?) -> Void
     let onTransportChanged: (PlaybackTransportState) -> Void
     @State private var isClosing = false
+    @State private var closeFailure: String?
+    @State private var closeTask: Task<Void, Never>?
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var quality: String
@@ -113,7 +115,7 @@ struct PlaybackView: View {
     @StateObject private var recordingController = RecordingPlaybackController()
     private var isRecording: Bool { item.recordingID != nil }
     private var isLoading: Bool { isRecording ? recordingController.isLoading : controller.isLoading }
-    private var failure: String? { isRecording ? recordingController.failure : controller.failure }
+    private var failure: String? { closeFailure ?? (isRecording ? recordingController.failure : controller.failure) }
     private var audioOptions: [PlaybackAudioOption] { isRecording ? recordingController.audioOptions : controller.audioOptions }
     private var selectedAudioID: String? { isRecording ? recordingController.selectedAudioID : controller.selectedAudioID }
     private var audioSelectionError: String? { isRecording ? recordingController.audioSelectionError : controller.audioSelectionError }
@@ -141,7 +143,7 @@ struct PlaybackView: View {
 #endif
     private var needsContinuousDisplay: Bool {
 #if canImport(TVVLCKit)
-        hasStarted && failure == nil && !(isRecording ? recordingController.isPaused : controller.isPaused)
+        hasStarted && !isClosing && failure == nil && !(isRecording ? recordingController.isPaused : controller.isPaused)
 #else
         false
 #endif
@@ -280,6 +282,8 @@ struct PlaybackView: View {
 #if DEBUG
             print("RingonomiPlaybackDismissed")
 #endif
+            closeTask?.cancel()
+            closeTask = nil
             flushPosition()
             commentStore.cancel()
             liveCommentStore.cancel()
@@ -378,8 +382,20 @@ struct PlaybackView: View {
                 onClose(request, success)
             }
         } else {
-            controller.stop()
-            onClose(request, true)
+            closeTask = Task { @MainActor in
+                let stopped = await controller.stopBeforeClosing()
+                guard !Task.isCancelled else { onClose(request, false); return }
+#if DEBUG
+                print("RingonomiLiveClose: stopped=\(stopped)")
+#endif
+                if !stopped {
+                    isClosing = false
+                    closeFailure = "再生の終了を確認できませんでした。もう一度閉じてください。"
+                }
+                onClose(request, stopped)
+                if !stopped { onMiniPlayerChanged(false) }
+                closeTask = nil
+            }
         }
 #else
         onClose(request, true)
@@ -438,10 +454,13 @@ struct PlaybackView: View {
                 .onTapGesture { revealBottomPanel() }
                 .accessibilityLabel("再生メニュー")
                 .accessibilityHidden(!surfaceIsFocusable)
-            if isLoading || failure != nil {
+            if isClosing || isLoading || failure != nil {
                 Color.black.ignoresSafeArea()
                 VStack(spacing: 24) {
-                    if isLoading {
+                    if isClosing {
+                        ProgressView().scaleEffect(1.6)
+                        Text("再生を終了しています…")
+                    } else if isLoading {
                         ProgressView().scaleEffect(1.6)
                         Text("映像と音声を準備しています…")
                     }
@@ -449,7 +468,9 @@ struct PlaybackView: View {
                         Text(failure).multilineTextAlignment(.center)
                         HStack(spacing: 24) {
                             Button("再試行") {
-                                if isRecording { recordingController.retry() } else { controller.retry() }
+                                if closeFailure != nil { close() }
+                                else if isRecording { recordingController.retry() }
+                                else { controller.retry() }
                             }.focused($playbackFocus, equals: .retry)
                             Button("閉じる", action: close)
                                 .focused($playbackFocus, equals: .close)
@@ -459,6 +480,7 @@ struct PlaybackView: View {
                             .focused($playbackFocus, equals: .close)
                     }
                 }.padding(60).frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .disabled(isClosing)
             }
             // Preserve the controls' identity while handing focus back to the
             // remote surface. Removing a focused panel during a transition can

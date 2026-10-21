@@ -394,7 +394,7 @@ struct MirakurunPlaybackView: View {
         onContinuousDisplayChanged(false)
         closeTask = Task { @MainActor in
             let stopped = await controller.stopBeforeClosing()
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else { onClose(request, false); return }
 #if DEBUG
             print("RingonomiMirakurunClose: stopped=\(stopped)")
 #endif
