@@ -20,6 +20,7 @@ private enum EPGStationLivePlaybackFocus: Hashable {
     case playPause
     case quality
     case viewport
+    case miniPlayer
     case menuClose
     case loadingClose
     case retry
@@ -31,14 +32,21 @@ private enum EPGStationLivePlaybackFocus: Hashable {
 
 /// Direct EPGStation live playback.
 ///
-/// This view intentionally owns neither a server session nor a VOD playback
-/// model.  EPGStation supplies the stream URL and the existing VLC
-/// live controller owns decoder readiness, pause state, and teardown.
+/// The store owns EPGStation requests and keep-alive. The VLC controller owns
+/// decoder readiness, pause state, and teardown without a KonomiTV VOD model.
 struct EPGStationLivePlaybackView: View {
     let item: EPGStationLivePlaybackSelection
+    let closeRequest: UUID?
+    let restoreRequest: UUID?
+    let togglePauseRequest: UInt64
+    let isMiniPlayer: Bool
+    let onMiniPlayerChanged: (Bool) -> Void
+    let onCloseStarted: () -> UUID?
+    let onClose: (UUID, Bool) -> Void
+    let onNoticeChanged: (String?) -> Void
+    let onTransportChanged: (PlaybackTransportState) -> Void
     let onContinuousDisplayChanged: (Bool) -> Void
 
-    @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @FocusState private var focus: EPGStationLivePlaybackFocus?
     @StateObject private var store = EPGStationLivePlaybackStore()
@@ -47,6 +55,9 @@ struct EPGStationLivePlaybackView: View {
     @State private var qualityCardRequested = false
     @State private var hasAppeared = false
     @State private var isClosing = false
+    @State private var hasStartedClosing = false
+    @State private var closeFailure: String?
+    @State private var closeTask: Task<Void, Never>?
     @State private var isBackgrounded = false
     @State private var controllerSuspended = false
     @StateObject private var viewportSettings = VideoViewportSettings()
@@ -54,8 +65,28 @@ struct EPGStationLivePlaybackView: View {
     @StateObject private var controller = PlaybackController()
 #endif
 
+    private var acceptsInlineInput: Bool { !isMiniPlayer && !isClosing }
+    private var readyFocus: EPGStationLivePlaybackFocus {
+        if effectiveFailure != nil { return .retry }
+        if effectiveLoading { return .loadingClose }
+        if store.awaitingQualitySelection { return .qualityPrompt }
+        return .surface
+    }
+    private var transport: PlaybackTransportState {
+#if canImport(TVVLCKit)
+        return PlaybackTransportState(isPaused: controller.isPaused,
+            canToggle: hasAppeared && isMiniPlayer && !hasStartedClosing && !isBackgrounded &&
+                !store.isSuspended && playerHasStream && !effectiveLoading && effectiveFailure == nil)
+#else
+        return PlaybackTransportState()
+#endif
+    }
+    private var playbackNotice: String? {
+        isMiniPlayer ? effectiveFailure ?? (effectiveLoading ? "映像と音声を準備しています…" : nil) : nil
+    }
+
     private var qualityCardVisible: Bool {
-        qualityCardRequested &&
+        acceptsInlineInput && qualityCardRequested &&
         !effectiveLoading &&
         effectiveFailure == nil &&
         !store.qualities.isEmpty &&
@@ -63,7 +94,7 @@ struct EPGStationLivePlaybackView: View {
     }
 
     private var effectiveLoading: Bool {
-        guard effectiveFailure == nil else { return false }
+        guard !hasStartedClosing, effectiveFailure == nil else { return false }
         if store.isLoading { return true }
 #if canImport(TVVLCKit)
         return displayedURL != nil && controller.isLoading
@@ -73,6 +104,7 @@ struct EPGStationLivePlaybackView: View {
     }
 
     private var effectiveFailure: String? {
+        if let closeFailure { return closeFailure }
         if let error = store.error { return error }
 #if canImport(TVVLCKit)
         // During a replacement request the old controller failure can still
@@ -88,12 +120,13 @@ struct EPGStationLivePlaybackView: View {
     }
 
     private var menuIsVisible: Bool {
-        menuVisible && !qualityCardVisible && playerHasStream && !effectiveLoading && effectiveFailure == nil
+        acceptsInlineInput && menuVisible && !qualityCardVisible && playerHasStream && !effectiveLoading && effectiveFailure == nil
             && !viewportSettings.isPresented
     }
 
     private var needsContinuousDisplay: Bool {
         guard hasAppeared,
+              !hasStartedClosing,
               !isBackgrounded,
               !store.isSuspended,
               effectiveFailure == nil,
@@ -140,13 +173,18 @@ struct EPGStationLivePlaybackView: View {
                 .zIndex(1)
 
             qualityPrompt
-                .opacity(store.awaitingQualitySelection && !qualityCardVisible ? 1 : 0)
-                .disabled(!store.awaitingQualitySelection || qualityCardVisible || viewportSettings.isPresented)
-                .allowsHitTesting(store.awaitingQualitySelection && !qualityCardVisible && !viewportSettings.isPresented)
-                .accessibilityHidden(!store.awaitingQualitySelection || qualityCardVisible || viewportSettings.isPresented)
+                .opacity(acceptsInlineInput && store.awaitingQualitySelection && !qualityCardVisible ? 1 : 0)
+                .disabled(!acceptsInlineInput || !store.awaitingQualitySelection || qualityCardVisible || viewportSettings.isPresented)
+                .allowsHitTesting(acceptsInlineInput && store.awaitingQualitySelection && !qualityCardVisible && !viewportSettings.isPresented)
+                .accessibilityHidden(!acceptsInlineInput || !store.awaitingQualitySelection || qualityCardVisible || viewportSettings.isPresented)
                 .zIndex(2)
 
-            if effectiveLoading {
+            if isClosing {
+                ProgressView("再生を終了しています…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(.black)
+                    .zIndex(6)
+            } else if effectiveLoading {
                 loadingOverlay
                     .zIndex(3)
             } else if let effectiveFailure {
@@ -163,6 +201,7 @@ struct EPGStationLivePlaybackView: View {
                 .zIndex(4)
 
             if viewportSettings.isPresented,
+               acceptsInlineInput,
                !effectiveLoading,
                effectiveFailure == nil,
                !isBackgrounded,
@@ -177,6 +216,15 @@ struct EPGStationLivePlaybackView: View {
         .onAppear {
             guard !hasAppeared else { return }
             hasAppeared = true
+            if hasStartedClosing {
+                if isClosing, closeTask == nil {
+                    isClosing = false
+                    closeFailure = "再生の終了を確認できませんでした。もう一度閉じてください。"
+                    focus = .retry
+                }
+                return
+            }
+            if closeRequest != nil { close(); return }
             if isBackgrounded {
                 resumePlaybackFromBackground()
             } else {
@@ -186,6 +234,8 @@ struct EPGStationLivePlaybackView: View {
         }
         .onDisappear {
             hasAppeared = false
+            closeTask?.cancel()
+            closeTask = nil
             viewportSettings.close()
             onContinuousDisplayChanged(false)
             if !isBackgrounded && !isClosing {
@@ -196,6 +246,35 @@ struct EPGStationLivePlaybackView: View {
             }
         }
         .onExitCommand(perform: handleExitCommand)
+        .onChange(of: closeRequest, initial: true) { _, request in
+            if request != nil { close() }
+        }
+        .onChange(of: isMiniPlayer) { _, mini in
+            viewportSettings.close()
+            qualityCardRequested = false
+            menuVisible = false
+            focus = !mini && !isClosing ? readyFocus : nil
+#if DEBUG
+            print("RingonomiEPGStationLiveMini: active=\(mini)")
+#endif
+        }
+        .onChange(of: restoreRequest) { _, request in
+            guard request != nil, closeRequest == nil, acceptsInlineInput else { return }
+            focus = readyFocus
+        }
+        .onChange(of: transport, initial: true) { _, value in onTransportChanged(value) }
+        .onChange(of: playbackNotice, initial: true) { _, value in onNoticeChanged(value) }
+        .onChange(of: effectiveFailure) { _, failure in
+            if failure != nil, isMiniPlayer { onMiniPlayerChanged(false) }
+            if acceptsInlineInput { focus = readyFocus }
+        }
+        .onChange(of: togglePauseRequest) { previous, current in
+            guard isMiniPlayer, !hasStartedClosing,
+                  !(current &- previous).isMultiple(of: 2) else { return }
+#if canImport(TVVLCKit)
+            togglePause()
+#endif
+        }
 #if canImport(UIKit)
         // UIApplication notifications are the primary lifecycle boundary on
         // tvOS.  scenePhase below is only a fallback for delayed transitions.
@@ -220,25 +299,27 @@ struct EPGStationLivePlaybackView: View {
             }
         }
         .onChange(of: store.isLoading, initial: true) { _, loading in
+            guard !hasStartedClosing else { return }
             if effectiveFailure != nil {
                 viewportSettings.close()
-                focus = .retry
+                focus = acceptsInlineInput ? .retry : nil
             } else if loading {
                 viewportSettings.close()
                 qualityCardRequested = false
                 menuVisible = false
-                focus = .loadingClose
+                focus = acceptsInlineInput ? .loadingClose : nil
             } else if store.awaitingQualitySelection {
                 viewportSettings.close()
                 qualityCardRequested = false
                 menuVisible = false
-                focus = .qualityPrompt
+                focus = acceptsInlineInput ? .qualityPrompt : nil
             } else if !effectiveLoading, playerHasStream {
-                focus = .surface
+                focus = acceptsInlineInput ? .surface : nil
             }
             updateContinuousDisplay()
         }
         .onChange(of: store.error) { _, newError in
+            guard !hasStartedClosing else { return }
             guard newError != nil else { return }
             viewportSettings.close()
             qualityCardRequested = false
@@ -251,10 +332,11 @@ struct EPGStationLivePlaybackView: View {
                 controllerSuspended = true
             }
 #endif
-            focus = .retry
+            focus = acceptsInlineInput ? .retry : nil
             updateContinuousDisplay()
         }
         .onChange(of: store.stream) { _, newStream in
+            guard !hasStartedClosing else { return }
             guard newStream == nil else { return }
             viewportSettings.close()
             // A new address/load has no playable stream.  Do not leave the
@@ -267,6 +349,7 @@ struct EPGStationLivePlaybackView: View {
 #endif
         }
         .onChange(of: store.streamRevision) { _, _ in
+            guard !hasStartedClosing else { return }
             guard let stream = store.stream else { return }
             viewportSettings.close()
             let oldURL = displayedURL
@@ -295,33 +378,35 @@ struct EPGStationLivePlaybackView: View {
 #endif
             controllerSuspended = false
             if effectiveLoading {
-                focus = .loadingClose
+                focus = acceptsInlineInput ? .loadingClose : nil
             } else if effectiveFailure != nil {
-                focus = .retry
+                focus = acceptsInlineInput ? .retry : nil
             } else if oldURL != stream.url || wasControllerSuspended {
-                focus = .surface
+                focus = acceptsInlineInput ? .surface : nil
             }
             updateContinuousDisplay()
         }
 #if canImport(TVVLCKit)
         .onChange(of: controller.isLoading, initial: true) { _, loading in
+            guard !hasStartedClosing else { return }
             if effectiveFailure != nil {
                 viewportSettings.close()
                 // Suspending a failed decoder can publish loading after
                 // the error actions have appeared.  Keep their focus rather
                 // than targeting a loading button that is no longer shown.
-                focus = .retry
+                focus = acceptsInlineInput ? .retry : nil
             } else if loading {
                 viewportSettings.close()
                 qualityCardRequested = false
                 menuVisible = false
-                focus = .loadingClose
+                focus = acceptsInlineInput ? .loadingClose : nil
             } else if !effectiveLoading, playerHasStream {
-                focus = .surface
+                focus = acceptsInlineInput ? .surface : nil
             }
             updateContinuousDisplay()
         }
         .onChange(of: controller.failure) { _, newFailure in
+            guard !hasStartedClosing else { return }
             guard newFailure != nil else {
                 updateContinuousDisplay()
                 return
@@ -330,7 +415,7 @@ struct EPGStationLivePlaybackView: View {
             store.stopKeepAlive()
             qualityCardRequested = false
             menuVisible = false
-            focus = effectiveFailure == nil ? .loadingClose : .retry
+            focus = acceptsInlineInput ? readyFocus : nil
             updateContinuousDisplay()
         }
         .onChange(of: controller.isPaused) { _, _ in
@@ -352,7 +437,7 @@ struct EPGStationLivePlaybackView: View {
         }
 #if canImport(TVVLCKit)
         .onPlayPauseCommand {
-            guard !viewportSettings.isPresented,
+            guard acceptsInlineInput, !hasStartedClosing, !viewportSettings.isPresented,
                   effectiveFailure == nil,
                   displayedURL != nil else { return }
             togglePause()
@@ -375,16 +460,16 @@ struct EPGStationLivePlaybackView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .ignoresSafeArea()
             .focusable(
-                playerHasStream && !effectiveLoading && effectiveFailure == nil && !menuIsVisible && !qualityCardVisible && !viewportSettings.isPresented,
+                acceptsInlineInput && playerHasStream && !effectiveLoading && effectiveFailure == nil && !menuIsVisible && !qualityCardVisible && !viewportSettings.isPresented,
                 interactions: .activate
             )
             .focusEffectDisabled()
             .focused($focus, equals: .surface)
-            .allowsHitTesting(playerHasStream && !effectiveLoading && effectiveFailure == nil && !menuIsVisible && !qualityCardVisible && !viewportSettings.isPresented)
-            .accessibilityHidden(!playerHasStream || effectiveLoading || effectiveFailure != nil || menuIsVisible || qualityCardVisible || viewportSettings.isPresented)
+            .allowsHitTesting(acceptsInlineInput && playerHasStream && !effectiveLoading && effectiveFailure == nil && !menuIsVisible && !qualityCardVisible && !viewportSettings.isPresented)
+            .accessibilityHidden(!acceptsInlineInput || !playerHasStream || effectiveLoading || effectiveFailure != nil || menuIsVisible || qualityCardVisible || viewportSettings.isPresented)
             .accessibilityLabel("EPGStationライブ再生")
             .onMoveCommand { direction in
-                guard playerHasStream,
+                guard acceptsInlineInput, playerHasStream,
                       !effectiveLoading,
                       effectiveFailure == nil,
                       !viewportSettings.isPresented else { return }
@@ -439,6 +524,9 @@ struct EPGStationLivePlaybackView: View {
                 Button("画面", action: openViewportPanel)
                     .focused($focus, equals: .viewport)
                     .disabled(effectiveLoading || effectiveFailure != nil || !playerHasStream)
+
+                Button("小窓") { onMiniPlayerChanged(true) }
+                    .focused($focus, equals: .miniPlayer)
 
                 Button("閉じる", action: close)
                     .focused($focus, equals: .menuClose)
@@ -519,7 +607,8 @@ struct EPGStationLivePlaybackView: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(4)
             HStack(spacing: 24) {
-                Button("再試行") {
+                Button(closeFailure == nil ? "再試行" : "もう一度閉じる") {
+                    if closeFailure != nil { close(); return }
                     qualityCardRequested = false
                     menuVisible = false
 #if canImport(TVVLCKit)
@@ -611,7 +700,7 @@ struct EPGStationLivePlaybackView: View {
     }
 
     private func showMenu() {
-        guard playerHasStream,
+        guard acceptsInlineInput, playerHasStream,
               !effectiveLoading,
               effectiveFailure == nil,
               !viewportSettings.isPresented else { return }
@@ -630,7 +719,7 @@ struct EPGStationLivePlaybackView: View {
     }
 
     private func showQualityCard() {
-        guard !store.qualities.isEmpty,
+        guard acceptsInlineInput, !hasStartedClosing, !store.qualities.isEmpty,
               !effectiveLoading,
               effectiveFailure == nil,
               !viewportSettings.isPresented else { return }
@@ -666,6 +755,7 @@ struct EPGStationLivePlaybackView: View {
     }
 
     private func selectQuality(_ quality: EPGStationLiveQuality) {
+        guard !hasStartedClosing, acceptsInlineInput else { return }
         if store.selectedQuality?.id == quality.id, store.stream != nil, store.error == nil {
             closeQualityCard()
             return
@@ -684,7 +774,8 @@ struct EPGStationLivePlaybackView: View {
 
 #if canImport(TVVLCKit)
     private func togglePause() {
-        guard !effectiveLoading, effectiveFailure == nil, displayedURL != nil else { return }
+        guard !hasStartedClosing, !isBackgrounded, !store.isSuspended,
+              !effectiveLoading, effectiveFailure == nil, displayedURL != nil else { return }
         if controller.isPaused,
            let selectedQuality = store.selectedQuality,
            selectedQuality.format == .hls {
@@ -706,6 +797,7 @@ struct EPGStationLivePlaybackView: View {
 #endif
 
     private func handleExitCommand() {
+        guard acceptsInlineInput else { return }
         // One Menu press performs exactly one transition: card -> panel,
         // panel -> surface, surface -> dismiss.
         if viewportSettings.isPresented {
@@ -722,17 +814,34 @@ struct EPGStationLivePlaybackView: View {
     }
 
     private func close() {
-        guard !isClosing else { return }
+        guard !isClosing, let request = onCloseStarted() else { return }
+        hasStartedClosing = true
         isClosing = true
         qualityCardRequested = false
         menuVisible = false
+        focus = nil
         viewportSettings.close()
         onContinuousDisplayChanged(false)
         store.stop()
+        closeTask = Task { @MainActor in
 #if canImport(TVVLCKit)
-        controller.stop()
+            let stopped = await controller.stopBeforeClosing()
+#else
+            let stopped = true
 #endif
-        dismiss()
+            guard !Task.isCancelled else { onClose(request, false); return }
+#if DEBUG
+            print("RingonomiEPGStationLiveClose: stopped=\(stopped)")
+#endif
+            if !stopped {
+                isClosing = false
+                closeFailure = "再生の終了を確認できませんでした。もう一度閉じてください。"
+                focus = isMiniPlayer ? nil : .retry
+            }
+            onClose(request, stopped)
+            if !stopped { onMiniPlayerChanged(false) }
+            closeTask = nil
+        }
     }
 
     private func updateContinuousDisplay() {
@@ -740,7 +849,7 @@ struct EPGStationLivePlaybackView: View {
     }
 
     private func suspendPlaybackForBackground() {
-        guard hasAppeared, !isClosing, !isBackgrounded else { return }
+        guard hasAppeared, !hasStartedClosing, !isBackgrounded else { return }
         isBackgrounded = true
         viewportSettings.close()
         qualityCardRequested = false
@@ -761,7 +870,7 @@ struct EPGStationLivePlaybackView: View {
 #if canImport(UIKit)
         guard UIApplication.shared.applicationState == .active else { return }
 #endif
-        guard hasAppeared, isBackgrounded, !isClosing else { return }
+        guard hasAppeared, isBackgrounded, !hasStartedClosing else { return }
         isBackgrounded = false
         store.resumeFromBackground()
         updateContinuousDisplay()

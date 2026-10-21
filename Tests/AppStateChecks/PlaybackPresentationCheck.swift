@@ -5,6 +5,7 @@ import Foundation
 struct Playback { let id = UUID(); let title = "Recording fixture" }
 struct MirakurunPlaybackSelection { let id = UUID(); let title = "Live fixture" }
 struct EPGStationPlaybackSession { let id = UUID(); let title = "EPG recording fixture" }
+struct EPGStationLivePlaybackSelection { let id = UUID(); let title = "EPG live fixture" }
 struct SMBPlaybackSession {
     let id = UUID(); let title = "SMB file fixture"
     let connectionID: UUID
@@ -225,6 +226,45 @@ struct PlaybackPresentationCheck {
         store.didClose(smb.id, request: choiceReplacement, success: true)
         try expect(store.current?.id == epg.id && !store.usesSMBConnection(shareA),
                    "SMB choice handoff cannot strand queued recording")
+        let epgLive = EPGStationLivePlaybackSelection()
+        store.presentEPGStationLive(epgLive)
+        let recordingToLive = try await waitForRequest(store)
+        store.cancelSessions(for: .epgStationRecording)
+        store.didClose(epg.id, request: recordingToLive, success: true)
+        try expect(store.current?.id == epgLive.id && store.current?.title == epgLive.title,
+                   "recording invalidation preserves queued EPG live selection")
+        try expect(store.current?.backend == .epgStationLive && store.current?.konomi == nil,
+                   "EPG live has separate backend ownership")
+        store.setMiniPlayer(true, for: epgLive.id)
+        store.setTransport(PlaybackTransportState(isPaused: true, canToggle: true), for: epgLive.id)
+        store.toggleDetachedPause()
+        try expect(store.togglePauseRequest == 1, "EPG live mini uses common transport")
+        store.restoreInline()
+        try expect(store.current?.id == epgLive.id && !store.isMiniPlayer && store.transport.isPaused,
+                   "EPG live full restore retains decoder and pause intent")
+        store.presentSMB(smb)
+        let liveToSMB = try await waitForRequest(store)
+        store.cancelSessions(for: .epgStationLive)
+        store.didClose(epgLive.id, request: liveToSMB, success: true)
+        try expect(store.current?.id == smb.id, "EPG live connection invalidation preserves queued SMB")
+        store.setNotice("late EPG live", for: epgLive.id)
+        store.setTransport(PlaybackTransportState(isPaused: true, canToggle: true), for: epgLive.id)
+        try expect(store.notice == nil && store.transport == PlaybackTransportState(),
+                   "closed EPG live callbacks cannot affect SMB successor")
+        store.presentEPGStationLive(epgLive)
+        let queuedLive = try await waitForRequest(store)
+        store.cancelSessions(for: .epgStationLive)
+        store.didClose(smb.id, request: queuedLive, success: true)
+        try expect(store.current == nil, "EPG live address change cancels pending live selection")
+        store.presentEPGStationLive(epgLive)
+        store.cancelSessions(for: .epgStationRecording)
+        try expect(store.current?.id == epgLive.id && store.closeRequest == nil,
+                   "recording-only cancellation leaves current EPG live running")
+        store.presentEPGStationLive(EPGStationLivePlaybackSelection())
+        let bothLive = try await waitForRequest(store)
+        store.cancelSessions(for: .epgStationLive)
+        store.didClose(epgLive.id, request: bothLive, success: true)
+        try expect(store.current == nil, "EPG live connection invalidates both current and pending")
         print("PASS: \(checks) playback presentation checks")
     }
 }

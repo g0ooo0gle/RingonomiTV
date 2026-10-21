@@ -4,6 +4,7 @@ enum PlaybackBackend {
     case konomi
     case mirakurun
     case epgStationRecording
+    case epgStationLive
     case smb
 }
 
@@ -12,6 +13,7 @@ enum PlaybackSession: Identifiable {
     case konomi(Playback)
     case mirakurun(MirakurunPlaybackSelection)
     case epgStationRecording(EPGStationPlaybackSession)
+    case epgStationLive(EPGStationLivePlaybackSelection)
     case smb(SMBPlaybackSession)
 
     var id: UUID {
@@ -19,6 +21,7 @@ enum PlaybackSession: Identifiable {
         case .konomi(let item): item.id
         case .mirakurun(let item): item.id
         case .epgStationRecording(let item): item.id
+        case .epgStationLive(let item): item.id
         case .smb(let item): item.id
         }
     }
@@ -27,6 +30,7 @@ enum PlaybackSession: Identifiable {
         case .konomi(let item): item.title
         case .mirakurun(let item): item.title
         case .epgStationRecording(let item): item.title
+        case .epgStationLive(let item): item.title
         case .smb(let item): item.title
         }
     }
@@ -35,6 +39,7 @@ enum PlaybackSession: Identifiable {
         case .konomi: .konomi
         case .mirakurun: .mirakurun
         case .epgStationRecording: .epgStationRecording
+        case .epgStationLive: .epgStationLive
         case .smb: .smb
         }
     }
@@ -73,6 +78,10 @@ final class PlaybackPresentationStore: ObservableObject {
 
     func presentEPGStationRecording(_ playback: EPGStationPlaybackSession) {
         presentSession(.epgStationRecording(playback))
+    }
+
+    func presentEPGStationLive(_ playback: EPGStationLivePlaybackSelection) {
+        presentSession(.epgStationLive(playback))
     }
 
     func presentSMB(_ playback: SMBPlaybackSession) {

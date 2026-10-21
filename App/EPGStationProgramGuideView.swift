@@ -19,9 +19,9 @@ struct EPGStationProgramGuideView: View {
     @State private var pendingReservation: EPGStationGuideSelection?
     @State private var reservationRoute: EPGStationGuideSelection?
     @State private var pendingPlayback: EPGStationLivePlaybackSelection?
-    @State private var playback: EPGStationLivePlaybackSelection?
+    @State private var requestedPlaybackID: UUID?
+    @EnvironmentObject private var playbackPresentation: PlaybackPresentationStore
     @StateObject private var store = EPGStationProgramGuideStore()
-    @StateObject private var playbackIdleTimer = PlaybackIdleTimer()
     @FocusState private var refreshFocused: Bool
 
 #if DEBUG
@@ -111,7 +111,8 @@ struct EPGStationProgramGuideView: View {
             pendingReservation = nil
             reservationRoute = nil
             pendingPlayback = nil
-            playback = nil
+            requestedPlaybackID = nil
+            playbackPresentation.cancelSessions(for: .epgStationLive)
             draftAddress = next
             inputError = nil
             dayOffset = 0
@@ -156,21 +157,11 @@ struct EPGStationProgramGuideView: View {
                 }
             )
         }
-        .fullScreenCover(item: $playback, onDismiss: {
-            playbackIdleTimer.setNeedsContinuousDisplay(false)
-            returnFocusRevision += 1
-        }) { item in
-            PlaybackHandoffView {
-                EPGStationLivePlaybackView(item: item) { needsDisplay in
-                    guard playback?.id == item.id else { return }
-                    playbackIdleTimer.setNeedsContinuousDisplay(needsDisplay)
-                }
-            }
-        }
-        .onChange(of: playback?.id) { _, id in
-            if id == nil {
-                playbackIdleTimer.setNeedsContinuousDisplay(false)
-            }
+        .onChange(of: playbackPresentation.current?.id) { previous, _ in
+            guard let requestedPlaybackID, previous == requestedPlaybackID else { return }
+            self.requestedPlaybackID = nil
+            // A successor owns the visible screen and its origin focus.
+            if playbackPresentation.current == nil { returnFocusRevision += 1 }
         }
         .sheet(item: $reservationRoute, onDismiss: {
             reservationRoute = nil
@@ -386,8 +377,9 @@ struct EPGStationProgramGuideView: View {
         self.pendingPlayback = nil
         if let pendingReservation {
             reservationRoute = pendingReservation
-        } else if let pendingPlayback {
-            playback = pendingPlayback
+        } else if let pendingPlayback, pendingPlayback.address == effectiveAddress {
+            requestedPlaybackID = pendingPlayback.id
+            playbackPresentation.presentEPGStationLive(pendingPlayback)
         } else {
             returnFocusRevision += 1
         }

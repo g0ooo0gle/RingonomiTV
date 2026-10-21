@@ -407,6 +407,19 @@ struct LibraryView: View {
                                   onTransportChanged: { playbackPresentation.setTransport($0, for: item.id) }) { needsDisplay in
                 updateContinuousDisplay(needsDisplay, for: item.id)
             }
+        case .epgStationLive(let item):
+            EPGStationLivePlaybackView(item: item,
+                                      closeRequest: playbackPresentation.closeRequest,
+                                      restoreRequest: playbackPresentation.restoreRequest,
+                                      togglePauseRequest: playbackPresentation.togglePauseRequest,
+                                      isMiniPlayer: playbackPresentation.isMiniPlayer,
+                                      onMiniPlayerChanged: { playbackPresentation.setMiniPlayer($0, for: item.id) },
+                                      onCloseStarted: { playbackPresentation.beginClosing(item.id) },
+                                      onClose: { playbackPresentation.didClose(item.id, request: $0, success: $1) },
+                                      onNoticeChanged: { playbackPresentation.setNotice($0, for: item.id) },
+                                      onTransportChanged: { playbackPresentation.setTransport($0, for: item.id) }) {
+                updateContinuousDisplay($0, for: item.id)
+            }
         case .smb(let session):
             SMBResumePlaybackView(item: session.item,
                                   closeRequest: playbackPresentation.closeRequest,
