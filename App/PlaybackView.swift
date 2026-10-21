@@ -70,6 +70,8 @@ struct PlaybackView: View {
     @State private var isQualityOverlayPresented = false
     @State private var isCaptionOverlayPresented = false
     @State private var isAudioOverlayPresented = false
+    @State private var isChapterOverlayPresented = false
+    @State private var chapterReload = 0
     @State private var isSceneSearchPresented = false
     @State private var sceneSearchPosition = 0.0
     @State private var panelBeforeLoading: PlaybackPanel?
@@ -79,6 +81,7 @@ struct PlaybackView: View {
     @FocusState private var playbackFocus: PlaybackControlFocus?
     @AppStorage("liveCaptionsEnabled") private var liveCaptionsEnabled = true
     @AppStorage("recordingCaptionsEnabled") private var recordingCaptionsEnabled = true
+    @AppStorage("recordingAutoSkipCM") private var automaticCommercialSkip = false
     @AppStorage("recordingCommentsEnabled") private var recordingCommentsEnabled = false
     @AppStorage("liveCommentsEnabled") private var liveCommentsEnabled = false
     @AppStorage("liveCommentDelay") private var liveCommentDelay = 2.0
@@ -116,13 +119,14 @@ struct PlaybackView: View {
 #if canImport(TVVLCKit)
     @StateObject private var controller = PlaybackController()
     @StateObject private var recordingController = RecordingPlaybackController()
+    @StateObject private var chapterStore = RecordingChapterStore()
     private var isRecording: Bool { item.recordingID != nil }
     private var isLoading: Bool { isRecording ? recordingController.isLoading : controller.isLoading }
     private var failure: String? { closeFailure ?? (isRecording ? recordingController.failure : controller.failure) }
     private var audioOptions: [PlaybackAudioOption] { isRecording ? recordingController.audioOptions : controller.audioOptions }
     private var selectedAudioID: String? { isRecording ? recordingController.selectedAudioID : controller.selectedAudioID }
     private var audioSelectionError: String? { isRecording ? recordingController.audioSelectionError : controller.audioSelectionError }
-    private var isPlaybackChoicePresented: Bool { isQualityOverlayPresented || isCaptionOverlayPresented || isAudioOverlayPresented }
+    private var isPlaybackChoicePresented: Bool { isQualityOverlayPresented || isCaptionOverlayPresented || isAudioOverlayPresented || isChapterOverlayPresented }
     private var acceptsInlineInput: Bool {
         !isClosing && !isMiniPlayer && !recordingController.pictureInPicture.isDetached && !recordingController.pictureInPicture.isTransitioning
     }
@@ -370,11 +374,15 @@ struct PlaybackView: View {
         isQualityOverlayPresented = false
         isCaptionOverlayPresented = false
         isAudioOverlayPresented = false
+        isChapterOverlayPresented = false
     }
 
     private func close() {
         guard !isClosing, let request = onCloseStarted() else { return }
         isClosing = true
+#if canImport(TVVLCKit)
+        chapterStore.cancel()
+#endif
         closeViewport(restoreFocus: false)
         onContinuousDisplayChanged(false)
 #if DEBUG
@@ -526,6 +534,14 @@ struct PlaybackView: View {
                 .allowsHitTesting(panelIsVisible(.bottom))
                 .accessibilityHidden(!panelIsVisible(.bottom))
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            if isChapterOverlayPresented {
+                chapterCard
+                .padding(.top, 64)
+                .padding(.trailing, 64)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .transition(.opacity)
+                .zIndex(2)
+            }
             if isAudioOverlayPresented {
                 PlaybackAudioChoicesView(
                     options: audioOptions,
@@ -620,6 +636,17 @@ struct PlaybackView: View {
             updateLiveCommentClock()
             await liveCommentStore.run(client: item.client, channelID: channel)
         }
+        .task(id: ChapterRequestID(server: item.client.baseURL, playbackID: item.id,
+                                  recordingID: item.recordingID, fileID: item.recordedFileID,
+                                  reload: chapterReload)) {
+            guard let recordingID = item.recordingID else { return }
+            await chapterStore.load(client: item.client, recordingID: recordingID,
+                                    fileID: item.recordedFileID, controller: recordingController)
+        }
+        .task(id: automaticCommercialSkip) {
+            guard isRecording else { return }
+            recordingController.setAutomaticCommercialSkip(automaticCommercialSkip)
+        }
         .defaultFocus($playbackFocus, .surface)
         .onChange(of: isLoading, initial: true) { _, loading in
             updateLiveCommentClock()
@@ -702,6 +729,8 @@ struct PlaybackView: View {
         }
         .onChange(of: item.id) { _, _ in
             closeSelectionCards()
+            chapterStore.cancel()
+            recordingController.configureCommercialTimeline(nil, isComplete: false)
             viewportSettings.close()
             viewportSettings.reset()
         }
@@ -774,6 +803,49 @@ struct PlaybackView: View {
     private func updateLiveCommentClock() {
         liveCommentStore.updatePlaybackState(playing: !isRecording && !isLoading && failure == nil && !controller.isPaused,
                                              delay: commentDelay)
+    }
+
+    private var chapterCard: some View {
+        RecordingChapterCard(
+            store: chapterStore,
+            position: recordingController.currentSeconds,
+            automaticSkip: Binding(
+                get: { automaticCommercialSkip },
+                set: { value in
+                    guard isChapterOverlayPresented, acceptsInlineInput,
+                          !isLoading, failure == nil else { return }
+                    automaticCommercialSkip = value
+                }
+            ),
+            canUndo: recordingController.canUndoCommercialSkip,
+            onUndo: { finishChapterAction { recordingController.undoCommercialSkip() } },
+            onPrevious: {
+                finishChapterAction {
+                    if let timeline = chapterStore.timeline {
+                        recordingController.seek(to: timeline.previous(from: recordingController.currentSeconds))
+                    } else { recordingController.seek(seconds: -60) }
+                }
+            },
+            onNext: {
+                finishChapterAction {
+                    if let timeline = chapterStore.timeline {
+                        recordingController.seek(to: timeline.next(from: recordingController.currentSeconds))
+                    } else { recordingController.seek(seconds: 180) }
+                }
+            },
+            onChapter: { seconds in
+                finishChapterAction {
+                    guard chapterStore.timeline?.chapters.contains(where: { $0.startTime == seconds }) == true else { return }
+                    recordingController.seek(to: seconds)
+                }
+            },
+            onReload: {
+                guard isChapterOverlayPresented, acceptsInlineInput,
+                      !isLoading, failure == nil else { return }
+                chapterReload &+= 1
+            },
+            onClose: { dismissChapterOverlay(restoreFocus: true) }
+        )
     }
 
     private var topPanel: some View {
@@ -897,10 +969,11 @@ struct PlaybackView: View {
                     }
                     .focused($playbackFocus, equals: .playPause)
                     .disabled(isLoading || failure != nil)
-                    if let recordingID = item.recordingID {
-                        RecordingChapterControls(client: item.client, recordingID: recordingID,
-                                                 fileID: item.recordedFileID, controller: recordingController)
+                    if item.recordingID != nil {
+                        Button("チャプター", action: presentChapterChoices)
                             .focused($playbackFocus, equals: .chapters)
+                            .disabled(isLoading || failure != nil)
+                            .accessibilityIdentifier("playback.chapters")
                         Button("シーンサーチ", action: presentSceneSearch)
                             .focused($playbackFocus, equals: .scenes)
                             .disabled(isLoading || failure != nil)
@@ -940,6 +1013,9 @@ struct PlaybackView: View {
         .padding(36)
         .frame(maxWidth: .infinity)
         .background(.black.opacity(0.82))
+        .disabled(isPlaybackChoicePresented)
+        .allowsHitTesting(!isPlaybackChoicePresented)
+        .accessibilityHidden(isPlaybackChoicePresented)
         .focusSection()
     }
 
@@ -1078,6 +1154,35 @@ struct PlaybackView: View {
         quality = value
     }
 
+    private func presentChapterChoices() {
+        guard isRecording, acceptsInlineInput, panelIsVisible(.bottom),
+              !isPlaybackChoicePresented, !isLoading, failure == nil else { return }
+        closeSelectionCards()
+        playbackFocus = nil
+        isChapterOverlayPresented = true
+#if DEBUG
+        print("RingonomiChapterCard: opened")
+#endif
+    }
+
+    private func finishChapterAction(_ action: () -> Void) {
+        guard isChapterOverlayPresented else { return }
+        guard isRecording, acceptsInlineInput, !isLoading, failure == nil else {
+            dismissChapterOverlay(restoreFocus: false)
+            return
+        }
+        dismissChapterOverlay(restoreFocus: true)
+        action()
+    }
+
+    private func dismissChapterOverlay(restoreFocus: Bool) {
+        guard isChapterOverlayPresented else { return }
+        isChapterOverlayPresented = false
+        if restoreFocus, acceptsInlineInput, panelIsVisible(.bottom) {
+            playbackFocus = .chapters
+        }
+    }
+
     private func finishAudioSelection(_ id: String) {
         guard isAudioOverlayPresented else { return }
         guard acceptsInlineInput, !isLoading, failure == nil,
@@ -1133,7 +1238,7 @@ struct PlaybackView: View {
 
     private func handleExitCommand() {
 #if DEBUG
-        print("RingonomiPlaybackExit: card=\(isQualityOverlayPresented || isCaptionOverlayPresented || isAudioOverlayPresented) panel=\(visiblePanel.map { $0 == .top ? "top" : "bottom" } ?? "hidden") focus=\(playbackFocus?.rawValue ?? "none")")
+        print("RingonomiPlaybackExit: card=\(isQualityOverlayPresented || isCaptionOverlayPresented || isAudioOverlayPresented || isChapterOverlayPresented) panel=\(visiblePanel.map { $0 == .top ? "top" : "bottom" } ?? "hidden") focus=\(playbackFocus?.rawValue ?? "none")")
 #endif
 #if canImport(TVVLCKit)
         guard acceptsInlineInput else { return }
@@ -1141,6 +1246,8 @@ struct PlaybackView: View {
             closeViewport()
         } else if isSceneSearchPresented {
             finishSceneSearch()
+        } else if isChapterOverlayPresented {
+            dismissChapterOverlay(restoreFocus: true)
         } else if isAudioOverlayPresented {
             dismissAudioOverlay(restoreFocus: true)
         } else if isCaptionOverlayPresented {
@@ -1169,5 +1276,13 @@ private struct CommentRequestID: Hashable {
     let server: URL
     let recordingID: Int?
     let enabled: Bool
+    let reload: Int
+}
+
+private struct ChapterRequestID: Hashable {
+    let server: URL
+    let playbackID: UUID
+    let recordingID: Int?
+    let fileID: Int?
     let reload: Int
 }
