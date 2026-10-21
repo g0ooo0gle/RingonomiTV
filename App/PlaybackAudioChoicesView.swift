@@ -16,6 +16,7 @@ struct PlaybackAudioChoicesView: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var focusedChoice: Choice?
+    @State private var didSetInitialFocus = false
 
     private var optionIDs: [String] {
         options.map(\.id)
@@ -43,10 +44,12 @@ struct PlaybackAudioChoicesView: View {
                 }
                 .frame(height: optionsHeight)
                 .task {
-                    if focusedChoice == nil {
-                        focusedChoice = initialChoice
-                    }
-                    scroll(to: focusedChoice ?? initialChoice, using: proxy)
+                    guard !didSetInitialFocus else { return }
+                    didSetInitialFocus = true
+                    // The focus engine may pick the first row before this task.
+                    // Apply the selected track once, even when focus is non-nil.
+                    focusedChoice = initialChoice
+                    scroll(to: initialChoice, using: proxy)
                 }
                 .onChange(of: focusedChoice) { _, newChoice in
                     scroll(to: newChoice, using: proxy)
