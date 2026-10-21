@@ -42,8 +42,9 @@ struct MirakurunPlaybackView: View {
     @Environment(\.scenePhase) private var scenePhase
     @FocusState private var focus: MirakurunPlaybackFocus?
     @State private var menuVisible = false
-    @State private var hasAppeared = false
+    @State private var hasStartedPlayback = false
     @State private var isClosing = false
+    @State private var hasStartedClosing = false
     @State private var closeFailure: String?
     @State private var closeTask: Task<Void, Never>?
     @StateObject private var viewportSettings = VideoViewportSettings()
@@ -53,9 +54,9 @@ struct MirakurunPlaybackView: View {
 
 #if canImport(TVVLCKit)
     private var isLoading: Bool { controller.isLoading }
-    private var failure: String? { controller.failure ?? closeFailure }
+    private var failure: String? { closeFailure ?? controller.failure }
     private var needsContinuousDisplay: Bool {
-        failure == nil && !isClosing && !controller.isPaused
+        failure == nil && !hasStartedClosing && !controller.isPaused
     }
 #else
     private var isLoading: Bool { true }
@@ -75,7 +76,7 @@ struct MirakurunPlaybackView: View {
 #if canImport(TVVLCKit)
     private var transport: PlaybackTransportState {
         PlaybackTransportState(isPaused: controller.isPaused,
-                               canToggle: hasAppeared && isMiniPlayer && !isClosing && !isLoading && failure == nil)
+                               canToggle: hasStartedPlayback && isMiniPlayer && !hasStartedClosing && !isLoading && failure == nil)
     }
     private var playbackNotice: String? {
         isMiniPlayer ? failure ?? (isLoading ? "映像と音声を準備しています…" : nil) : nil
@@ -130,15 +131,13 @@ struct MirakurunPlaybackView: View {
         .environment(\.colorScheme, .dark)
         .tint(.cyan)
         .onAppear {
-            hasAppeared = true
+            hasStartedPlayback = true
             updateContinuousDisplay()
         }
         .onDisappear {
-            hasAppeared = false
-            closeTask?.cancel()
-            closeTask = nil
+            // A library detail sheet can temporarily cover the shared host.
+            // Keep its decoder, idle request and final close acknowledgement.
             viewportSettings.close()
-            onContinuousDisplayChanged(false)
         }
         .onExitCommand(perform: handleExitCommand)
         .onChange(of: closeRequest, initial: true) { _, request in
@@ -195,7 +194,7 @@ struct MirakurunPlaybackView: View {
         .onChange(of: transport, initial: true) { _, value in onTransportChanged(value) }
         .onChange(of: playbackNotice, initial: true) { _, value in onNoticeChanged(value) }
         .onChange(of: togglePauseRequest) { previous, current in
-            guard isMiniPlayer, !isClosing, failure == nil,
+            guard isMiniPlayer, !hasStartedClosing, failure == nil,
                   !(current &- previous).isMultiple(of: 2) else { return }
             controller.togglePause()
         }
@@ -221,7 +220,7 @@ struct MirakurunPlaybackView: View {
         }
 #if canImport(TVVLCKit)
         .onPlayPauseCommand {
-            guard acceptsInlineInput, failure == nil, !viewportSettings.isPresented else { return }
+            guard acceptsInlineInput, !hasStartedClosing, failure == nil, !viewportSettings.isPresented else { return }
             controller.togglePause()
         }
 #endif
@@ -343,7 +342,7 @@ struct MirakurunPlaybackView: View {
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
             HStack(spacing: 24) {
-                Button("再試行") {
+                Button(closeFailure == nil ? "再試行" : "もう一度閉じる") {
                     menuVisible = false
                     focus = .surface
                     if closeFailure != nil { close() }
@@ -387,6 +386,7 @@ struct MirakurunPlaybackView: View {
 
     private func close() {
         guard !isClosing, let request = onCloseStarted() else { return }
+        hasStartedClosing = true
         isClosing = true
         menuVisible = false
         focus = nil
@@ -423,11 +423,11 @@ struct MirakurunPlaybackView: View {
     }
 
     private func updateContinuousDisplay() {
-        onContinuousDisplayChanged(hasAppeared && needsContinuousDisplay)
+        onContinuousDisplayChanged(hasStartedPlayback && needsContinuousDisplay)
     }
 
     private func suspendPlaybackForBackground() {
-        guard hasAppeared, !isClosing else { return }
+        guard hasStartedPlayback, !hasStartedClosing else { return }
         viewportSettings.close()
         controller.suspendForBackground()
     }
@@ -436,7 +436,7 @@ struct MirakurunPlaybackView: View {
 #if canImport(UIKit)
         guard UIApplication.shared.applicationState == .active else { return }
 #endif
-        guard hasAppeared, !isClosing else { return }
+        guard hasStartedPlayback, !hasStartedClosing else { return }
         controller.resumeFromBackground()
     }
 #else

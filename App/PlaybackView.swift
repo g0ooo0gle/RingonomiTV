@@ -282,8 +282,8 @@ struct PlaybackView: View {
 #if DEBUG
             print("RingonomiPlaybackDismissed")
 #endif
-            closeTask?.cancel()
-            closeTask = nil
+            // Detail sheets can cover the shared playback host. Keep a
+            // pending final stop acknowledgement alive through that transition.
             flushPosition()
             commentStore.cancel()
             liveCommentStore.cancel()

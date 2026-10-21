@@ -42,8 +42,9 @@ struct FilePlaybackView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var hasAppeared = false
+    @State private var hasStartedPlayback = false
     @State private var isClosing = false
+    @State private var hasStartedClosing = false
     @State private var closeFailure: String?
     @State private var closeTask: Task<Void, Never>?
     @State private var visiblePanel: FilePlaybackPanel?
@@ -94,15 +95,9 @@ struct FilePlaybackView: View {
             .environment(\.colorScheme, .dark)
             .tint(.cyan)
             .onAppear {
-                hasAppeared = true
-                // A cancelled close can outlive a temporary disappearance.
-                // Recover only after the view is mounted, without restarting
-                // its permanently closing decoder.
-                if isClosing, closeTask == nil {
-                    isClosing = false
-                    closeFailure = "再生の終了を確認できませんでした。もう一度閉じてください。"
-                    playbackFocus = .retry
-                }
+                guard !hasStartedPlayback else { return }
+                hasStartedPlayback = true
+                if closeRequest != nil { close(); return }
                 startPlayback()
             }
 #if canImport(UIKit)
@@ -120,7 +115,7 @@ struct FilePlaybackView: View {
             }
 #endif
             .onChange(of: item) { _, newItem in
-                guard !isClosing else { return }
+                guard !hasStartedClosing else { return }
                 viewportSettings.reset()
                 controller.start(
                     item: newItem,
@@ -141,12 +136,10 @@ struct FilePlaybackView: View {
                 }
             }
             .onDisappear {
-                hasAppeared = false
-                closeTask?.cancel()
-                closeTask = nil
+                // A covering detail sheet is not the end of this session.
+                // Explicit close owns teardown and its stop acknowledgement;
+                // application notifications own background suspension.
                 viewportSettings.close()
-                onContinuousDisplayChanged(false)
-                controller.stop()
             }
 #else
         VStack(spacing: 20) {
@@ -174,7 +167,7 @@ struct FilePlaybackView: View {
     }
     private var transport: PlaybackTransportState {
         PlaybackTransportState(isPaused: controller.isPaused || controller.isEnded,
-            canToggle: hasAppeared && isMiniPlayer && !isClosing && !controller.isLoading && failure == nil)
+            canToggle: hasStartedPlayback && isMiniPlayer && !hasStartedClosing && !controller.isLoading && failure == nil)
     }
     private var playbackNotice: String? {
         isMiniPlayer ? failure ?? (controller.isLoading ? "映像と音声を準備しています…" : nil) : nil
@@ -280,7 +273,7 @@ struct FilePlaybackView: View {
         .onChange(of: transport, initial: true) { _, value in onTransportChanged(value) }
         .onChange(of: playbackNotice, initial: true) { _, value in onNoticeChanged(value) }
         .onChange(of: togglePauseRequest) { previous, current in
-            guard isMiniPlayer, !isClosing, failure == nil,
+            guard isMiniPlayer, !hasStartedClosing, failure == nil,
                   !(current &- previous).isMultiple(of: 2) else { return }
             controller.togglePause()
         }
@@ -532,7 +525,7 @@ struct FilePlaybackView: View {
     }
 
     private func startPlayback() {
-        guard !isClosing, closeFailure == nil else { return }
+        guard !hasStartedClosing, closeFailure == nil else { return }
         controller.start(
             item: item,
             onContinuousDisplayChanged: onContinuousDisplayChanged,
@@ -541,7 +534,7 @@ struct FilePlaybackView: View {
     }
 
     private func suspendPlaybackForBackground() {
-        guard hasAppeared, !isClosing else { return }
+        guard hasStartedPlayback, !hasStartedClosing else { return }
         viewportSettings.close()
         controller.suspendForBackground()
     }
@@ -550,7 +543,7 @@ struct FilePlaybackView: View {
 #if canImport(UIKit)
         guard UIApplication.shared.applicationState == .active else { return }
 #endif
-        guard hasAppeared, !isClosing else { return }
+        guard hasStartedPlayback, !hasStartedClosing else { return }
         controller.resumeFromBackground()
     }
 
@@ -648,6 +641,7 @@ struct FilePlaybackView: View {
         } else {
             request = UUID()
         }
+        hasStartedClosing = true
         isClosing = true
         closeFailure = nil
         viewportSettings.close()
