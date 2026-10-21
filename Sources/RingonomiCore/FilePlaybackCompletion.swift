@@ -1,6 +1,6 @@
-/// Native EOF can also mean that a shared file stopped supplying data.
+/// Native EOF can also mean that a file stream stopped supplying data.
 /// Only a position accepted after video readiness can confirm completion.
-public enum SMBPlaybackCompletion {
+public enum FilePlaybackCompletion {
     public static func confirmsEnd(
         duration: Double?,
         trustedSeconds: Double?,
@@ -18,3 +18,6 @@ public enum SMBPlaybackCompletion {
         return abs(duration - trustedSeconds) <= tolerance
     }
 }
+
+/// Compatibility name for clients using the original shared-file policy.
+public typealias SMBPlaybackCompletion = FilePlaybackCompletion

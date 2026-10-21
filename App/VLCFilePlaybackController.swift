@@ -19,6 +19,7 @@ struct FilePlaybackSelection: Identifiable, Equatable {
     let url: URL
     let title: String
     let durationHint: Double?
+    let isGrowingRecording: Bool
     let resumePosition: Double
     let identity: String?
     let smbConnection: SMBConnection?
@@ -29,6 +30,7 @@ struct FilePlaybackSelection: Identifiable, Equatable {
         url: URL,
         title: String,
         durationHint: Double? = nil,
+        isGrowingRecording: Bool = false,
         resumePosition: Double = 0,
         identity: String? = nil,
         smbConnection: SMBConnection? = nil,
@@ -38,6 +40,7 @@ struct FilePlaybackSelection: Identifiable, Equatable {
         self.url = url
         self.title = title
         self.durationHint = durationHint
+        self.isGrowingRecording = isGrowingRecording
         self.resumePosition = resumePosition
         self.identity = identity
         self.smbConnection = smbConnection
@@ -93,7 +96,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
     private var trustedPositionGeneration: Int?
     private var lastTrustedDuration: Double?
     private var lastTrustedEnded = false
-    private var smbEndConfirmed = false
+    private var fileEndConfirmed = false
     private var wantsPause = false
     private var isStopped = false
     private var isClosingPermanently = false
@@ -352,13 +355,14 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         // of a second can leave its input teardown blocked. End explicitly
         // without opening that tail; growing/unknown-duration files and
         // media that have never produced a frame cannot take this shortcut.
-        if let completedDuration = durationHint, lastPictures > 0,
+        if selection?.isGrowingRecording != true,
+           let completedDuration = durationHint, lastPictures > 0,
            target >= max(0, completedDuration - 0.11) {
             targetSeconds = target
 #if DEBUG
             print("RingonomiFileExplicitEnd: target=\(target)")
 #endif
-            finishPlayback()
+            finishPlayback(verifiedEndSeek: true)
             return
         }
 
@@ -569,7 +573,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         currentURL = url
         generation &+= 1
         trustedPositionGeneration = nil
-        smbEndConfirmed = false
+        fileEndConfirmed = false
         resetVideoGeometryCache()
         endGate.reset()
         pendingLoadGeneration = generation
@@ -1102,6 +1106,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         // with decoded output from this generation. Unknown/growing files and
         // frame-less EOF remain failures.
         guard player.state == .ended,
+              !pendingPositionIsInitial,
               let completedDuration = validDuration(durationHint),
               displayedPictures > 0 else { return false }
         let completedTolerance = positionTolerance(for: requested, duration: completedDuration)
@@ -1141,7 +1146,11 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
     }
 
     private func refreshDurationAndSeekability() {
-        if let milliseconds = player.media?.length.value?.doubleValue,
+        if let durationHint {
+            // The completed-file endpoint is authoritative even if a partial
+            // transport exposes a shorter native media length.
+            durationSeconds = durationHint
+        } else if let milliseconds = player.media?.length.value?.doubleValue,
            milliseconds.isFinite, milliseconds > 0 {
             durationSeconds = milliseconds / 1000
         } else if durationSeconds == nil {
@@ -1151,26 +1160,31 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
     }
 
     private var endedStatus: String {
-        selection?.smbConnection != nil && !smbEndConfirmed
-            ? "再生停止（総時間不明・再生ボタンで最初から）"
-            : "再生終了（再生ボタンで最初から）"
+        fileEndConfirmed
+            ? "再生終了（再生ボタンで最初から）"
+            : "再生停止（総時間不明・再生ボタンで最初から）"
     }
 
     private func finishPlayback(verifiedEndSeek: Bool = false) {
         guard !isStopped, !isSuspendedForBackground else { return }
         guard !isEnded else { return }
-        if selection?.smbConnection != nil {
-            smbEndConfirmed = SMBPlaybackCompletion.confirmsEnd(
-                duration: durationSeconds,
-                trustedSeconds: lastTrustedSeconds,
-                hasPresentedCurrentPosition: trustedPositionGeneration == generation
-                    && lastPictures > 0,
-                verifiedEndSeek: verifiedEndSeek
-            )
-            if durationSeconds != nil, !smbEndConfirmed {
-                fail("共有ファイルの読み込みが途中で終了しました。接続先とファイルの状態を確認して再試行してください。")
-                return
-            }
+        // A dropped HTTP stream can report native EOF just like a shared
+        // file. Keep the trusted bookmark unless this input reached the end;
+        // a completed recording's server duration also survives truncation.
+        let completionDuration = selection?.isGrowingRecording == true
+            ? nil : validDuration(durationHint ?? durationSeconds)
+        fileEndConfirmed = FilePlaybackCompletion.confirmsEnd(
+            duration: completionDuration,
+            trustedSeconds: lastTrustedSeconds,
+            hasPresentedCurrentPosition: trustedPositionGeneration == generation
+                && lastPictures > 0,
+            verifiedEndSeek: verifiedEndSeek
+        )
+        if completionDuration != nil, !fileEndConfirmed {
+            fail(selection?.smbConnection == nil
+                 ? "録画の読み込みが途中で終了しました。接続先とファイルの状態を確認して再試行してください。"
+                 : "共有ファイルの読み込みが途中で終了しました。接続先とファイルの状態を確認して再試行してください。")
+            return
         }
         endGate.reset()
         isEnded = true
@@ -1286,11 +1300,18 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
 
     private func reportProgress(force: Bool = false) {
         guard !isStopped, !isLoading, failure == nil else { return }
-        let position = isEnded ? (durationSeconds ?? safeCurrentSeconds) : safeCurrentSeconds
+        let position: Double
+        if isEnded {
+            position = fileEndConfirmed
+                ? (durationSeconds ?? safeCurrentSeconds)
+                : (lastTrustedSeconds ?? safeCurrentSeconds)
+        } else {
+            position = safeCurrentSeconds
+        }
         let duration = selection?.smbConnection != nil && !isSeekable ? nil : durationSeconds
         // An unknown-length native EOF may be a disconnect. Allow replay in
         // the UI, but never discard an existing bookmark on that evidence.
-        let reachedEnd = isEnded && (selection?.smbConnection == nil || smbEndConfirmed)
+        let reachedEnd = isEnded && fileEndConfirmed
         let changed = force
             || lastProgressPosition.map { abs($0 - position) >= 0.25 } == true
             || lastProgressPosition == nil

@@ -424,7 +424,9 @@ private struct EPGStationRecordingDetailView: View {
 
     private func start(_ pending: EPGStationPendingFile, position: Double) {
         let item = FilePlaybackSelection(url: pending.url, title: pending.title,
-                                         durationHint: pending.duration, resumePosition: position)
+                                         durationHint: pending.duration,
+                                         isGrowingRecording: pending.status == "Recording",
+                                         resumePosition: position)
         let session = EPGStationPlaybackSession(item: item, resumeID: pending.resumeID, status: pending.status)
         requestedPlaybackID = session.id
         requestedFileID = pending.fileID
