@@ -1,10 +1,32 @@
 import SwiftUI
 
+/// The selected backend keeps its own decoder and transport semantics.
+enum PlaybackSession: Identifiable {
+    case konomi(Playback)
+    case mirakurun(MirakurunPlaybackSelection)
+
+    var id: UUID {
+        switch self {
+        case .konomi(let item): item.id
+        case .mirakurun(let item): item.id
+        }
+    }
+    var title: String {
+        switch self {
+        case .konomi(let item): item.title
+        case .mirakurun(let item): item.title
+        }
+    }
+    var konomi: Playback? {
+        if case .konomi(let item) = self { item } else { nil }
+    }
+}
+
 /// Keeps the playback subtree mounted while PiP exposes the library below it.
 /// A replacement waits for the old session's native PiP stop acknowledgment.
 @MainActor
 final class PlaybackPresentationStore: ObservableObject {
-    @Published private(set) var current: Playback?
+    @Published private(set) var current: PlaybackSession?
     @Published private(set) var closeRequest: UUID?
     @Published private(set) var restoreRequest: UUID?
     @Published private(set) var togglePauseRequest: UInt64 = 0
@@ -13,11 +35,19 @@ final class PlaybackPresentationStore: ObservableObject {
     @Published private(set) var isMiniPlayer = false
     var exposesLibrary: Bool { isDetached || isMiniPlayer }
     @Published private(set) var notice: String?
-    private var pending: Playback?
+    private var pending: PlaybackSession?
     private var hasPending = false
     private var waiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
 
     func present(_ playback: Playback?) {
+        presentSession(playback.map(PlaybackSession.konomi))
+    }
+
+    func presentMirakurun(_ playback: MirakurunPlaybackSelection) {
+        presentSession(.mirakurun(playback))
+    }
+
+    private func presentSession(_ playback: PlaybackSession?) {
         guard let current else {
             self.current = playback
             return
@@ -25,7 +55,20 @@ final class PlaybackPresentationStore: ObservableObject {
         guard playback?.id != current.id else { return }
         pending = playback
         hasPending = true
-        closeRequest = UUID()
+        _ = beginClosing(current.id)
+    }
+
+    /// One token covers a manual close and any replacement queued during it.
+    func beginClosing(_ id: UUID) -> UUID? {
+        guard current?.id == id else { return nil }
+        if closeRequest == nil { closeRequest = UUID() }
+        return closeRequest
+    }
+
+    /// Connection changes can invalidate a selection still waiting for handoff.
+    func cancelSession(_ id: UUID) {
+        if current?.id == id { present(nil) }
+        else if pending?.id == id { pending = nil; hasPending = true }
     }
 
     func setDetached(_ detached: Bool, for id: UUID) {
@@ -62,8 +105,8 @@ final class PlaybackPresentationStore: ObservableObject {
         restoreRequest = UUID()
     }
 
-    func didClose(_ id: UUID, success: Bool) {
-        guard current?.id == id else { return }
+    func didClose(_ id: UUID, request: UUID, success: Bool) {
+        guard current?.id == id, closeRequest == request else { return }
         closeRequest = nil
         if success {
             current = hasPending ? pending : nil
@@ -78,7 +121,7 @@ final class PlaybackPresentationStore: ObservableObject {
         hasPending = false
         let completions = Array(waiters.values)
         waiters.removeAll()
-        for completion in completions { completion.resume(returning: success) }
+        for completion in completions { completion.resume(returning: success && current == nil) }
     }
 
     func stopForAnotherPlayer() async -> Bool {

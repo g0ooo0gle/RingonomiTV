@@ -15,6 +15,7 @@ private enum MirakurunPlaybackFocus: Hashable {
     case playPause
     case audio
     case viewport
+    case miniPlayer
     case menuClose
     case loadingClose
     case failureClose
@@ -28,12 +29,23 @@ private enum MirakurunPlaybackFocus: Hashable {
 /// its service stream is handed directly to the existing VLC controller.
 struct MirakurunPlaybackView: View {
     let item: MirakurunPlaybackSelection
+    let closeRequest: UUID?
+    let restoreRequest: UUID?
+    let togglePauseRequest: UInt64
+    let isMiniPlayer: Bool
+    let onMiniPlayerChanged: (Bool) -> Void
+    let onCloseStarted: () -> UUID?
+    let onClose: (UUID, Bool) -> Void
+    let onNoticeChanged: (String?) -> Void
+    let onTransportChanged: (PlaybackTransportState) -> Void
     let onContinuousDisplayChanged: (Bool) -> Void
-    @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @FocusState private var focus: MirakurunPlaybackFocus?
     @State private var menuVisible = false
     @State private var hasAppeared = false
+    @State private var isClosing = false
+    @State private var closeFailure: String?
+    @State private var closeTask: Task<Void, Never>?
     @StateObject private var viewportSettings = VideoViewportSettings()
 #if canImport(TVVLCKit)
     @StateObject private var controller = PlaybackController()
@@ -41,9 +53,9 @@ struct MirakurunPlaybackView: View {
 
 #if canImport(TVVLCKit)
     private var isLoading: Bool { controller.isLoading }
-    private var failure: String? { controller.failure }
+    private var failure: String? { controller.failure ?? closeFailure }
     private var needsContinuousDisplay: Bool {
-        failure == nil && !controller.isPaused
+        failure == nil && !isClosing && !controller.isPaused
     }
 #else
     private var isLoading: Bool { true }
@@ -52,9 +64,23 @@ struct MirakurunPlaybackView: View {
 #endif
 
     private var isMenuVisible: Bool {
-        menuVisible && !isLoading && failure == nil
+        acceptsInlineInput && menuVisible && !isLoading && failure == nil
             && !viewportSettings.isPresented
     }
+
+    private var acceptsInlineInput: Bool { !isMiniPlayer && !isClosing }
+    private var readyFocus: MirakurunPlaybackFocus {
+        failure != nil ? .retry : (isLoading ? .loadingClose : .surface)
+    }
+#if canImport(TVVLCKit)
+    private var transport: PlaybackTransportState {
+        PlaybackTransportState(isPaused: controller.isPaused,
+                               canToggle: hasAppeared && isMiniPlayer && !isClosing && !isLoading && failure == nil)
+    }
+    private var playbackNotice: String? {
+        isMiniPlayer ? failure ?? (isLoading ? "映像と音声を準備しています…" : nil) : nil
+    }
+#endif
 
     var body: some View {
         ZStack {
@@ -71,10 +97,16 @@ struct MirakurunPlaybackView: View {
                 .allowsHitTesting(isMenuVisible)
                 .accessibilityHidden(!isMenuVisible)
                 .zIndex(1)
-            if isLoading {
-                loadingOverlay
+            if isClosing {
+                VStack(spacing: 20) {
+                    ProgressView("再生を終了しています…")
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(.black)
             } else if let failure {
                 failureOverlay(message: failure)
+            } else if isLoading {
+                loadingOverlay
             }
             if viewportSettings.isPresented {
                 VideoViewportSettingsView(
@@ -103,10 +135,27 @@ struct MirakurunPlaybackView: View {
         }
         .onDisappear {
             hasAppeared = false
+            closeTask?.cancel()
+            closeTask = nil
             viewportSettings.close()
             onContinuousDisplayChanged(false)
         }
         .onExitCommand(perform: handleExitCommand)
+        .onChange(of: closeRequest, initial: true) { _, request in
+            if request != nil { close() }
+        }
+        .onChange(of: isMiniPlayer) { _, mini in
+            viewportSettings.close()
+            menuVisible = false
+            focus = !mini && !isClosing ? readyFocus : nil
+#if DEBUG
+            print("RingonomiMirakurunMini: active=\(mini)")
+#endif
+        }
+        .onChange(of: restoreRequest) { _, request in
+            guard request != nil, closeRequest == nil, acceptsInlineInput else { return }
+            focus = readyFocus
+        }
 #if canImport(UIKit)
         // UIApplication notifications are the primary lifecycle boundary on
         // tvOS. scenePhase remains a fallback for delayed Home transitions.
@@ -125,22 +174,30 @@ struct MirakurunPlaybackView: View {
             if loading {
                 viewportSettings.close()
                 menuVisible = false
-                focus = .loadingClose
+                focus = acceptsInlineInput ? .loadingClose : nil
             } else if failure == nil {
-                focus = .surface
+                focus = acceptsInlineInput ? .surface : nil
             }
             updateContinuousDisplay()
         }
-        .onChange(of: controller.failure) { _, newFailure in
+        .onChange(of: failure) { _, newFailure in
             if newFailure != nil {
                 viewportSettings.close()
             }
             menuVisible = false
-            focus = newFailure == nil ? .surface : .retry
+            if newFailure != nil, isMiniPlayer { onMiniPlayerChanged(false) }
+            focus = acceptsInlineInput ? readyFocus : nil
             updateContinuousDisplay()
         }
         .onChange(of: controller.isPaused) { _, _ in
             updateContinuousDisplay()
+        }
+        .onChange(of: transport, initial: true) { _, value in onTransportChanged(value) }
+        .onChange(of: playbackNotice, initial: true) { _, value in onNoticeChanged(value) }
+        .onChange(of: togglePauseRequest) { previous, current in
+            guard isMiniPlayer, !isClosing, failure == nil,
+                  !(current &- previous).isMultiple(of: 2) else { return }
+            controller.togglePause()
         }
         .onChange(of: controller.audioOptions) { _, options in
             if isMenuVisible, options.count < 2, focus == .audio || focus == nil {
@@ -164,7 +221,7 @@ struct MirakurunPlaybackView: View {
         }
 #if canImport(TVVLCKit)
         .onPlayPauseCommand {
-            guard failure == nil, !viewportSettings.isPresented else { return }
+            guard acceptsInlineInput, failure == nil, !viewportSettings.isPresented else { return }
             controller.togglePause()
         }
 #endif
@@ -177,20 +234,20 @@ struct MirakurunPlaybackView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .ignoresSafeArea()
             .focusable(
-                !isLoading && failure == nil && !isMenuVisible && !viewportSettings.isPresented,
+                acceptsInlineInput && !isLoading && failure == nil && !isMenuVisible && !viewportSettings.isPresented,
                 interactions: .activate
             )
             .focusEffectDisabled()
             .focused($focus, equals: .surface)
             .allowsHitTesting(
-                !isLoading && failure == nil && !isMenuVisible && !viewportSettings.isPresented
+                acceptsInlineInput && !isLoading && failure == nil && !isMenuVisible && !viewportSettings.isPresented
             )
             .accessibilityHidden(
-                isLoading || failure != nil || isMenuVisible || viewportSettings.isPresented
+                !acceptsInlineInput || isLoading || failure != nil || isMenuVisible || viewportSettings.isPresented
             )
             .accessibilityLabel("Mirakurun再生メニュー")
             .onMoveCommand { direction in
-                guard !isLoading, failure == nil, !viewportSettings.isPresented else { return }
+                guard acceptsInlineInput, !isLoading, failure == nil, !viewportSettings.isPresented else { return }
                 switch direction {
                 case .up, .down:
                     showMenu()
@@ -247,6 +304,12 @@ struct MirakurunPlaybackView: View {
                     .focused($focus, equals: .viewport)
                     .disabled(isLoading || failure != nil)
 
+                Button("小窓") { onMiniPlayerChanged(true) }
+                    .focused($focus, equals: .miniPlayer)
+                    .disabled(isLoading || failure != nil || isClosing)
+                    .accessibilityLabel("アプリ内小窓で表示")
+                    .accessibilityIdentifier("mirakurun.miniPlayer")
+
                 Button("閉じる", action: close)
                     .focused($focus, equals: .menuClose)
             }
@@ -283,7 +346,8 @@ struct MirakurunPlaybackView: View {
                 Button("再試行") {
                     menuVisible = false
                     focus = .surface
-                    controller.retry()
+                    if closeFailure != nil { close() }
+                    else { controller.retry() }
                 }
                 .focused($focus, equals: .retry)
                 Button("閉じる", action: close)
@@ -298,7 +362,7 @@ struct MirakurunPlaybackView: View {
     }
 
     private func showMenu() {
-        guard !isLoading, failure == nil, !viewportSettings.isPresented else { return }
+        guard acceptsInlineInput, !isLoading, failure == nil, !viewportSettings.isPresented else { return }
         menuVisible = true
         focus = .playPause
     }
@@ -309,6 +373,7 @@ struct MirakurunPlaybackView: View {
     }
 
     private func handleExitCommand() {
+        guard acceptsInlineInput else { return }
         if viewportSettings.isPresented {
             closeViewport()
             return
@@ -321,13 +386,30 @@ struct MirakurunPlaybackView: View {
     }
 
     private func close() {
+        guard !isClosing, let request = onCloseStarted() else { return }
+        isClosing = true
+        menuVisible = false
+        focus = nil
         viewportSettings.close()
         onContinuousDisplayChanged(false)
-        dismiss()
+        closeTask = Task { @MainActor in
+            let stopped = await controller.stopBeforeClosing()
+            guard !Task.isCancelled else { return }
+#if DEBUG
+            print("RingonomiMirakurunClose: stopped=\(stopped)")
+#endif
+            if !stopped {
+                isClosing = false
+                closeFailure = "再生の終了を確認できませんでした。もう一度閉じてください。"
+            }
+            onClose(request, stopped)
+            if !stopped { onMiniPlayerChanged(false) }
+            closeTask = nil
+        }
     }
 
     private func openViewport() {
-        guard !isLoading, failure == nil else { return }
+        guard acceptsInlineInput, !isLoading, failure == nil else { return }
         viewportSettings.open()
         focus = nil
     }
@@ -345,7 +427,7 @@ struct MirakurunPlaybackView: View {
     }
 
     private func suspendPlaybackForBackground() {
-        guard hasAppeared else { return }
+        guard hasAppeared, !isClosing else { return }
         viewportSettings.close()
         controller.suspendForBackground()
     }
@@ -354,13 +436,17 @@ struct MirakurunPlaybackView: View {
 #if canImport(UIKit)
         guard UIApplication.shared.applicationState == .active else { return }
 #endif
-        guard hasAppeared else { return }
+        guard hasAppeared, !isClosing else { return }
         controller.resumeFromBackground()
     }
 #else
     private func updateContinuousDisplay() {}
     private func suspendPlaybackForBackground() {}
     private func resumePlaybackFromBackground() {}
-    private func handleExitCommand() { dismiss() }
+    private func close() {
+        guard let request = onCloseStarted() else { return }
+        onClose(request, true)
+    }
+    private func handleExitCommand() { close() }
 #endif
 }

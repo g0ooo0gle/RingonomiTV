@@ -365,6 +365,17 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         videoSurface = nil
         holdPlayerUntilStopped(for: expectedStopWaitGeneration)
     }
+    /// A new backend must not create its decoder until this input has stopped.
+    func stopBeforeClosing() async -> Bool {
+        stop()
+        for _ in 0..<100 {
+            if player.state == .stopped { return true }
+            do { try await Task.sleep(for: .milliseconds(50)) }
+            catch { return false }
+        }
+        return player.state == .stopped
+    }
+
     nonisolated func mediaPlayerStateChanged(_ notification: Notification) {
         Task { @MainActor [weak self] in self?.updateStatus() }
     }

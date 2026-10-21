@@ -17,9 +17,9 @@ struct MirakurunProgramGuideView: View {
     @State private var inputError: String?
     @State private var selected: MirakurunGuideSelection?
     @State private var pendingPlayback: MirakurunPlaybackSelection?
-    @State private var playback: MirakurunPlaybackSelection?
+    @EnvironmentObject private var playbackPresentation: PlaybackPresentationStore
+    @State private var requestedPlaybackID: UUID?
     @StateObject private var store = MirakurunProgramGuideStore()
-    @StateObject private var playbackIdleTimer = PlaybackIdleTimer()
     @FocusState private var refreshFocused: Bool
 
     private var effectiveAddress: String {
@@ -75,7 +75,10 @@ struct MirakurunProgramGuideView: View {
         .onChange(of: effectiveAddress) { _, next in
             selected = nil
             pendingPlayback = nil
-            playback = nil
+            if let requestedPlaybackID {
+                playbackPresentation.cancelSession(requestedPlaybackID)
+                self.requestedPlaybackID = nil
+            }
             draftAddress = next
             dayOffset = 0
             inputError = nil
@@ -88,7 +91,7 @@ struct MirakurunProgramGuideView: View {
                        startDate: day, endDate: day.addingTimeInterval(86_400), broadcast: broadcast)
         }
         .onDisappear {
-            if selected == nil, playback == nil, pendingPlayback == nil { store.cancel() }
+            if selected == nil, pendingPlayback == nil { store.cancel() }
         }
         .sheet(item: $selected, onDismiss: detailDismissed) { selection in
             MirakurunGuideDetailView(selection: selection) {
@@ -102,19 +105,10 @@ struct MirakurunProgramGuideView: View {
                 } catch { inputError = error.localizedDescription }
             }
         }
-        .fullScreenCover(item: $playback, onDismiss: {
-            playbackIdleTimer.setNeedsContinuousDisplay(false)
+        .onChange(of: playbackPresentation.current?.id) { previous, _ in
+            guard let requestedPlaybackID, previous == requestedPlaybackID else { return }
+            self.requestedPlaybackID = nil
             returnFocusRevision += 1
-        }) { item in
-            PlaybackHandoffView {
-                MirakurunPlaybackView(item: item) { needed in
-                    guard playback?.id == item.id else { return }
-                    playbackIdleTimer.setNeedsContinuousDisplay(needed)
-                }
-            }
-        }
-        .onChange(of: playback?.id) { _, id in
-            if id == nil { playbackIdleTimer.setNeedsContinuousDisplay(false) }
         }
     }
 
@@ -238,7 +232,8 @@ struct MirakurunProgramGuideView: View {
     private func detailDismissed() {
         if let next = pendingPlayback {
             pendingPlayback = nil
-            playback = next
+            requestedPlaybackID = next.id
+            playbackPresentation.presentMirakurun(next)
         } else { returnFocusRevision += 1 }
     }
 

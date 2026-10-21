@@ -51,7 +51,8 @@ struct PlaybackView: View {
     let togglePauseRequest: UInt64
     let isMiniPlayer: Bool
     let onMiniPlayerChanged: (Bool) -> Void
-    let onClose: (Bool) -> Void
+    let onCloseStarted: () -> UUID?
+    let onClose: (UUID, Bool) -> Void
     let onDetachedChanged: (Bool) -> Void
     let onPictureInPictureNoticeChanged: (String?) -> Void
     let onTransportChanged: (PlaybackTransportState) -> Void
@@ -83,7 +84,8 @@ struct PlaybackView: View {
     init(item: Playback, resumeStore: RecordingResumeStore,
          closeRequest: UUID?, restoreRequest: UUID?, togglePauseRequest: UInt64,
          isMiniPlayer: Bool, onMiniPlayerChanged: @escaping (Bool) -> Void,
-         onClose: @escaping (Bool) -> Void,
+         onCloseStarted: @escaping () -> UUID?,
+         onClose: @escaping (UUID, Bool) -> Void,
          onDetachedChanged: @escaping (Bool) -> Void,
          onPictureInPictureNoticeChanged: @escaping (String?) -> Void,
          onTransportChanged: @escaping (PlaybackTransportState) -> Void,
@@ -95,6 +97,7 @@ struct PlaybackView: View {
         self.togglePauseRequest = togglePauseRequest
         self.isMiniPlayer = isMiniPlayer
         self.onMiniPlayerChanged = onMiniPlayerChanged
+        self.onCloseStarted = onCloseStarted
         self.onClose = onClose
         self.onDetachedChanged = onDetachedChanged
         self.onPictureInPictureNoticeChanged = onPictureInPictureNoticeChanged
@@ -351,7 +354,7 @@ struct PlaybackView: View {
     }
 
     private func close() {
-        guard !isClosing else { return }
+        guard !isClosing, let request = onCloseStarted() else { return }
         isClosing = true
         closeViewport(restoreFocus: false)
         onContinuousDisplayChanged(false)
@@ -372,14 +375,14 @@ struct PlaybackView: View {
                     recordingController.flushPosition()
                     recordingController.stop()
                 } else { isClosing = false }
-                onClose(success)
+                onClose(request, success)
             }
         } else {
             controller.stop()
-            onClose(true)
+            onClose(request, true)
         }
 #else
-        onClose(true)
+        onClose(request, true)
 #endif
     }
 

@@ -27,7 +27,7 @@ struct LibraryView: View {
     @State private var loading = false
     @StateObject private var playbackPresentation = PlaybackPresentationStore()
     private var playback: Playback? {
-        get { playbackPresentation.current }
+        get { playbackPresentation.current?.konomi }
         nonmutating set { playbackPresentation.present(newValue) }
     }
     @StateObject private var playbackIdleTimer = PlaybackIdleTimer()
@@ -204,7 +204,7 @@ struct LibraryView: View {
                 channels = []
                 channelError = nil
                 liveFavorites.configure(address: effectiveAddress)
-                playback = nil
+                if playback != nil { playback = nil }
                 reservations.invalidateConnection()
                 keywords.invalidateConnection()
                 if effectiveAddress.isEmpty { selectedTab = 4 }
@@ -258,9 +258,9 @@ struct LibraryView: View {
             .task(id: effectiveAddress) {
                 await account.restore(address: effectiveAddress)
             }
-            .disabled(playback != nil && !playbackPresentation.exposesLibrary)
-            .accessibilityHidden(playback != nil && !playbackPresentation.exposesLibrary)
-            if playbackPresentation.exposesLibrary, let item = playback {
+            .disabled(playbackPresentation.current != nil && !playbackPresentation.exposesLibrary)
+            .accessibilityHidden(playbackPresentation.current != nil && !playbackPresentation.exposesLibrary)
+            if playbackPresentation.exposesLibrary, let item = playbackPresentation.current {
                 VStack(alignment: .leading, spacing: 12) {
                     if let notice = playbackPresentation.notice {
                         Text(notice).font(.callout).foregroundStyle(.orange)
@@ -287,23 +287,11 @@ struct LibraryView: View {
             }
         }
         .overlay {
-            if let item = playback {
+            if let item = playbackPresentation.current {
                 GeometryReader { geometry in
                     let mini = playbackPresentation.isMiniPlayer
                     let scale = min(384 / max(1, geometry.size.width), 216 / max(1, geometry.size.height))
-                    PlaybackView(item: item, resumeStore: resumeStore,
-                                 closeRequest: playbackPresentation.closeRequest,
-                                 restoreRequest: playbackPresentation.restoreRequest,
-                                 togglePauseRequest: playbackPresentation.togglePauseRequest,
-                                 isMiniPlayer: playbackPresentation.isMiniPlayer,
-                                 onMiniPlayerChanged: { playbackPresentation.setMiniPlayer($0, for: item.id) },
-                                 onClose: { playbackPresentation.didClose(item.id, success: $0) },
-                                 onDetachedChanged: { playbackPresentation.setDetached($0, for: item.id) },
-                                 onPictureInPictureNoticeChanged: { playbackPresentation.setNotice($0, for: item.id) },
-                                 onTransportChanged: { playbackPresentation.setTransport($0, for: item.id) }) { needsDisplay in
-                        guard playback?.id == item.id else { return }
-                        playbackIdleTimer.setNeedsContinuousDisplay(needsDisplay)
-                    }
+                    player(for: item)
                     .id(item.id)
                     .frame(width: geometry.size.width, height: geometry.size.height)
                     .clipped()
@@ -323,10 +311,11 @@ struct LibraryView: View {
         .onPlayPauseCommand {
             if playbackPresentation.exposesLibrary { playbackPresentation.toggleDetachedPause() }
         }
+        .environmentObject(playbackPresentation)
         .environment(\.playbackHandoff, PlaybackHandoff(stopPrevious: { [weak playbackPresentation] in
             await playbackPresentation?.stopForAnotherPlayer() ?? true
         }))
-        .onChange(of: playback?.id) { _, id in
+        .onChange(of: playbackPresentation.current?.id) { _, id in
             if id == nil {
                 playbackIdleTimer.setNeedsContinuousDisplay(false)
                 // Refresh current-program labels after watching while the
@@ -383,6 +372,44 @@ struct LibraryView: View {
             channelError = (error as? ConnectionError)?.errorDescription
                 ?? "チャンネルを読み込めませんでした。接続先を確認し、再試行してください。"
         }
+    }
+
+    @ViewBuilder
+    private func player(for session: PlaybackSession) -> some View {
+        switch session {
+        case .konomi(let item):
+            PlaybackView(item: item, resumeStore: resumeStore,
+                         closeRequest: playbackPresentation.closeRequest,
+                         restoreRequest: playbackPresentation.restoreRequest,
+                         togglePauseRequest: playbackPresentation.togglePauseRequest,
+                         isMiniPlayer: playbackPresentation.isMiniPlayer,
+                         onMiniPlayerChanged: { playbackPresentation.setMiniPlayer($0, for: item.id) },
+                         onCloseStarted: { playbackPresentation.beginClosing(item.id) },
+                         onClose: { playbackPresentation.didClose(item.id, request: $0, success: $1) },
+                         onDetachedChanged: { playbackPresentation.setDetached($0, for: item.id) },
+                         onPictureInPictureNoticeChanged: { playbackPresentation.setNotice($0, for: item.id) },
+                         onTransportChanged: { playbackPresentation.setTransport($0, for: item.id) }) { needsDisplay in
+                updateContinuousDisplay(needsDisplay, for: item.id)
+            }
+        case .mirakurun(let item):
+            MirakurunPlaybackView(item: item,
+                                  closeRequest: playbackPresentation.closeRequest,
+                                  restoreRequest: playbackPresentation.restoreRequest,
+                                  togglePauseRequest: playbackPresentation.togglePauseRequest,
+                                  isMiniPlayer: playbackPresentation.isMiniPlayer,
+                                  onMiniPlayerChanged: { playbackPresentation.setMiniPlayer($0, for: item.id) },
+                                  onCloseStarted: { playbackPresentation.beginClosing(item.id) },
+                                  onClose: { playbackPresentation.didClose(item.id, request: $0, success: $1) },
+                                  onNoticeChanged: { playbackPresentation.setNotice($0, for: item.id) },
+                                  onTransportChanged: { playbackPresentation.setTransport($0, for: item.id) }) { needsDisplay in
+                updateContinuousDisplay(needsDisplay, for: item.id)
+            }
+        }
+    }
+
+    private func updateContinuousDisplay(_ needed: Bool, for id: UUID) {
+        guard playbackPresentation.current?.id == id else { return }
+        playbackIdleTimer.setNeedsContinuousDisplay(needed)
     }
 
     private func applyConnection() {

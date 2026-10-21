@@ -59,13 +59,13 @@ struct MirakurunServiceView: View {
     @AppStorage("mirakurunAddress") private var address = ""
     @State private var draftAddress = ""
     @State private var didPrepareDraft = false
-    @State private var playback: MirakurunPlaybackSelection?
+    @EnvironmentObject private var playbackPresentation: PlaybackPresentationStore
+    @State private var requestedPlaybackID: UUID?
     @State private var inputError: String?
 #if DEBUG
     @State private var debugPlaybackHandled = false
 #endif
     @StateObject private var store = MirakurunServiceStore()
-    @StateObject private var playbackIdleTimer = PlaybackIdleTimer()
 
     private var effectiveAddress: String {
 #if DEBUG
@@ -173,7 +173,7 @@ struct MirakurunServiceView: View {
             store.cancel()
         }
         .onChange(of: effectiveAddress) { _, next in
-            playback = nil
+            closeRequestedPlayback()
             inputError = nil
             draftAddress = next
             if !next.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -182,24 +182,17 @@ struct MirakurunServiceView: View {
                 store.cancel()
             }
         }
-        .fullScreenCover(item: $playback) { item in
-            PlaybackHandoffView {
-                MirakurunPlaybackView(item: item) { needsDisplay in
-                    guard playback?.id == item.id else { return }
-                    playbackIdleTimer.setNeedsContinuousDisplay(needsDisplay)
-                }
-            }
-        }
-        .onChange(of: playback?.id) { _, id in
-            if id == nil {
-                playbackIdleTimer.setNeedsContinuousDisplay(false)
-            }
-        }
 #if DEBUG
         .onChange(of: store.services) { _, _ in
             openDebugServiceIfNeeded()
         }
 #endif
+    }
+
+    private func closeRequestedPlayback() {
+        guard let requestedPlaybackID else { return }
+        playbackPresentation.cancelSession(requestedPlaybackID)
+        self.requestedPlaybackID = nil
     }
 
     private func connect() {
@@ -229,10 +222,12 @@ struct MirakurunServiceView: View {
         do {
             let client = try MirakurunClient(address: effectiveAddress)
             inputError = nil
-            playback = MirakurunPlaybackSelection(
+            let selection = MirakurunPlaybackSelection(
                 url: client.streamURL(for: service),
                 title: displayName(for: service)
             )
+            requestedPlaybackID = selection.id
+            playbackPresentation.presentMirakurun(selection)
         } catch {
             inputError = error.localizedDescription
         }
