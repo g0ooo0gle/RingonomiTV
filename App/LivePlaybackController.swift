@@ -25,6 +25,9 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
     // actor while SwiftUI is dismantling the representable.  Teardown must
     // not publish into that invalidating graph.
     private var isStopped = false
+    // A final handoff cannot be undone by a queued updateUIView load. Regular
+    // stop() remains reusable for EPGStation's retry/reconfiguration path.
+    private var isClosingPermanently = false
     // Background transitions keep the controller alive, but the VLC decoder
     // and its polling task must be released until the app is foregrounded
     // again.  This flag also makes repeated lifecycle notifications safe.
@@ -44,6 +47,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
     }
 
     func attachSurface(_ view: UIView) {
+        guard !isClosingPermanently else { return }
         videoSurface = view
         player.drawable = view
     }
@@ -178,7 +182,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         gate.reset()
     }
     func load(_ url: URL) {
-        guard !isSuspendedForBackground, currentURL != url else { return }
+        guard !isClosingPermanently, !isSuspendedForBackground, currentURL != url else { return }
         stopTask?.cancel()
         stopTask = nil
         stopWaitGeneration &+= 1
@@ -367,6 +371,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
     }
     /// A new backend must not create its decoder until this input has stopped.
     func stopBeforeClosing() async -> Bool {
+        isClosingPermanently = true
         stop()
         for _ in 0..<100 {
             if player.state == .stopped { return true }
