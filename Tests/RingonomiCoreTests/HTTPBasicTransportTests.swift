@@ -477,6 +477,23 @@ final class HTTPBasicTransportTests: XCTestCase, @unchecked Sendable {
         XCTAssertTrue(HTTPBasicTransportURLProtocol.requests.isEmpty)
     }
 
+    func testChunkReadsPreserveBytesAndHonorExplicitCancellation() async throws {
+        let body = Data((0..<10_000).map { UInt8($0 % 251) })
+        HTTPBasicTransportURLProtocol.reset { _ in .init(body: body) }
+        let client = try transport()
+        let stream = try await client.bytes(for: request())
+        var iterator = stream.makeAsyncIterator()
+        var result = Data()
+        while let chunk = try await iterator.nextChunk(maximumBytes: 1024) {
+            XCTAssertLessThanOrEqual(chunk.count, 1024)
+            result.append(chunk)
+        }
+        XCTAssertEqual(result, body)
+        stream.cancel()
+        do { _ = try await iterator.nextChunk(); XCTFail("Expected cancellation") }
+        catch { XCTAssertTrue(error is CancellationError) }
+    }
+
     func testTransportDescriptionsAreRedacted() throws {
         let client = try transport()
         let output = [client.description, client.debugDescription, String(reflecting: client),

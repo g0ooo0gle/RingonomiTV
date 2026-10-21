@@ -260,6 +260,32 @@ public final class HTTPBasicResponseStream: Sendable, AsyncSequence,
             }
         }
 
+        /// Reads a bounded block without checking the wrapper's lock for
+        /// every byte. Cancellation is checked before and after the block;
+        /// cancelling the stream also interrupts the underlying URL task.
+        public mutating func nextChunk(maximumBytes: Int = 32 * 1024) async throws -> Data? {
+            guard (1...(256 * 1024)).contains(maximumBytes) else { throw HTTPBasicTransportError.invalidLimit }
+            defer { withExtendedLifetime(stream) {} }
+            do {
+                try Task.checkCancellation()
+                if stream.isCancelled { throw CancellationError() }
+                var data = Data()
+                data.reserveCapacity(maximumBytes)
+                while data.count < maximumBytes, let byte = try await base.next() { data.append(byte) }
+                try Task.checkCancellation()
+                if stream.isCancelled { throw CancellationError() }
+                return data.isEmpty ? nil : data
+            } catch is CancellationError {
+                stream.cancel()
+                throw CancellationError()
+            } catch {
+                let wasCancelled = Task.isCancelled || stream.isCancelled
+                stream.cancel()
+                if wasCancelled { throw CancellationError() }
+                throw HTTPBasicTransportError.transport
+            }
+        }
+
         public var description: String { "HTTPBasicResponseStream.AsyncIterator(<redacted>)" }
         public var debugDescription: String { description }
         public var customMirror: Mirror { Mirror(self, unlabeledChildren: ["<redacted>"]) }
