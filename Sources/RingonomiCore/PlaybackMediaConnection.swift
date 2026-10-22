@@ -13,11 +13,13 @@ internal protocol PlaybackMediaRelaying: Sendable {
     func start(source: URL, kind: HTTPMediaResourceKind) async throws -> URL
     func stop() async
     var lastFailure: HTTPMediaRelayFailure? { get async }
+    var startupProgress: PlaybackStartupProgress? { get async }
     var failurePolicy: PlaybackMediaFailurePolicy { get }
 }
 
 extension PlaybackMediaRelaying {
     var failurePolicy: PlaybackMediaFailurePolicy { .playerMayRecover }
+    var startupProgress: PlaybackStartupProgress? { nil }
 }
 
 extension HTTPMediaRelay: PlaybackMediaRelaying {}
@@ -35,6 +37,7 @@ public final class PlaybackMediaConnection: CustomStringConvertible,
     private var relay: (any PlaybackMediaRelaying)?
     private var retirement: Task<Void, Never>?
     private var monitor: Task<Void, Never>?
+    public private(set) var startupProgress: PlaybackStartupProgress?
 
     public convenience init(client: RingonomiClient) {
         self.init(makeRelay: { try client.makeAuthenticatedMediaRelay() })
@@ -85,11 +88,17 @@ public final class PlaybackMediaConnection: CustomStringConvertible,
                 try Task.checkCancellation()
                 guard generation == expected else { throw CancellationError() }
                 let failurePolicy = relay.failurePolicy
+                let initialProgress = await relay.startupProgress
+                guard generation == expected, !Task.isCancelled else { throw CancellationError() }
+                startupProgress = initialProgress
                 monitor = Task { @MainActor [weak self] in
                     while !Task.isCancelled {
                         do { try await Task.sleep(for: self?.failurePollInterval ?? .milliseconds(250)) }
                         catch { return }
                         guard let self, self.generation == expected else { return }
+                        let progress = await relay.startupProgress
+                        guard self.generation == expected, !Task.isCancelled else { return }
+                        self.startupProgress = progress
                         let failure = await relay.lastFailure
                         guard self.generation == expected, !Task.isCancelled else { return }
                         // Players may recover a missed HLS segment or a
@@ -125,6 +134,7 @@ public final class PlaybackMediaConnection: CustomStringConvertible,
     public func invalidate() {
         generation = UUID()
         monitor?.cancel(); monitor = nil
+        startupProgress = nil
         if let relay {
             self.relay = nil
             let previous = retirement

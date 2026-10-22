@@ -97,6 +97,9 @@ private final class LiveCaptionTaskBox: @unchecked Sendable {
 /// video timestamps cannot drift because of separate reads.
 public actor LiveCaptionRelay {
     public private(set) var lastFailure: HTTPMediaRelayFailure?
+    /// Count-only transport progress for the current decoder GET.  The
+    /// snapshot intentionally contains no URL, headers, or stream data.
+    public private(set) var startupProgress: PlaybackStartupProgress?
 
     /// Unlike an HLS playlist relay, this relay owns one persistent raw TS
     /// request. Losing its upstream is terminal for the current playback
@@ -215,6 +218,7 @@ public actor LiveCaptionRelay {
     public func stop() {
         guard !stopped else { return }
         stopped = true
+        startupProgress = nil
         startupTimeout?.cancel()
         startupTimeout = nil
         startup?.resume(throwing: HLSRelayError.stopped)
@@ -251,6 +255,7 @@ public actor LiveCaptionRelay {
             }
             startupTimeout?.cancel()
             startupTimeout = nil
+            startupProgress = PlaybackStartupProgress(phase: .waitingForRequest, attempt: 0)
             startup?.resume(returning: url)
             startup = nil
 #if DEBUG
@@ -295,7 +300,10 @@ public actor LiveCaptionRelay {
             let failure = await Self.serve(connection, origin: origin, routePath: routePath,
                                             source: source, client: client, session: session, streamID: streamID,
                                             onBatch: callback, taskBox: taskBox,
-                                            acquireGET: { [weak self] in await self?.acquireGET(id) ?? false })
+                                            acquireGET: { [weak self] in await self?.acquireGET(id) ?? false },
+                                            recordProgress: { [weak self] phase in
+                                                await self?.recordProgress(phase, for: id) ?? false
+                                            })
             try? await Self.finish(connection)
             connection.cancel()
             await self?.finished(id, failure: failure)
@@ -311,7 +319,16 @@ public actor LiveCaptionRelay {
         // or the relay was stopped, it must not clear/report current state.
         guard activeGET == id else { return }
         activeGET = nil
-        if !stopped, let failure { lastFailure = failure }
+        guard !stopped else { return }
+        if let failure {
+            lastFailure = failure
+        } else {
+            // A decoder may close a healthy request while reconnecting or
+            // pausing. Keep the same attempt visible and wait for its next
+            // request instead of exposing a terminal-looking phase.
+            let attempt = startupProgress?.attempt ?? 0
+            startupProgress = PlaybackStartupProgress(phase: .waitingForRequest, attempt: attempt)
+        }
     }
 
     private func acquireGET(_ id: UUID) -> Bool {
@@ -323,6 +340,19 @@ public actor LiveCaptionRelay {
         // A new decoder request is a new attempt. Do not expose a previous
         // request's connection failure to the monitor for this attempt.
         lastFailure = nil
+        let attempt = (startupProgress?.attempt ?? 0) &+ 1
+        startupProgress = PlaybackStartupProgress(phase: .waitingForResponse, attempt: attempt)
+        return true
+    }
+
+    /// Records a phase transition only while the GET that caused it still
+    /// owns the relay.  Async URLSession completions can outlive a replaced
+    /// decoder request, so stale tasks must be unable to overwrite the new
+    /// generation's snapshot.
+    private func recordProgress(_ phase: PlaybackStartupPhase, for id: UUID) -> Bool {
+        guard !stopped, activeGET == id else { return false }
+        let attempt = startupProgress?.attempt ?? 0
+        startupProgress = PlaybackStartupProgress(phase: phase, attempt: attempt)
         return true
     }
 
@@ -330,7 +360,8 @@ public actor LiveCaptionRelay {
                               source: URL?, client: RingonomiClient, session: URLSession, streamID: UUID,
                               onBatch: @escaping @Sendable (LiveCaptionBatch) async -> Void,
                               taskBox: LiveCaptionTaskBox,
-                              acquireGET: @escaping @Sendable () async -> Bool)
+                              acquireGET: @escaping @Sendable () async -> Bool,
+                              recordProgress: @escaping @Sendable (PlaybackStartupPhase) async -> Bool)
         async -> HTTPMediaRelayFailure? {
         var sentHeaders = false
 #if DEBUG
@@ -464,6 +495,11 @@ public actor LiveCaptionRelay {
                 }
             }
 
+            // Header validation completed, so the decoder is waiting for the
+            // first media bytes.  The actor callback validates the GET lease
+            // again before publishing this snapshot.
+            guard await recordProgress(.waitingForData) else { throw CancellationError() }
+
             var fields = ["Content-Type": "video/mp2t"]
             if http.statusCode == 206,
                let contentRange = http.value(forHTTPHeaderField: "Content-Range"),
@@ -558,6 +594,7 @@ public actor LiveCaptionRelay {
             // Waiting for defer alone can leave the GET lease occupied.
             return try await withTaskCancellationHandler {
                 var iterator = stream.makeAsyncIterator()
+                var publishedFirstChunk = false
                 while let chunk = try await iterator.nextChunk(maximumBytes: 32 * 1024) {
                     try Task.checkCancellation()
     #if DEBUG
@@ -578,6 +615,12 @@ public actor LiveCaptionRelay {
                     }
                     try Task.checkCancellation()
                     try await send(chunk, to: connection)
+                    if !publishedFirstChunk, !chunk.isEmpty {
+                        // Publish once after the first forwarded chunk; later
+                        // chunks must not add actor hops to the video path.
+                        guard await recordProgress(.decoding) else { throw CancellationError() }
+                        publishedFirstChunk = true
+                    }
     #if DEBUG
                     debugForwardedBytes += chunk.count
     #endif
