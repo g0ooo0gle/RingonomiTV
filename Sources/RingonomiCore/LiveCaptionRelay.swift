@@ -594,6 +594,7 @@ public actor LiveCaptionRelay {
             // Waiting for defer alone can leave the GET lease occupied.
             return try await withTaskCancellationHandler {
                 var iterator = stream.makeAsyncIterator()
+                var publishedFirstChunk = false
                 while let chunk = try await iterator.nextChunk(maximumBytes: 32 * 1024) {
                     try Task.checkCancellation()
     #if DEBUG
@@ -614,10 +615,11 @@ public actor LiveCaptionRelay {
                     }
                     try Task.checkCancellation()
                     try await send(chunk, to: connection)
-                    if !chunk.isEmpty {
-                        // Publish decoding only after the first non-empty
-                        // chunk was accepted by the loopback connection.
+                    if !publishedFirstChunk, !chunk.isEmpty {
+                        // Publish once after the first forwarded chunk; later
+                        // chunks must not add actor hops to the video path.
                         guard await recordProgress(.decoding) else { throw CancellationError() }
+                        publishedFirstChunk = true
                     }
     #if DEBUG
                     debugForwardedBytes += chunk.count

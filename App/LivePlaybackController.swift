@@ -133,7 +133,6 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
     /// also used for pause, audio-track, and quality-change UI state, while
     /// this state machine must reject stale transport/player callbacks.
     private var startupDeadline = LivePlaybackStartupDeadline()
-    private var waitingSince = Date()
     private var lastFrameDate = Date.distantPast
     private var lastPictures = 0
     private var lastLog = Date.distantPast
@@ -240,13 +239,12 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         }
         resetVideoGeometryCache()
         isLoading = true
-        waitingSince = Date()
         player.audio?.isMuted = true
         gate.reset()
     }
     func load(_ url: URL) {
         guard !isClosingPermanently, !isSuspendedForBackground,
-              currentURL != url || isChangingQuality else { return }
+              currentURL != url else { return }
         stopTask?.cancel()
         stopTask = nil
         stopWaitGeneration &+= 1
@@ -282,7 +280,6 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         pendingStateLogDate = .distantPast
         waitingDiagnosticDate = .distantPast
 #endif
-        waitingSince = Date()
         isLoading = true
         status = "読み込み中…"
         player.audio?.isMuted = true
@@ -338,39 +335,11 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         }
         updateStatus()
     }
-    func retry() {
-        guard !isStopped, !isSuspendedForBackground else { return }
-        if isChangingQuality {
-            // The old URL is retained only as a lifecycle/retry anchor while
-            // SwiftUI publishes the selected quality's URL. Retrying it here
-            // would make the UI show the new quality while playing the old
-            // stream. Restart the bounded wait and let updateUIView deliver
-            // the replacement URL.
-            invalidateMediaConnection()
-            resolvedMediaURL = nil
-            pendingLoadURL = nil
-            pendingLoadGeneration = 0
-            startupDeadline.invalidate()
-            loadGeneration &+= 1
-            let expectedLoadGeneration = loadGeneration
-            startupDeadline.begin(generation: expectedLoadGeneration, phase: .waitingForMedia)
-            monitor?.cancel()
-            monitor = Task { @MainActor [weak self] in
-                while !Task.isCancelled {
-                    do { try await Task.sleep(for: .milliseconds(250)) } catch { break }
-                    guard let self else { return }
-                    self.updateStatus(expectedLoadGeneration: expectedLoadGeneration)
-                }
-            }
-            failure = nil
-            isLoading = true
-            waitingSince = Date()
-            gate.reset()
-            player.audio?.isMuted = true
-            status = "読み込み中…"
-            return
-        }
-        guard let url = currentURL else { return }
+    /// UIから現在選択中のURLを渡せば、画質変更の通知が失われた
+    /// 場合も旧画質へ戻らず、新しい再生世代を開始できる。
+    func retry(_ requestedURL: URL? = nil) {
+        guard !isStopped, !isSuspendedForBackground,
+              let url = requestedURL ?? currentURL else { return }
         currentURL = nil
         load(url)
     }
@@ -443,7 +412,6 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         monitor?.cancel()
         monitor = nil
         isLoading = true
-        waitingSince = Date()
         gate.reset()
         lastFrameDate = .distantPast
         lastPictures = 0
@@ -520,7 +488,6 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
 #if DEBUG
             logWaitingDiagnostic(reason: reason, force: true)
 #endif
-            waitingSince = Date()
             gate.reset()
             startupDeadline.begin(generation: loadGeneration, phase: .buffering)
         }
@@ -816,9 +783,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
             player.pause()
             player.audio?.isMuted = true
         } else {
-            isLoading = true
-            waitingSince = Date()
-            player.audio?.isMuted = true
+            beginWaiting(reason: "audio_selection_recovery")
             if player.state == .paused { player.play() }
         }
         audioSelectionError = "音声を切り替えられませんでした。"
@@ -941,6 +906,9 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         // been retired.  Keep polling only the waiting-for-media deadline
         // until SwiftUI supplies the replacement URL.
         if isChangingQuality {
+#if DEBUG
+            logStartupPhaseIfChanged()
+#endif
             if let phase = startupDeadline.timedOutPhase(generation: loadGeneration) {
                 fail(phase.timeoutMessage)
             }
@@ -957,11 +925,9 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
             startupDeadline.observe(mediaConnection?.startupProgress,
                                      generation: loadGeneration)
         }
-        if let phase = startupDeadline.timedOutPhase(generation: loadGeneration) {
-            fail(phase.timeoutMessage)
-            return
-        }
-
+#if DEBUG
+        logStartupPhaseIfChanged()
+#endif
         if pendingLoadURL != nil {
             startPendingLoadIfReady(for: expectedLoadGeneration)
             guard pendingLoadURL != nil else { return }
@@ -1060,6 +1026,13 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         if !isLoading, !wantsPause, Date().timeIntervalSince(lastFrameDate) > 1.5 {
             beginWaiting(reason: "video_progress_stalled")
         }
+        // Accept a fresh, stable audio/video sample before evaluating its
+        // deadline. A frame arriving at the boundary must not be discarded
+        // merely because this monitor runs every 250 ms.
+        if isLoading, let phase = startupDeadline.timedOutPhase(generation: loadGeneration) {
+            fail(phase.timeoutMessage)
+            return
+        }
         let size = player.videoSize
         if usesLiveCaptionRelay {
             captions.tick(seconds: Double(player.time.intValue) / 1_000, frameSize: size,
@@ -1079,6 +1052,17 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
     }
 
 #if DEBUG
+    private var lastStartupDiagnostic: String?
+
+    private func logStartupPhaseIfChanged() {
+        let phase = startupDeadline.currentPhase?.rawValue ?? "complete"
+        let attempt = mediaConnection?.startupProgress?.attempt ?? 0
+        let signature = "\(loadGeneration):\(phase):\(attempt)"
+        guard signature != lastStartupDiagnostic else { return }
+        lastStartupDiagnostic = signature
+        print("RingonomiLiveStartup: phase=\(phase) attempt=\(attempt)")
+    }
+
     // No URLs, program names, or track names are logged. Waiting diagnostics
     // also run when the normal frame log cannot obtain a usable sample.
     private func logWaitingDiagnostic(reason: String, force: Bool = false) {

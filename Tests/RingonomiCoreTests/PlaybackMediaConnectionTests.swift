@@ -9,7 +9,25 @@ private actor PlaybackRelayFixture: PlaybackMediaRelaying {
     let publishesProgress: Bool
     nonisolated let failurePolicy: PlaybackMediaFailurePolicy
     var lastFailure: HTTPMediaRelayFailure?
-    var startupProgress: PlaybackStartupProgress?
+    private var progress: PlaybackStartupProgress?
+    private var holdNextProgressRead = false
+    private var progressReader: CheckedContinuation<PlaybackStartupProgress?, Never>?
+    private var heldProgress: PlaybackStartupProgress?
+    var startupProgress: PlaybackStartupProgress? {
+        get async {
+            guard holdNextProgressRead else { return progress }
+            holdNextProgressRead = false
+            heldProgress = progress
+            return await withCheckedContinuation { progressReader = $0 }
+        }
+    }
+    var isProgressReadHeld: Bool { progressReader != nil }
+    func holdProgressRead() { holdNextProgressRead = true }
+    func releaseProgressRead() {
+        progressReader?.resume(returning: heldProgress)
+        progressReader = nil
+        heldProgress = nil
+    }
     private(set) var starts = 0
     private(set) var stops = 0
     private var continuation: CheckedContinuation<URL, Error>?
@@ -26,7 +44,7 @@ private actor PlaybackRelayFixture: PlaybackMediaRelaying {
         starts += 1
         if failsStartup { throw HLSRelayError.stopped }
         if publishesProgress {
-            startupProgress = PlaybackStartupProgress(phase: .waitingForRequest, attempt: 0)
+            progress = PlaybackStartupProgress(phase: .waitingForRequest, attempt: 0)
         }
         if waits { return try await withCheckedThrowingContinuation { continuation = $0 } }
         return local
@@ -36,7 +54,7 @@ private actor PlaybackRelayFixture: PlaybackMediaRelaying {
         continuation?.resume(throwing: HLSRelayError.stopped); continuation = nil
     }
     func setFailure(_ failure: HTTPMediaRelayFailure) { lastFailure = failure }
-    func setStartupProgress(_ progress: PlaybackStartupProgress?) { startupProgress = progress }
+    func setStartupProgress(_ progress: PlaybackStartupProgress?) { self.progress = progress }
 }
 
 private final class PlaybackRelayQueue: @unchecked Sendable {
@@ -189,6 +207,27 @@ final class PlaybackMediaConnectionTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(35))
         XCTAssertEqual(owner.startupProgress,
                        PlaybackStartupProgress(phase: .waitingForRequest, attempt: 0))
+        await owner.stop()
+    }
+
+    func testInFlightProgressReadCannotPublishAfterGenerationReplacement() async throws {
+        let first = PlaybackRelayFixture(1, publishesProgress: true)
+        let second = PlaybackRelayFixture(2, publishesProgress: true)
+        let queue = PlaybackRelayQueue([first, second])
+        let owner = PlaybackMediaConnection(makeRelay: { queue.next() }, failurePollInterval: .milliseconds(10))
+        _ = try await owner.resolve(source: source, kind: .media) { _ in XCTFail("Old failure") }
+        await first.setStartupProgress(.init(phase: .decoding, attempt: 99))
+        await first.holdProgressRead()
+        for _ in 0..<100 {
+            if await first.isProgressReadHeld { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        let readIsHeld = await first.isProgressReadHeld
+        XCTAssertTrue(readIsHeld)
+        _ = try await owner.resolve(source: source, kind: .media) { _ in }
+        await first.releaseProgressRead()
+        for _ in 0..<10 { await Task.yield() }
+        XCTAssertEqual(owner.startupProgress, .init(phase: .waitingForRequest, attempt: 0))
         await owner.stop()
     }
 

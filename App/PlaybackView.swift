@@ -507,7 +507,7 @@ struct PlaybackView: View {
                             Button(closeFailure == nil ? "再試行" : "もう一度閉じる") {
                                 if closeFailure != nil { close() }
                                 else if isRecording { recordingController.retry() }
-                                else { controller.retry() }
+                                else { controller.retry(streamURL) }
                             }.focused($playbackFocus, equals: .retry)
                             Button("閉じる", action: close)
                                 .focused($playbackFocus, equals: .close)
@@ -577,7 +577,7 @@ struct PlaybackView: View {
                     onReload: {
                         guard !isLoading, failure == nil else { return }
                         dismissCaptionOverlay(restoreFocus: false)
-                        controller.retry()
+                        controller.retry(streamURL)
                     },
                     onClose: { dismissCaptionOverlay(restoreFocus: true) }
                 )

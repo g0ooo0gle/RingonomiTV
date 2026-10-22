@@ -305,6 +305,22 @@ final class LiveCaptionRelayTests: XCTestCase, @unchecked Sendable {
         XCTAssertNil(stoppedProgress)
     }
 
+    func testValidatedHeadersWithoutBodyRemainWaitingForData() async throws {
+        LiveCaptionRelayFixtureProtocol.reset { _ in
+            .init(headers: ["Content-Type": "video/mp2t"], hold: true)
+        }
+        let (relay, local) = try await startRelay()
+        let decoder = try LiveCaptionLoopbackClient(local)
+        defer { decoder.cancel() }
+        let status = await decoder.responseStatus()
+        XCTAssertEqual(status, 200)
+        let waiting = await waitForStartupProgress(relay, phase: .waitingForData, attempt: 1)
+        XCTAssertTrue(waiting)
+        decoder.cancel()
+        let released = await waitForStartupProgress(relay, phase: .waitingForRequest, attempt: 1)
+        XCTAssertTrue(released)
+    }
+
     func testHEADDoesNotOpenAuthenticatedUpstream() async throws {
         LiveCaptionRelayFixtureProtocol.reset { _ in
             .init(headers: ["Content-Type": "video/mp2t"])
@@ -437,6 +453,8 @@ final class LiveCaptionRelayTests: XCTestCase, @unchecked Sendable {
         let pending = Task { await first.responseStatus() }
         try await waitForRequestCount(1)
         XCTAssertEqual(LiveCaptionRelayFixtureProtocol.requests.count, 1)
+        let waiting = await waitForStartupProgress(relay, phase: .waitingForResponse, attempt: 1)
+        XCTAssertTrue(waiting)
         first.cancel()
         _ = await pending.value
         try await waitForStopCount(1)
