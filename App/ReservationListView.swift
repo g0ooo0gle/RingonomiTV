@@ -32,7 +32,7 @@ struct ReservationListView: View {
                 }
             }.overlay {
                 if store.loading { ProgressView("録画予約を読み込んでいます…") }
-                else if store.items.isEmpty, store.error == nil {
+                else if mutation.pending == nil, store.items.isEmpty, store.error == nil {
                     Text(address.isEmpty ? "設定で視聴サーバーに接続してください。" : "録画予約はありません。番組表で番組を選んで予約できます。")
                         .multilineTextAlignment(.center).padding(60)
                 }

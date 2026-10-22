@@ -46,7 +46,7 @@ struct KeywordReservationListView: View {
         }
         .overlay {
             if store.loading { ProgressView("キーワード予約を読み込んでいます…") }
-            else if store.items.isEmpty, store.error == nil {
+            else if mutation.pending == nil, store.items.isEmpty, store.error == nil {
                 Text("キーワード予約はありません。「新規条件」から作成できます。")
                     .multilineTextAlignment(.center).padding(60)
             }
