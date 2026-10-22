@@ -10,11 +10,15 @@ enum PlaybackControlFocus: String, Hashable {
     case backward
     case forward
     case chapters
+    case scenes
     case playPause
     case captions
     case comments
     case audio
     case quality
+    case viewport
+    case pictureInPicture
+    case miniPlayer
     case close
     case panelClose
     case retry
@@ -29,76 +33,73 @@ enum PlaybackPanel: Equatable {
 struct PlaybackTopControls: View {
     let isRecording: Bool
     @Binding var recordingCaptionsEnabled: Bool
-    @Binding var recordingCommentsEnabled: Bool
-    @Binding var liveCommentsEnabled: Bool
-    @Binding var liveCommentDelay: Double
-    let commentStoreLoading: Bool
-    let commentReload: () -> Void
-    let liveCommentReload: () -> Void
+    @Binding var liveCaptionsEnabled: Bool
+    let recordingCommentsEnabled: Bool
+    let liveCommentsEnabled: Bool
+    let openComments: () -> Void
     let quality: String
     let isActive: Bool
     let isLoading: Bool
     let failure: String?
     let audioOptions: [PlaybackAudioOption]
     let selectedAudioID: String?
-    let selectAudio: (String) -> Void
+    let pictureInPictureSupported: Bool
+    let pictureInPicturePossible: Bool
+    let pictureInPictureBusy: Bool
+    let startPictureInPicture: () -> Void
+    let startMiniPlayer: () -> Void
     let close: () -> Void
+    let openViewport: () -> Void
     @FocusState.Binding var focus: PlaybackControlFocus?
+    @Binding var isCommentOverlayPresented: Bool
+    @Binding var isAudioOverlayPresented: Bool
+    @Binding var isCaptionOverlayPresented: Bool
     @Binding var isQualityOverlayPresented: Bool
+
+    private var captionsEnabled: Bool { isRecording ? recordingCaptionsEnabled : liveCaptionsEnabled }
+    private var isChoicePresented: Bool { isCommentOverlayPresented || isAudioOverlayPresented || isCaptionOverlayPresented || isQualityOverlayPresented }
 
     var body: some View {
         HStack(spacing: 24) {
             if isRecording {
-                Menu(recordingCaptionsEnabled ? "字幕：表示" : "字幕：非表示") {
-                    Button(recordingCaptionsEnabled ? "字幕を非表示にする" : "字幕を表示する") {
+                Menu(captionsEnabled ? "字幕：表示" : "字幕：非表示") {
+                    Button(captionsEnabled ? "字幕を非表示にする" : "字幕を表示する") {
                         recordingCaptionsEnabled.toggle()
                     }
                 }
                 .focused($focus, equals: .captions)
-                .accessibilityLabel("録画の字幕を設定")
-
-                Menu(recordingCommentsEnabled ? "実況：表示" : "実況：非表示") {
-                    Button(recordingCommentsEnabled ? "実況を非表示にする" : "実況を表示する") {
-                        recordingCommentsEnabled.toggle()
-                    }
-                    if recordingCommentsEnabled {
-                        Button("過去ログを再取得") { commentReload() }
-                            .disabled(commentStoreLoading)
-                    }
-                }
-                .focused($focus, equals: .comments)
-                .accessibilityLabel("録画の実況を設定")
+                .accessibilityLabel("録画の字幕")
+                .accessibilityValue(captionsEnabled ? "表示" : "非表示")
+                .accessibilityIdentifier("playback.captions")
             } else {
-                Menu(liveCommentsEnabled ? "実況：表示" : "実況：非表示") {
-                    Button(liveCommentsEnabled ? "実況を非表示にする" : "実況を表示する") {
-                        liveCommentsEnabled.toggle()
-                    }
-                    if liveCommentsEnabled {
-                        Menu("表示の遅延：\(Int(safeDelay))秒") {
-                            ForEach([0, 1, 2, 3, 5, 10], id: \.self) { value in
-                                Button(value == Int(safeDelay) ? "✓ \(value)秒" : "\(value)秒") {
-                                    liveCommentDelay = Double(value)
-                                }
-                            }
-                        }
-                        Button("実況に再接続") { liveCommentReload() }
-                    }
+                Button(captionsEnabled ? "字幕：表示" : "字幕：非表示") {
+                    focus = nil
+                    isCaptionOverlayPresented = true
                 }
-                .focused($focus, equals: .comments)
-                .accessibilityLabel("ライブの実況を設定")
+                .focused($focus, equals: .captions)
+                .accessibilityLabel("ライブの字幕")
+                .accessibilityValue(captionsEnabled ? "表示" : "非表示")
+                .accessibilityIdentifier("playback.captions")
             }
 
+            Button(commentsEnabled ? "実況：表示" : "実況：非表示", action: openComments)
+                .focused($focus, equals: .comments)
+                .accessibilityLabel(isRecording ? "録画の実況" : "ライブの実況")
+                .accessibilityValue(commentsEnabled ? "表示" : "非表示")
+                .accessibilityIdentifier("playback.comments")
+
             if audioOptions.count > 1 {
-                Menu("音声") {
-                    ForEach(audioOptions) { option in
-                        Button(option.id == selectedAudioID ? "✓ \(option.name)" : option.name) {
-                            selectAudio(option.id)
-                        }
-                    }
+                Button("音声") {
+                    focus = nil
+                    isAudioOverlayPresented = true
+#if DEBUG
+                    print("RingonomiAudioOverlay: opened")
+#endif
                 }
                 .focused($focus, equals: .audio)
-                .disabled(isLoading || failure != nil)
                 .accessibilityLabel("音声を選択")
+                .accessibilityValue(audioOptions.first(where: { $0.id == selectedAudioID })?.name ?? "選択情報なし")
+                .accessibilityIdentifier("playback.audio")
             }
 
             Button("画質：\(quality)") {
@@ -113,26 +114,55 @@ struct PlaybackTopControls: View {
             }
             .focused($focus, equals: .quality)
             .disabled(isLoading)
+            .accessibilityLabel("画質")
+            .accessibilityValue(quality)
+            .accessibilityIdentifier("playback.quality")
+
+            Button("小窓", action: startMiniPlayer)
+                .focused($focus, equals: .miniPlayer)
+                .disabled(isLoading || failure != nil || pictureInPictureBusy)
+                .accessibilityLabel("アプリ内小窓で表示")
+                .accessibilityHint("再生を続けながら一覧を操作します")
+                .accessibilityIdentifier("playback.miniPlayer")
+
+            if pictureInPictureSupported {
+                Button("PiP", action: startPictureInPicture)
+                    .focused($focus, equals: .pictureInPicture)
+                    .disabled(isLoading || failure != nil || !pictureInPicturePossible || pictureInPictureBusy)
+                    .accessibilityLabel("録画を小窓で表示")
+                    .accessibilityHint("小窓には映像と音声を表示します")
+                    .accessibilityIdentifier("playback.pictureInPicture")
+            }
+
+            Button("画面", action: openViewport)
+                .focused($focus, equals: .viewport)
+                .disabled(isLoading || failure != nil)
+                .accessibilityLabel("映像のクロップを調整")
 
             Button("閉じる", action: close)
                 .focused($focus, equals: .panelClose)
         }
         .frame(maxWidth: .infinity)
         // Keep the top controls in the current playback view hierarchy while
-        // the quality card is hosted by the full-screen player ZStack.
-        .disabled(isQualityOverlayPresented)
-        .allowsHitTesting(!isQualityOverlayPresented)
-        .accessibilityHidden(isQualityOverlayPresented)
+        // a selection card is hosted by the full-screen player ZStack.
+        .disabled(isChoicePresented)
+        .allowsHitTesting(!isChoicePresented)
+        .accessibilityHidden(isChoicePresented)
         .focusSection()
         .onChange(of: isActive) { _, active in
             // Loading and failure states remove the top panel's active focus.
-            // Close the card without trying to focus a disabled quality button.
-            if !active { isQualityOverlayPresented = false }
+            // Close the card without trying to focus a disabled selection button.
+            if !active {
+                isCommentOverlayPresented = false
+                isQualityOverlayPresented = false
+                isCaptionOverlayPresented = false
+                isAudioOverlayPresented = false
+            }
         }
     }
 
-    private var safeDelay: Double {
-        liveCommentDelay.isFinite ? min(10, max(0, liveCommentDelay)) : 2
+    private var commentsEnabled: Bool {
+        isRecording ? recordingCommentsEnabled : liveCommentsEnabled
     }
 }
 
@@ -171,7 +201,7 @@ struct QualityChoicesView: View {
                         Spacer()
                         if value == currentQuality {
                             Text("✓")
-                                .accessibilityLabel("現在の画質")
+                                .accessibilityHidden(true)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -179,6 +209,9 @@ struct QualityChoicesView: View {
                     .padding(.vertical, 14)
                 }
                 .focused($focusedTarget, equals: .option(value))
+                .accessibilityLabel("画質 \(value)")
+                .accessibilityValue(value == currentQuality ? "選択中" : "未選択")
+                .accessibilityIdentifier("playback.quality.\(value)")
             }
             Button("戻る", action: onClose)
                 .focused($focusedTarget, equals: .close)

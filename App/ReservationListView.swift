@@ -33,7 +33,7 @@ struct ReservationListView: View {
                         .multilineTextAlignment(.center).padding(60)
                 }
             }
-            .navigationTitle("録画予約")
+            .appNavigationTitle(Text("録画予約"))
             .toolbar {
                 NavigationLink("EPGStation") { EPGStationReservationListView() }
                 NavigationLink("キーワード") { KeywordReservationListView(address: address, store: keywords) }

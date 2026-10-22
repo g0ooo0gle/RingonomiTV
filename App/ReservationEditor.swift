@@ -30,7 +30,7 @@ struct ReservationEditor: View {
                     Text(channel.name + " · " + reservationDate(program.startDate) + " – " + reservationTime(program.endDate))
                     if original?.isRecordingInProgress == true { Text("録画中です。設定変更や削除は進行中の録画に影響します。").foregroundStyle(.orange) }
                 }
-                RecordingSettingsFields(draft: $draft)
+                RecordingSettingsFields(draft: $draft, address: address)
                 if let message { Section { Text(message).foregroundStyle(.red) } }
                 Section {
                     if busy { ProgressView("サーバーの処理結果を確認しています…") }
@@ -42,7 +42,8 @@ struct ReservationEditor: View {
                     Button("閉じる") { dismiss() }.disabled(busy)
                 }
             }.disabled(busy)
-            .navigationTitle(original == nil ? "録画予約" : "予約を変更")
+            .navigationFormViewport()
+            .appNavigationTitle(Text(original == nil ? "録画予約" : "予約を変更"))
             .interactiveDismissDisabled(busy)
             .confirmationDialog(original == nil ? "この番組を録画予約しますか？" : "予約の変更を保存しますか？", isPresented: $confirmation, titleVisibility: .visible) {
                 Button(original == nil ? "予約する" : "保存する") { Task { await save() } }

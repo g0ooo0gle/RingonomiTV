@@ -73,7 +73,8 @@ struct EPGStationLibraryView: View {
     @State private var detailAddress = ""
     @State private var showingDetail = false
     @StateObject private var store = EPGStationLibraryStore()
-    @StateObject private var resumeStore = RecordingResumeStore()
+    @EnvironmentObject private var resumeStore: RecordingResumeStore
+    @EnvironmentObject private var playbackPresentation: PlaybackPresentationStore
 #if DEBUG
     @State private var handledDebugSelection = false
     private var runtimeAddress: String? {
@@ -93,7 +94,7 @@ struct EPGStationLibraryView: View {
 
     var body: some View {
         List {
-            Section("EPGStation接続") {
+            AppSection("EPGStation接続") {
                 TextField("EPGStation URL（例：http://ホスト:8888）", text: $draftAddress)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
@@ -102,7 +103,7 @@ struct EPGStationLibraryView: View {
                 if let inputError { Text(inputError).foregroundStyle(.red) }
             }
             if !effectiveAddress.isEmpty {
-                Section("録画を探す") {
+                AppSection("録画を探す") {
                     TextField("番組名などで検索", text: $searchDraft)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
@@ -125,7 +126,7 @@ struct EPGStationLibraryView: View {
                         .disabled(store.loading)
                         .onChange(of: oldestFirst) { _, _ in offset = 0; reload() }
                 }
-                Section("録画") {
+                AppSection("録画") {
                     if store.loading {
                         ProgressView("録画を読み込んでいます…")
                         Button("読み込みを中止") { store.cancel() }
@@ -171,11 +172,12 @@ struct EPGStationLibraryView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .navigationTitle("EPGStation録画")
+        .appNavigationTitle(Text("EPGStation録画"))
         .navigationDestination(isPresented: $showingDetail) {
             if let selectedID {
                 EPGStationRecordingDetailView(
-                    address: detailAddress, recordingID: selectedID, resumeStore: resumeStore
+                    address: detailAddress, recordingID: selectedID, resumeStore: resumeStore,
+                    onPlaybackRequested: { playbackPresentation.presentEPGStationRecording($0) }
                 )
             }
         }
@@ -195,6 +197,7 @@ struct EPGStationLibraryView: View {
 #endif
         }
         .onChange(of: effectiveAddress) { _, next in
+            playbackPresentation.cancelSessions(for: .epgStationRecording)
             showingDetail = false
             selectedID = nil
             detailAddress = ""
@@ -230,6 +233,7 @@ struct EPGStationLibraryView: View {
 }
 
 private struct EPGStationPendingFile {
+    let fileID: Int
     let url: URL
     let title: String
     let duration: Double?
@@ -238,17 +242,23 @@ private struct EPGStationPendingFile {
     let savedPosition: Double?
 }
 
-private struct EPGStationPlaybackSession: Identifiable {
+struct EPGStationPlaybackSession: Identifiable {
     let item: FilePlaybackSelection
     let resumeID: RecordingResumeID
     let status: String
     var id: UUID { item.id }
+    var title: String { item.title }
 }
 
 private struct EPGStationRecordingDetailView: View {
     let address: String
     let recordingID: Int
     @ObservedObject var resumeStore: RecordingResumeStore
+    let onPlaybackRequested: (EPGStationPlaybackSession) -> Void
+    @EnvironmentObject private var playbackPresentation: PlaybackPresentationStore
+    @FocusState private var focusedFileID: Int?
+    @State private var requestedPlaybackID: UUID?
+    @State private var requestedFileID: Int?
     @Environment(\.dismiss) private var dismiss
     @State private var recording: EPGStationRecording?
     @State private var loading = false
@@ -260,8 +270,6 @@ private struct EPGStationRecordingDetailView: View {
     @State private var fileTask: Task<Void, Never>?
     @State private var pendingFile: EPGStationPendingFile?
     @State private var resumePrompt = false
-    @State private var playback: EPGStationPlaybackSession?
-    @StateObject private var playbackIdleTimer = PlaybackIdleTimer()
 #if DEBUG
     @State private var handledDebugFile = false
 #endif
@@ -284,7 +292,7 @@ private struct EPGStationRecordingDetailView: View {
                     if let description = recording.description, !description.isEmpty { Text(description) }
                     if let extended = recording.extended, !extended.isEmpty { Text(extended).font(.caption) }
                 }
-                Section("再生するファイル") {
+                AppSection("再生するファイル") {
                     if recording.videoFiles.isEmpty {
                         Text("再生できるファイルがありません。")
                         Button("詳細を更新") { detailTask = Task { await load() } }
@@ -299,6 +307,7 @@ private struct EPGStationRecordingDetailView: View {
                                 }
                             }
                             .disabled(preparingFile)
+                            .focused($focusedFileID, equals: file.id)
                         }
                     }
                     if preparingFile {
@@ -309,7 +318,7 @@ private struct EPGStationRecordingDetailView: View {
                 }
             }
         }
-        .navigationTitle("録画の詳細")
+        .appNavigationTitle(Text("録画の詳細"))
         .task(id: address + ":" + String(recordingID)) { await load() }
         .onDisappear {
             detailTask?.cancel()
@@ -322,21 +331,16 @@ private struct EPGStationRecordingDetailView: View {
             }
             Button("キャンセル", role: .cancel) { pendingFile = nil }
         }
-        .fullScreenCover(item: $playback) { session in
-            FilePlaybackView(item: session.item, onContinuousDisplayChanged: { needed in
-                guard playback?.id == session.id else { return }
-                playbackIdleTimer.setNeedsContinuousDisplay(needed)
-            }, onProgress: { position, duration, ended in
-                guard playback?.id == session.id else { return }
-                resumeStore.save(session.resumeID, seconds: position, duration: duration,
-                                 status: session.status, reachedEnd: ended)
+        .onChange(of: playbackPresentation.current?.id) { previous, current in
+            guard previous == requestedPlaybackID, previous != current else { return }
+            requestedPlaybackID = nil
+            guard playbackPresentation.current == nil || playbackPresentation.exposesLibrary else { return }
+            if let requestedFileID, recording?.videoFiles.contains(where: { $0.id == requestedFileID }) == true {
+                focusedFileID = requestedFileID
+            }
 #if DEBUG
-                print("RingonomiEPGStationProgress: seconds=\(position) duration=\(duration ?? -1) ended=\(ended)")
+            print("RingonomiEPGStationFileReturn: selected=\(focusedFileID != nil)")
 #endif
-            })
-        }
-        .onChange(of: playback?.id) { _, id in
-            if id == nil { playbackIdleTimer.setNeedsContinuousDisplay(false) }
         }
     }
 
@@ -399,7 +403,7 @@ private struct EPGStationRecordingDetailView: View {
                 let status = recording.isRecording ? "Recording" : "Recorded"
                 let hint = recording.isRecording ? nil : duration
                 let saved = resumeStore.position(for: resumeID, duration: hint, status: status)
-                let pending = EPGStationPendingFile(url: url, title: recording.name, duration: hint,
+                let pending = EPGStationPendingFile(fileID: file.id, url: url, title: recording.name, duration: hint,
                     resumeID: resumeID, status: status, savedPosition: saved)
                 pendingFile = pending
 #if DEBUG
@@ -420,8 +424,13 @@ private struct EPGStationRecordingDetailView: View {
 
     private func start(_ pending: EPGStationPendingFile, position: Double) {
         let item = FilePlaybackSelection(url: pending.url, title: pending.title,
-                                         durationHint: pending.duration, resumePosition: position)
-        playback = EPGStationPlaybackSession(item: item, resumeID: pending.resumeID, status: pending.status)
+                                         durationHint: pending.duration,
+                                         isGrowingRecording: pending.status == "Recording",
+                                         resumePosition: position)
+        let session = EPGStationPlaybackSession(item: item, resumeID: pending.resumeID, status: pending.status)
+        requestedPlaybackID = session.id
+        requestedFileID = pending.fileID
+        onPlaybackRequested(session)
         pendingFile = nil
     }
 

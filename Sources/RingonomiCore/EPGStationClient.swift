@@ -465,6 +465,7 @@ public struct EPGStationClient: @unchecked Sendable {
         method: String = "GET",
         body: Data? = nil
     ) async throws -> Data {
+        try Task.checkCancellation()
         var request = URLRequest(url: requestURL)
         request.httpMethod = method
         request.httpBody = body

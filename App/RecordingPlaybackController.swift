@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import RingonomiCore
 @preconcurrency import AVFoundation
 
@@ -6,6 +7,13 @@ import RingonomiCore
 @MainActor
 final class RecordingPlaybackController: ObservableObject {
     let player = AVPlayer()
+    let pictureInPicture = RecordingPictureInPicture()
+    private var pictureInPictureObservation: AnyCancellable?
+    private var pictureInPictureActiveObservation: AnyCancellable?
+    private var nowPlayingTitle = "録画"
+    private lazy var remoteControls = RecordingRemoteControls(player: player) { [weak self] command in
+        self?.handleRemoteCommand(command)
+    }
     let captions = RecordingCaptionController()
     @Published private(set) var status = "読み込み中…"
     @Published private(set) var playbackTime = "00:00"
@@ -22,16 +30,32 @@ final class RecordingPlaybackController: ObservableObject {
     private var commercialNoticeUntil = 0.0
     private var commercialUndoUntil = 0.0
     private var currentURL: URL?
+    private var mediaConnection: PlaybackMediaConnection?
+    private var mediaResolution: Task<Void, Never>?
+
+    func configureHTTPAuthentication(client: RingonomiClient) {
+        guard currentURL == nil else { return }
+        mediaConnection?.invalidate()
+        mediaConnection = client.usesHTTPBasicAuthentication ? PlaybackMediaConnection(client: client) : nil
+    }
+
+    private func invalidateMediaConnection() {
+        mediaResolution?.cancel(); mediaResolution = nil
+        mediaConnection?.invalidate()
+    }
     // SwiftUI may dismantle the representable while queued KVO/asset tasks
     // are still waiting on the main actor.  This gate keeps those callbacks
     // from touching published state after teardown.
     private var isStopped = false
+    private var isClosingPermanently = false
     // Background transitions keep the SwiftUI controller alive, but the
     // AVPlayer item, observers, and preparation tasks are released until the
     // app becomes active again.  Repeated lifecycle notifications are safe.
     private var isSuspendedForBackground = false
     private var isChangingQuality = false
     private var wantsPause = false
+    private var sceneSearchShouldResume: Bool?
+    private var pendingSceneSeek: Double?
     private var targetSeconds: Double = 0
     private var preparing = false
     private var prerolled = false
@@ -48,6 +72,7 @@ final class RecordingPlaybackController: ObservableObject {
     private var waitingSince: Date?
     private var lastLog = Date.distantPast
     private var durationHint: Double?
+    private var recordingStatus: String?
     private var lastTrustedPosition: Double?
     private var lastTrustedDuration: Double?
     private var lastCheckpoint = Date.distantPast
@@ -63,12 +88,24 @@ final class RecordingPlaybackController: ObservableObject {
     private var audioGroup: AVMediaSelectionGroup?
     private var audioOptionMap: [String: AVMediaSelectionOption] = [:]
     private var preferredAudioKey: String?
-    private var audioRestorePending = false
+    private var audioDiscoveryCompleted = false
     private var audioRestoreAttempted = false
 
     init() {
         player.automaticallyWaitsToMinimizeStalling = true
         player.isMuted = true
+        pictureInPictureObservation = pictureInPicture.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
+        pictureInPictureActiveObservation = pictureInPicture.$isActive.sink { [weak self] active in
+            guard let self else { return }
+            if active {
+                self.remoteControls.activate()
+                self.updateRemoteControls()
+            } else {
+                self.remoteControls.deactivate()
+            }
+        }
     }
 
     /// Selects one of the options discovered on the current asset.  The
@@ -162,7 +199,7 @@ final class RecordingPlaybackController: ObservableObject {
             selectedAudioID = nil
             audioSelectionError = nil
         }
-        audioRestorePending = false
+        audioDiscoveryCompleted = false
         audioRestoreAttempted = false
         if clearPreferred { preferredAudioKey = nil }
     }
@@ -181,7 +218,7 @@ final class RecordingPlaybackController: ObservableObject {
         audioOptions = []
         selectedAudioID = nil
         audioSelectionError = nil
-        audioRestorePending = false
+        audioDiscoveryCompleted = false
         audioRestoreAttempted = false
         let asset = item.asset
 
@@ -230,6 +267,7 @@ final class RecordingPlaybackController: ObservableObject {
               audioGeneration == expectedGeneration,
               audioSourceID == sourceID,
               player.currentItem === item else { return }
+        audioDiscoveryCompleted = true
         guard let group, !group.options.isEmpty else {
             // Some streams have no selectable alternate audio.  That is a
             // valid engine default, not a playback error.
@@ -238,6 +276,7 @@ final class RecordingPlaybackController: ObservableObject {
             audioOptionMap.removeAll()
             selectedAudioID = nil
             audioSelectionError = nil
+            restorePreferredAudioIfReady()
 #if DEBUG
             print("RingonomiTVAudio: optionCount=0 selectedID=nil")
 #endif
@@ -249,6 +288,9 @@ final class RecordingPlaybackController: ObservableObject {
         }
         let options = PlaybackAudioCatalog.options(sourceID: sourceID, descriptors: descriptors)
         guard !options.isEmpty else {
+            // An oversized/rejected catalog is unknown, not proof that a
+            // previously selected track is missing.
+            audioDiscoveryCompleted = false
             audioGroup = group
             audioOptions = []
             audioOptionMap.removeAll()
@@ -265,7 +307,7 @@ final class RecordingPlaybackController: ObservableObject {
         guard options.count == group.options.count else {
             audioOptions = []
             audioOptionMap.removeAll()
-            audioRestorePending = false
+            audioDiscoveryCompleted = false
             audioSelectionError = nil
             return
         }
@@ -274,7 +316,6 @@ final class RecordingPlaybackController: ObservableObject {
         })
         audioSelectionError = nil
 
-        audioRestorePending = PlaybackAudioCatalog.preferredID(named: preferredAudioKey, in: options) != nil
         if let current = item.currentMediaSelection.selectedMediaOption(in: group),
            let currentIndex = group.options.firstIndex(where: { $0.isEqual(current) }),
            options.indices.contains(currentIndex) {
@@ -286,31 +327,31 @@ final class RecordingPlaybackController: ObservableObject {
 #endif
     }
 
-    /// Restores a named user choice once the initial video gate has opened.
-    /// A missing/ambiguous label intentionally falls back to the engine's
-    /// default and is still considered one completed attempt for this asset.
+    /// Restore only after discovery and the initial video gate are complete.
+    /// Missing/ambiguous choices leave the engine's audio in place and explain
+    /// why it could not be restored without guessing a track.
     private func restorePreferredAudioIfReady() {
         guard !isStopped,
               !audioRestoreAttempted,
               !isLoading,
               !preparing,
               failure == nil,
-              !audioOptions.isEmpty else { return }
+              audioDiscoveryCompleted else { return }
         audioRestoreAttempted = true
-        guard audioRestorePending,
-              let preferredID = PlaybackAudioCatalog.preferredID(named: preferredAudioKey, in: audioOptions) else {
-            audioRestorePending = false
+        let preference = PlaybackAudioCatalog.preferenceMatch(named: preferredAudioKey, in: audioOptions)
+        guard let preferredID = preference.selectedID else {
+            if let notice = preference.notice { audioSelectionError = notice }
             return
         }
-        audioRestorePending = false
         // The player is paused as part of the initial seek/preroll even when
         // the user did not request pause. Preserve only the explicit intent.
         selectAudioTrack(id: preferredID, forcedPause: wantsPause)
     }
     /// 動画を読み込み始める前に一度だけ設定する。
-    func configurePosition(seconds: Double, durationHint: Double?, onCheckpoint: @escaping (Double, Double?, Bool) -> Void) {
+    func configurePosition(seconds: Double, durationHint: Double?, status: String? = nil, onCheckpoint: @escaping (Double, Double?, Bool) -> Void) {
         guard currentURL == nil else { return }
         self.durationHint = durationHint
+        self.recordingStatus = status
         targetSeconds = RecordingResumePolicy.clamp(seconds: seconds, duration: durationHint) ?? 0
         self.onCheckpoint = onCheckpoint
         updateTime()
@@ -318,11 +359,18 @@ final class RecordingPlaybackController: ObservableObject {
 
     func flushPosition() { checkpoint(force: true) }
 
+    private var videoOutputIsReady: Bool {
+        // tvOS stops drawing into the inline layer while PiP owns its video.
+        // Seek/preroll/item readiness still gate playback and checkpoints;
+        // only the active native PiP presentation replaces the layer check.
+        videoLayer?.isReadyForDisplay == true || pictureInPicture.hasActiveVideoPresentation
+    }
+
     private func checkpoint(force: Bool = false, notify: Bool = true) {
         guard !isStopped else { return }
         // seek/preroll中の一時的な0秒や、最初のフレームを待つ時計は保存しない。
         if !preparing, !isLoading, failure == nil, prerolled,
-           player.currentItem?.status == .readyToPlay, videoLayer?.isReadyForDisplay == true {
+           player.currentItem?.status == .readyToPlay, videoOutputIsReady {
             lastTrustedPosition = safeTime()
             let duration = player.currentItem?.duration.seconds ?? .nan
             lastTrustedDuration = duration.isFinite && duration > 0 ? duration : durationHint
@@ -335,16 +383,19 @@ final class RecordingPlaybackController: ObservableObject {
         }
     }
     func attach(_ layer: AVPlayerLayer) {
+        guard !isClosingPermanently else { return }
         layerObservation?.invalidate()
         videoLayer = layer
         layer.player = player
+        pictureInPicture.attach(to: layer)
         layer.videoGravity = .resizeAspect
         layerObservation = layer.observe(\.isReadyForDisplay, options: [.new]) { [weak self] _, _ in
             Task { @MainActor [weak self] in self?.revealWhenReady() }
         }
     }
     func load(_ url: URL, preservingEndState: Bool = false) {
-        guard !isSuspendedForBackground, currentURL != url else { return }
+        guard !isClosingPermanently, !isSuspendedForBackground, currentURL != url else { return }
+        invalidateMediaConnection()
         let keepEnded = reachedEnd && (preservingEndState || isChangingQuality)
         isStopped = false
         isSuspendedForBackground = false
@@ -384,6 +435,36 @@ final class RecordingPlaybackController: ObservableObject {
 #endif
             return
         }
+        let expected = generation
+        if let mediaConnection {
+            // No old asset may preroll while its replacement URL is pending.
+            timer?.cancel(); timer = nil
+            captions.stop()
+            player.replaceCurrentItem(with: nil)
+            preparing = true
+            prerolled = false
+            playbackStartRequested = false
+            beginWaiting()
+            mediaResolution = Task { @MainActor [weak self] in
+                do {
+                    let resolved = try await mediaConnection.resolve(source: url, kind: .playlist) { [weak self] error in
+                        guard let self, self.generation == expected else { return }
+                        self.fail(error.localizedDescription)
+                    }
+                    guard let self, !Task.isCancelled, self.generation == expected,
+                          !self.isStopped, !self.isSuspendedForBackground else { return }
+                    self.installItem(resolved, expected: expected)
+                } catch {
+                    guard let self, !Task.isCancelled, !(error is CancellationError),
+                          self.generation == expected else { return }
+                    self.fail(error.localizedDescription)
+                }
+            }
+        } else { installItem(url, expected: expected) }
+    }
+
+    private func installItem(_ url: URL, expected: Int) {
+        guard generation == expected, !isStopped, !isSuspendedForBackground else { return }
         let item = AVPlayerItem(url: url)
         item.preferredForwardBufferDuration = 3
         captions.attach(to: item, targetSeconds: targetSeconds)
@@ -392,30 +473,12 @@ final class RecordingPlaybackController: ObservableObject {
         playbackStartRequested = false
         beginWaiting()
         player.replaceCurrentItem(with: item)
-        let expected = generation
         observations.append(item.observe(\.status, options: [.initial, .new]) { [weak self] _, _ in
             Task { @MainActor [weak self] in self?.itemStatusChanged(expected) }
         })
         observations.append(player.observe(\.timeControlStatus, options: [.new]) { [weak self] _, _ in
             Task { @MainActor [weak self] in self?.playbackStateChanged() }
         })
-        endToken = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
-            Task { @MainActor [weak self, weak item] in
-                guard let self, let item, !self.isStopped, !self.isSuspendedForBackground,
-                      !self.isChangingQuality, !self.preparing,
-                      self.player.currentItem === item else { return }
-                self.status = "再生終了（再生ボタンで最初から）"
-                self.player.pause()
-                self.wantsPause = true
-                self.isLoading = false
-                self.waitingSince = nil
-                self.reachedEnd = true
-                self.checkpoint(force: true)
-#if DEBUG
-                print("RingonomiRecordingEnded: reached time=\(self.safeTime())")
-#endif
-            }
-        }
         if clockToken == nil {
             clockToken = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.25, preferredTimescale: 600), queue: .main) { [weak self] _ in
                 Task { @MainActor [weak self] in self?.updateTime() }
@@ -428,7 +491,8 @@ final class RecordingPlaybackController: ObservableObject {
     /// is backgrounded.  The resume path creates a fresh AVPlayerItem instead
     /// of trying to continue the item that was interrupted by Home/system UI.
     func suspendForBackground() {
-        guard !isStopped, !isSuspendedForBackground, currentURL != nil, failure == nil else { return }
+        guard !isStopped, !isSuspendedForBackground, currentURL != nil, failure == nil,
+              !pictureInPicture.ownsPlayback else { return }
 
         checkpoint(force: true)
         if !preparing, !isLoading, prerolled {
@@ -439,6 +503,7 @@ final class RecordingPlaybackController: ObservableObject {
         }
 
         isSuspendedForBackground = true
+        invalidateMediaConnection()
 #if DEBUG
         print("RingonomiRecordingLifecycle: suspended target=\(targetSeconds) paused=\(wantsPause) ended=\(reachedEnd)")
 #endif
@@ -516,16 +581,46 @@ final class RecordingPlaybackController: ObservableObject {
         default: break
         }
     }
+    private func observePlaybackEnd(on item: AVPlayerItem, generation expected: Int) {
+        if let endToken { NotificationCenter.default.removeObserver(endToken) }
+        endToken = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self, weak item] in
+                guard let self, let item, !self.isStopped, !self.isSuspendedForBackground,
+                      !self.isChangingQuality, !self.preparing, !self.reachedEnd,
+                      self.generation == expected,
+                      self.player.currentItem === item else { return }
+                // A notification can be posted after replay has reused this
+                // item. A known duration lets us reject that stale EOF while
+                // keeping authoritative ends for unknown-length media.
+                let duration = item.duration.seconds
+                if duration.isFinite, duration > 0,
+                   self.safeTime() < duration - min(1, duration / 2) { return }
+                self.finishPlayback(at: self.safeTime())
+            }
+        }
+    }
+
     private func preparePosition(_ expected: Int) {
         guard !isStopped, !isSuspendedForBackground, !isChangingQuality,
               expected == generation, preparing, !prerolled, !preparationInFlight,
               player.status == .readyToPlay,
-              player.currentItem?.status == .readyToPlay else { return }
+              let item = player.currentItem, item.status == .readyToPlay else { return }
+        // Capture each seek/replay generation so a delayed end notification
+        // from the same AVPlayerItem cannot terminate its next playback.
+        observePlaybackEnd(on: item, generation: expected)
         preparationInFlight = true
         player.pause()
-        // The new HLS item may have a different duration from the catalog.
-        // Clamp again after it becomes ready so EOF is never a seek target.
-        targetSeconds = RecordingResumePolicy.clamp(seconds: targetSeconds, duration: durationSeconds) ?? 0
+        // Use only the ready asset's duration to distinguish an explicit end
+        // seek from normal playback. A catalog hint cannot prove media EOF.
+        let mediaDuration = player.currentItem?.duration.seconds
+        let seeksToEnd = RecordingSeekPolicy.isEndTarget(
+            seconds: targetSeconds, duration: mediaDuration, status: recordingStatus
+        )
+        if seeksToEnd, let mediaDuration {
+            targetSeconds = mediaDuration
+        } else {
+            targetSeconds = RecordingResumePolicy.clamp(seconds: targetSeconds, duration: durationSeconds) ?? 0
+        }
         let target = CMTime(seconds: targetSeconds, preferredTimescale: 600)
         guard target.isValid, target.isNumeric else {
             fail("再生位置を読み込めませんでした。最初から再生し直してください。")
@@ -536,6 +631,11 @@ final class RecordingPlaybackController: ObservableObject {
                 guard let self, !self.isStopped, self.generation == expected, self.preparing else { return }
                 guard finished, self.player.status == .readyToPlay else {
                     self.fail("再生位置を読み込めませんでした。再試行してください。")
+                    return
+                }
+                if seeksToEnd {
+                    // No future frames exist to satisfy preroll at EOF.
+                    self.finishPlayback(at: self.targetSeconds)
                     return
                 }
                 // readyToPlayと停止状態を確認してから呼び、APIの例外条件を避ける。
@@ -549,9 +649,11 @@ final class RecordingPlaybackController: ObservableObject {
                         }
                         self.prerolled = true
                         self.preparationInFlight = false
-                        if self.videoLayer?.isReadyForDisplay != true {
-                            // 一部のHLSはprerollだけでは最初の映像を出力しない。
-                            // 先読み後にミュートで描画を開始し、最初のフレームまで覆いを保つ。
+                        if !self.videoOutputIsReady || (!self.wantsPause && self.pictureInPicture.hasActiveVideoPresentation) {
+                            // Some HLS needs a muted draw to produce its first
+                            // inline frame. PiP also needs an explicit start
+                            // after rebuffering, without AVPlayer's extra
+                            // automatic wait. Never restart a user-paused PiP.
                             self.player.isMuted = true
                             self.playbackStartRequested = true
                             self.player.playImmediately(atRate: 1)
@@ -562,11 +664,44 @@ final class RecordingPlaybackController: ObservableObject {
             }
         }
     }
+    /// Both natural EOF and an explicit end seek use the same terminal state.
+    private func finishPlayback(at seconds: Double) {
+        generation += 1
+        cancelPreparation()
+        preparing = false
+        prerolled = false
+        playbackStartRequested = false
+        advancedSincePreroll = false
+        targetSeconds = seconds
+        lastTrustedPosition = seconds
+        lastTrustedDuration = durationSeconds
+        wantsPause = true
+        reachedEnd = true
+        isLoading = false
+        waitingSince = nil
+        captions.reset(for: seconds)
+        status = "再生終了（再生ボタンで最初から）"
+        pictureInPicture.returnToInline()
+        updateTime()
+        checkpoint(force: true)
+#if DEBUG
+        print("RingonomiRecordingEnded: reached time=\(seconds)")
+#endif
+    }
+
     private func revealWhenReady() {
         guard !isStopped, !isSuspendedForBackground, !isChangingQuality,
               failure == nil, preparing, prerolled,
               player.currentItem?.status == .readyToPlay,
-              videoLayer?.isReadyForDisplay == true else { return }
+              videoOutputIsReady else { return }
+        if let seconds = pendingSceneSeek {
+            pendingSceneSeek = nil
+            let maximum = durationSeconds.map { max(0, $0 - 0.1) } ?? seconds
+            commercialSkipPolicy.resetAfterManualSeek()
+            clearCommercialSkipNotice()
+            prepareExistingPosition(min(maximum, max(0, seconds)))
+            return
+        }
         if wantsPause {
             // A user-paused item is ready as soon as preroll and the first
             // frame are available. It must not wait for an actual playing
@@ -587,7 +722,7 @@ final class RecordingPlaybackController: ObservableObject {
             updateTime()
             checkpoint(force: true)
 #if DEBUG
-            print("RingonomiTVNativeReady: target=\(targetSeconds) actual=\(player.currentTime().seconds) rate=\(player.rate) muted=\(player.isMuted) layerReady=true paused=true timeControl=\(player.timeControlStatus.rawValue)")
+            print("RingonomiTVNativeReady: target=\(targetSeconds) actual=\(player.currentTime().seconds) rate=\(player.rate) muted=\(player.isMuted) layerReady=\(videoLayer?.isReadyForDisplay == true) pipActive=\(pictureInPicture.hasActiveVideoPresentation) paused=true timeControl=\(player.timeControlStatus.rawValue)")
 #endif
             return
         }
@@ -621,11 +756,20 @@ final class RecordingPlaybackController: ObservableObject {
         updateTime()
         checkpoint(force: true)
 #if DEBUG
-        print("RingonomiTVNativeReady: target=\(targetSeconds) actual=\(player.currentTime().seconds) rate=\(player.rate) muted=\(player.isMuted) layerReady=true timeControl=\(player.timeControlStatus.rawValue)")
+        print("RingonomiTVNativeReady: target=\(targetSeconds) actual=\(player.currentTime().seconds) rate=\(player.rate) muted=\(player.isMuted) layerReady=\(videoLayer?.isReadyForDisplay == true) pipActive=\(pictureInPicture.hasActiveVideoPresentation) timeControl=\(player.timeControlStatus.rawValue)")
 #endif
     }
     private func playbackStateChanged() {
         guard !isStopped, !isSuspendedForBackground, failure == nil, !preparing else { return }
+        if pictureInPicture.usesSystemTransport, !isLoading, prerolled {
+            // PiP's system controls operate AVPlayer directly. Adopt their
+            // intent before enforcing the inline pause state.
+            if player.timeControlStatus == .playing || player.rate > 0 {
+                wantsPause = false
+            } else if player.timeControlStatus == .paused, !reachedEnd {
+                wantsPause = true
+            }
+        }
         if wantsPause {
             player.pause()
             player.isMuted = true
@@ -639,7 +783,7 @@ final class RecordingPlaybackController: ObservableObject {
             if advancedSincePreroll { prepareExistingPosition(safeTime()) }
             else { beginWaiting() }
         case .playing:
-            guard prerolled, videoLayer?.isReadyForDisplay == true else { beginWaiting(); return }
+            guard prerolled, videoOutputIsReady else { beginWaiting(); return }
             isLoading = false
             waitingSince = nil
             player.isMuted = wantsPause
@@ -659,6 +803,7 @@ final class RecordingPlaybackController: ObservableObject {
     }
     func prepareQualityChange() {
         guard !isStopped, !isSuspendedForBackground else { return }
+        invalidateMediaConnection()
         flushPosition()
         if !isLoading { targetSeconds = safeTime() }
         captions.reset(for: targetSeconds)
@@ -672,6 +817,35 @@ final class RecordingPlaybackController: ObservableObject {
         playbackStartRequested = false
         beginWaiting()
     }
+    func configureNowPlaying(title: String) { nowPlayingTitle = title }
+
+    var canControlPictureInPicture: Bool {
+        pictureInPicture.hasActiveVideoPresentation && !pictureInPicture.isTransitioning
+            && !isStopped && !isSuspendedForBackground && failure == nil && !reachedEnd
+    }
+
+    func togglePictureInPicturePause() { handleRemoteCommand(.toggle) }
+
+    private func handleRemoteCommand(_ command: RecordingRemoteControls.Command) {
+        guard canControlPictureInPicture else { return }
+        switch command {
+        case .play: if wantsPause { togglePause() }
+        case .pause: if !wantsPause { togglePause() }
+        case .toggle: togglePause()
+        }
+        updateRemoteControls()
+#if DEBUG
+        print("RingonomiRecordingRemote: command=\(command) paused=\(wantsPause) loading=\(isLoading)")
+#endif
+    }
+
+    private func updateRemoteControls() {
+        remoteControls.update(title: nowPlayingTitle,
+                              seconds: isLoading ? targetSeconds : safeTime(),
+                              duration: durationSeconds,
+                              playing: !wantsPause && !isLoading && failure == nil && player.timeControlStatus == .playing)
+    }
+
     func togglePause() {
         guard !isStopped, !isSuspendedForBackground, failure == nil else { return }
         if reachedEnd {
@@ -694,6 +868,32 @@ final class RecordingPlaybackController: ObservableObject {
             prepareExistingPosition(safeTime())
         }
     }
+    /// Freeze the recording while the user browses scene thumbnails. The
+    /// stored intent is restored through the same frame/preroll gate as seek.
+    func beginSceneSearch() -> Bool {
+        guard !isStopped, !isSuspendedForBackground, !isLoading,
+              failure == nil, sceneSearchShouldResume == nil else { return false }
+        sceneSearchShouldResume = !wantsPause
+        if !wantsPause { togglePause() }
+        return true
+    }
+
+    func endSceneSearch(at seconds: Double? = nil, preparePlayback: Bool = true) {
+        guard let shouldResume = sceneSearchShouldResume else { return }
+        sceneSearchShouldResume = nil
+        wantsPause = !shouldResume
+        guard !isStopped, preparePlayback, failure == nil else { return }
+        if let seconds, seconds.isFinite {
+            if isLoading || isSuspendedForBackground {
+                pendingSceneSeek = max(0, seconds)
+            } else {
+                seek(to: seconds)
+            }
+        } else if shouldResume, !isLoading, !isSuspendedForBackground {
+            prepareExistingPosition(safeTime())
+        }
+    }
+
     func configureCommercialTimeline(_ timeline: RecordingChapterTimeline?, isComplete: Bool) {
         guard !isStopped else { return }
         commercialTimeline = timeline
@@ -734,7 +934,7 @@ final class RecordingPlaybackController: ObservableObject {
               !timeline.commercialSections.isEmpty, timeline.hasChapterBoundaries,
               !isLoading, !preparing, prerolled, failure == nil, !wantsPause, !reachedEnd,
               player.timeControlStatus == .playing, player.rate > 0,
-              videoLayer?.isReadyForDisplay == true else { return }
+              videoOutputIsReady else { return }
         let duration = player.currentItem?.duration.seconds ?? .nan
         guard duration.isFinite, duration > 0 else { return }
         guard abs(duration - timeline.duration) <= 2 else {
@@ -827,12 +1027,13 @@ final class RecordingPlaybackController: ObservableObject {
         let seconds = isLoading ? targetSeconds : safeTime()
         captions.tick(seconds: seconds, frameSize: videoRect.size,
                       isReady: !preparing && !isLoading && failure == nil && prerolled)
+        updateRemoteControls()
         let whole = Int(max(0, min(seconds, 100_000_000)))
         playbackTime = String(format: "%02d:%02d", whole / 60, whole % 60)
 #if DEBUG
         if Date().timeIntervalSince(lastLog) >= 5 {
             lastLog = Date()
-            print("RingonomiTVNative: time=\(safeTime()) rate=\(player.rate) loading=\(isLoading) muted=\(player.isMuted) layerReady=\(videoLayer?.isReadyForDisplay == true) itemStatus=\(player.currentItem?.status.rawValue ?? -1) playerStatus=\(player.status.rawValue) preparing=\(preparing) prerolled=\(prerolled) inFlight=\(preparationInFlight)")
+            print("RingonomiTVNative: time=\(safeTime()) rate=\(player.rate) loading=\(isLoading) muted=\(player.isMuted) layerReady=\(videoLayer?.isReadyForDisplay == true) pipActive=\(pictureInPicture.hasActiveVideoPresentation) itemStatus=\(player.currentItem?.status.rawValue ?? -1) playerStatus=\(player.status.rawValue) preparing=\(preparing) prerolled=\(prerolled) inFlight=\(preparationInFlight)")
         }
 #endif
     }
@@ -858,6 +1059,7 @@ final class RecordingPlaybackController: ObservableObject {
     }
     private func fail(_ message: String) {
         guard !isStopped, !isSuspendedForBackground, failure == nil else { return }
+        invalidateMediaConnection()
         clearCommercialSkipNotice()
         checkpoint(force: true)
         if !preparing, !isLoading { targetSeconds = safeTime() }
@@ -883,7 +1085,19 @@ final class RecordingPlaybackController: ObservableObject {
         player.cancelPendingPrerolls()
         player.currentItem?.cancelPendingSeeks()
     }
+    /// Called only after the native PiP close acknowledgment. A queued
+    /// representable update must not reopen an input the host has released.
+    func finishClosing() async {
+        isClosingPermanently = true
+        stop()
+        await mediaConnection?.stop()
+    }
+
     func stop() {
+        guard !pictureInPicture.ownsPlayback else { return }
+        invalidateMediaConnection()
+        remoteControls.deactivate()
+        pictureInPicture.invalidate()
         // `onDisappear`/the explicit close path normally flushes first.  Keep
         // the final trusted position up to date here as a fallback, but do
         // not call the resume-store closure while SwiftUI is dismantling the
@@ -911,6 +1125,7 @@ final class RecordingPlaybackController: ObservableObject {
         if let clockToken { player.removeTimeObserver(clockToken); self.clockToken = nil }
         if let endToken { NotificationCenter.default.removeObserver(endToken); self.endToken = nil }
         player.replaceCurrentItem(with: nil)
+        pictureInPicture.releaseAudioSession()
         currentURL = nil
         videoLayer = nil
     }
@@ -933,6 +1148,7 @@ struct NativeRecordingVideo: UIViewRepresentable {
     }
     func updateUIView(_ view: RecordingVideoSurface, context: Context) { controller.load(url) }
     static func dismantleUIView(_ view: RecordingVideoSurface, coordinator: RecordingPlaybackController) {
+        guard !coordinator.pictureInPicture.ownsPlayback else { return }
         coordinator.stop()
         view.playerLayer?.player = nil
     }

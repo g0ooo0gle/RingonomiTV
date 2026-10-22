@@ -1,21 +1,41 @@
 import Combine
 import UIKit
+import RingonomiCore
 
-/// Keep video visible without changing the system's normal sleep settings.
+/// Each screen owns only its request, never the process-wide timer setting.
 @MainActor
 final class PlaybackIdleTimer: ObservableObject {
-    private var needsContinuousDisplay = false
+    private let ownerID = UUID()
+
+    func setNeedsContinuousDisplay(_ needed: Bool) {
+        PlaybackIdleTimerCoordinator.shared.setNeedsContinuousDisplay(needed, for: ownerID)
+    }
+
+    deinit {
+        let retiredOwner = ownerID
+        Task { @MainActor in
+            PlaybackIdleTimerCoordinator.shared.setNeedsContinuousDisplay(false, for: retiredOwner)
+        }
+    }
+}
+
+/// UIKit has one idle timer for the entire app. Observe its lifecycle once
+/// and keep it disabled until the last active playback request is released.
+@MainActor
+private final class PlaybackIdleTimerCoordinator {
+    static let shared = PlaybackIdleTimerCoordinator()
+    private var policy = PlaybackIdlePolicy()
     private var applicationIsActive = UIApplication.shared.applicationState == .active
     private var subscriptions: Set<AnyCancellable> = []
 
-    init() {
+    private init() {
         observe(UIApplication.didBecomeActiveNotification, active: true)
         observe(UIApplication.willResignActiveNotification, active: false)
         observe(UIApplication.didEnterBackgroundNotification, active: false)
     }
 
-    func setNeedsContinuousDisplay(_ needed: Bool) {
-        needsContinuousDisplay = needed
+    func setNeedsContinuousDisplay(_ needed: Bool, for owner: UUID) {
+        policy.setNeedsContinuousDisplay(needed, for: owner)
         applicationIsActive = UIApplication.shared.applicationState == .active
         updateTimer()
     }
@@ -31,10 +51,12 @@ final class PlaybackIdleTimer: ObservableObject {
     }
 
     private func updateTimer() {
-        let preventsSleep = needsContinuousDisplay && applicationIsActive
-        UIApplication.shared.isIdleTimerDisabled = preventsSleep
+        let preventsSleep = policy.preventsSleep(applicationIsActive: applicationIsActive)
+        if UIApplication.shared.isIdleTimerDisabled != preventsSleep {
+            UIApplication.shared.isIdleTimerDisabled = preventsSleep
+        }
 #if DEBUG
-        print("RingonomiIdleTimer: disabled=\(UIApplication.shared.isIdleTimerDisabled) needsDisplay=\(needsContinuousDisplay) applicationActive=\(applicationIsActive)")
+        print("RingonomiIdleTimer: disabled=\(UIApplication.shared.isIdleTimerDisabled) playbackOwners=\(policy.requestCount) applicationActive=\(applicationIsActive)")
 #endif
     }
 }

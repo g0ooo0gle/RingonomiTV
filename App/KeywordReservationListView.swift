@@ -26,7 +26,7 @@ struct KeywordReservationListView: View {
                 }
             }
         }
-        .navigationTitle("キーワード自動予約")
+        .appNavigationTitle(Text("キーワード自動予約"))
         .toolbar {
             Button("録画予約を確認") { dismiss() }
             Button("新規条件") { editing = KeywordEditorSelection(original: nil) }

@@ -4,6 +4,7 @@ import RingonomiCore
 struct EPGStationReservationEditor: View {
     let address: String
     let original: EPGStationReservation?
+    let initialProgram: EPGStationScheduleProgram?
     let onSaved: () -> Void
     @Environment(\.dismiss) private var dismiss
     @StateObject private var store = EPGStationReservationEditorStore()
@@ -18,6 +19,7 @@ struct EPGStationReservationEditor: View {
     @State private var allowEndLack = false
     @State private var programDay = epgStationCalendar.startOfDay(for: Date())
     @State private var message: String?
+    @State private var showingFailure = false
     @State private var confirm = false
     @State private var submitting = false
     @State private var prepared = false
@@ -28,71 +30,104 @@ struct EPGStationReservationEditor: View {
         case time = "時刻を指定"
     }
 
+    init(address: String, original: EPGStationReservation?,
+         initialProgram: EPGStationScheduleProgram? = nil, onSaved: @escaping () -> Void) {
+        self.address = address
+        self.original = original
+        self.initialProgram = initialProgram
+        self.onSaved = onSaved
+    }
+
     var body: some View {
         NavigationStack {
-            Form {
-                if let original {
-                    Section {
-                        Text(original.name).font(.title3)
-                        Text(epgStationSchedule(start: original.startAt, end: original.endAt))
-                        Text("番組・日時・保存先・変換設定は現在の内容を保持します。")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    Section("録画設定") {
-                        Toggle("番組末尾の切れを許可", isOn: $allowEndLack)
-                    }
-                } else if store.loading {
-                    ProgressView("放送局と保存先を読み込んでいます…")
-                    Button("閉じる", action: close)
-                } else if let error = store.error {
-                    Text(error).foregroundStyle(.red)
-                    Button("再試行") { store.load(address: address) }
-                } else {
-                    creationFields
+            VStack(spacing: 0) {
+                EPGStationListHeader(original == nil ? "EPGStation予約を追加" : "EPGStation予約を変更") {
+                    EmptyView()
                 }
-                if let message {
-                    Section { Text(message).foregroundStyle(.red).focusable() }
-                }
-                if mutation.pending != nil, !submitting {
-                    Section {
-                        Text("前の操作結果が未確認です。予約一覧へ戻り、結果を確認してください。")
-                            .foregroundStyle(.orange)
-                    }
-                }
-                Section {
-                    if submitting { ProgressView("予約の処理結果を確認しています…") }
-                    Button(original == nil ? "内容を確認して予約" : "変更内容を確認") { prepareConfirmation() }
-                        .disabled(submitting || mutation.busy || mutation.pending != nil || (original == nil && (store.loading || store.error != nil)))
-                    Button("閉じる", action: close).disabled(submitting)
-                }
+                editorForm
             }
             .disabled(submitting)
-            .navigationTitle(original == nil ? "EPGStation予約を追加" : "EPGStation予約を変更")
+            .navigationTitle("")
             .interactiveDismissDisabled(submitting)
             .onExitCommand(perform: close)
             .confirmationDialog(original == nil ? "この内容で録画予約しますか？" : "録画設定の変更を保存しますか？", isPresented: $confirm, titleVisibility: .visible) {
-                Button(original == nil ? "予約する" : "保存する") { submitTask = Task { await save() } }
+                Button(original == nil ? "予約する" : "保存する", action: beginSave)
                 Button("戻って修正", role: .cancel) {}
             } message: { Text(confirmationText) }
+            .alert("予約操作の結果を確認してください", isPresented: $showingFailure) {
+                Button("閉じる", role: .cancel) {}
+            } message: {
+                Text(message ?? "予約操作の結果を確認できませんでした。予約一覧を確認してください。")
+            }
             .onAppear {
                 guard !prepared else { return }
                 prepared = true
                 if let original { allowEndLack = original.allowEndLack }
-                else { store.load(address: address) }
+                else {
+                    if let initialProgram {
+                        channelID = initialProgram.channelID
+                        program = initialProgram
+                        programDay = epgStationCalendar.startOfDay(for: Date(timeIntervalSince1970: initialProgram.startAt / 1000))
+                    }
+                    store.load(address: address)
+                }
             }
             .onChange(of: store.channels) { _, values in
                 if channelID == nil { channelID = values.first?.id }
             }
             .onDisappear {
-                store.cancel()
+                // tvOS may call onDisappear while a child NavigationLink is visible.
+                // Keep the editor store alive across that transition; its StateObject
+                // lifetime ends with the editor, and save tasks must never be cancelled
+                // by a confirmation or child-screen transition.
+                guard !submitting, !confirm, !showingFailure else { return }
                 submitTask?.cancel()
+            }
+        }
+    }
+
+    private var editorForm: some View {
+        Form {
+            if let original {
+                Section {
+                    Text(original.name).font(.title3)
+                    Text(epgStationSchedule(start: original.startAt, end: original.endAt))
+                    Text("番組・日時・保存先・変換設定は現在の内容を保持します。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                AppSection("録画設定") {
+                    Toggle("番組末尾の切れを許可", isOn: $allowEndLack)
+                }
+            } else if store.loading {
+                ProgressView("放送局と保存先を読み込んでいます…")
+                Button("閉じる", action: close)
+            } else if let error = store.error {
+                Text(error).foregroundStyle(.red)
+                Button("再試行") { store.load(address: address) }
+            } else {
+                creationFields
+            }
+            if let message {
+                Section { Text(message).foregroundStyle(.red).focusable() }
+            }
+            if mutation.pending != nil, !submitting {
+                Section {
+                    Text("前の操作結果が未確認です。予約一覧へ戻り、結果を確認してください。")
+                        .foregroundStyle(.orange)
+                }
+            }
+            Section {
+                if submitting { ProgressView("予約の処理結果を確認しています…") }
+                Button(original == nil ? "内容を確認して予約" : "変更内容を確認") { prepareConfirmation() }
+                    .disabled(submitting || mutation.busy || mutation.pending != nil || (original == nil && (store.loading || store.error != nil)))
+                Button("閉じる", action: close).disabled(submitting)
             }
         }
     }
 
     private var creationFields: some View {
         Group {
-            Section("録画する番組") {
+            AppSection("録画する番組") {
                 Picker("予約方法", selection: $mode) {
                     ForEach(CreationMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                 }
@@ -116,7 +151,7 @@ struct EPGStationReservationEditor: View {
                     EPGStationDateTimeField(title: "終了", date: $end)
                 }
             }
-            Section("録画設定") {
+            AppSection("録画設定") {
                 NavigationLink("保存先：" + (directory.isEmpty ? "サーバーの既定" : directory)) {
                     EPGStationChoiceList(title: "保存先", values: [("", "サーバーの既定")] + store.directories.map { ($0, $0) }, selection: directory) { directory = $0 }
                 }
@@ -150,7 +185,7 @@ struct EPGStationReservationEditor: View {
                 }
             }
         }
-        .navigationTitle("録画する番組")
+        .appNavigationTitle(Text("録画する番組"))
         .onAppear(perform: loadPrograms)
     }
 
@@ -173,15 +208,20 @@ struct EPGStationReservationEditor: View {
         do {
             if original == nil { _ = try creationRequest() }
             message = nil
+            showingFailure = false
             confirm = true
-        } catch { message = error.localizedDescription }
+        } catch {
+            message = error.localizedDescription
+            showingFailure = true
+        }
     }
 
     private func creationRequest() throws -> EPGStationCreationDraft {
         guard let channelID else { throw ReservationUIError("放送局を選択してください。") }
         let save = directory.isEmpty ? nil : EPGStationReservationSaveOption(parentDirectoryName: directory)
         if mode == .program {
-            guard let program, program.endAt > Date().timeIntervalSince1970 * 1000 else {
+            guard let program, program.channelID == channelID,
+                  program.endAt > Date().timeIntervalSince1970 * 1000 else {
                 throw ReservationUIError("これから録画できる番組を選択してください。")
             }
             return EPGStationCreationDraft(program: program, time: nil, options: .init(allowEndLack: allowEndLack, saveOption: save))
@@ -197,10 +237,15 @@ struct EPGStationReservationEditor: View {
         return EPGStationCreationDraft(program: nil, time: .init(name: title, channelID: channelID, startAt: (start.timeIntervalSince1970 * 1000).rounded(), endAt: (end.timeIntervalSince1970 * 1000).rounded()), options: .init(allowEndLack: allowEndLack, saveOption: save))
     }
 
-    @MainActor private func save() async {
+    private func beginSave() {
         guard !submitting else { return }
         submitting = true
         message = nil
+        showingFailure = false
+        submitTask = Task { await save() }
+    }
+
+    @MainActor private func save() async {
         defer { submitting = false }
         do {
             let client = try EPGStationClient(address: address)
@@ -237,7 +282,6 @@ struct EPGStationReservationEditor: View {
                     guard directory.isEmpty || config.recordedDirectories.contains(directory) else {
                         throw ReservationUIError("保存先が変更されました。画面を開き直してください。")
                     }
-                    _ = try creationRequest()
                     if let selected = request.program {
                         let day = epgStationCalendar.startOfDay(for: Date(timeIntervalSince1970: selected.startAt / 1000))
                         let schedules = try await client.channelSchedule(channelID: selected.channelID, startAt: day.timeIntervalSince1970 * 1000)
@@ -248,6 +292,9 @@ struct EPGStationReservationEditor: View {
                         }
                     }
                     try await epgStationCheckDuplicate(client: client, draft: request)
+                    // Revalidate the user-entered time after all network checks and immediately
+                    // before returning the draft that will be journaled and submitted.
+                    _ = try creationRequest()
                     return request
                 }, send: { request in
                     let identifier: Int
@@ -274,6 +321,7 @@ struct EPGStationReservationEditor: View {
             if mutation.pending != nil {
                 message = "操作結果を確認できませんでした。再送せず予約一覧を確認してください。"
             }
+            showingFailure = true
         }
     }
 

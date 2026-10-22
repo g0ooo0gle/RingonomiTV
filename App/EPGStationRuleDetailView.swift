@@ -24,61 +24,13 @@ struct EPGStationRuleDetailView: View {
     }
 
     var body: some View {
-        List {
-            if store.loading {
-                ProgressView("ルールと関連する予約を読み込んでいます…")
-                Button("読み込みを中止") { store.cancel() }
-            } else if let error = store.error {
-                Text(error).foregroundStyle(.red)
-                Button("再試行", action: reload).focused($focusedTarget, equals: .loadError)
-            } else if store.cancelled {
-                Text("読み込みを中止しました。")
-                Button("再試行", action: reload).focused($focusedTarget, equals: .loadError)
+        VStack(spacing: 0) {
+            EPGStationListHeader("EPGStationルール詳細") {
+                Button("更新", action: reload).disabled(store.loading || submitting)
             }
-            if let item = store.item {
-                Section("ルール \(item.id)") {
-                    Text(epgStationRuleTitle(item.options)).font(.title3)
-                    Text(item.options.enabled == true ? "有効" : "無効")
-                    Text(item.options.isTimeSpecification == true ? "曜日・時刻を指定して予約" : "番組情報から予約")
-                    let excluded = epgStationRuleString(item.options.searchValues["ignoreKeyword"])
-                    if !excluded.isEmpty { Text("除外：" + excluded) }
-                }
-                Section("操作") {
-                    Button("検索条件・録画設定を編集") { editor = .init(address: address, original: item) }
-                    Button(item.options.enabled == true ? "ルールを無効にする" : "ルールを有効にする") { confirmation = .toggle }
-                        .focused($focusedTarget, equals: .toggle)
-                    Button("ルールを削除", role: .destructive) { confirmation = .delete }
-                }.disabled(submitting || mutation.busy || mutation.pending != nil || store.loading)
-                Section("関連する録画予約") {
-                    Text("ルールの保存・有効無効切替・削除により、関連する録画予約が再計算されます。更新して最新の状態を確認してください。")
-                        .font(.caption).foregroundStyle(.secondary).focusable()
-                    if let error = store.reservationError {
-                        Text("予約の状態は確認できませんでした。" + error).foregroundStyle(.orange)
-                    } else {
-                        Text("\(store.reservationTotal)件（先頭30件まで表示）")
-                        ForEach(store.reservations) { reservation in
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(reservation.name)
-                                Text(epgStationSchedule(start: reservation.startAt, end: reservation.endAt)).font(.caption)
-                                Text(reservation.isSkip ? "除外" : reservation.isConflict ? "競合" : reservation.isOverlap ? "重複" : "予約済み")
-                                    .font(.caption)
-                            }.focusable()
-                        }
-                    }
-                }
-            }
-            if let message {
-                Section { Text(message).foregroundStyle(.orange).focusable() }
-            }
-            if mutation.pending != nil, !submitting {
-                Text("前の操作結果が未確認です。一覧へ戻り、結果を確認してください。")
-                    .foregroundStyle(.orange).focusable()
-            }
-            if submitting { ProgressView("ルールの処理結果を確認しています…") }
-            Button("一覧へ戻る") { if !submitting { dismiss() } }.disabled(submitting)
+            detailList
         }
-        .navigationTitle("EPGStationルール詳細")
-        .toolbar { Button("更新", action: reload).disabled(store.loading || submitting) }
+        .navigationTitle("")
         .sheet(item: $editor, onDismiss: reload) { context in
             EPGStationRuleEditor(address: context.address, original: context.original) {
                 message = "ルールの保存を確認しました。録画予約の再計算は続いている場合があります。"
@@ -124,6 +76,62 @@ struct EPGStationRuleDetailView: View {
             operation?.cancel()
         }
         .onExitCommand { if !submitting { dismiss() } }
+    }
+
+    private var detailList: some View {
+        List {
+            if store.loading {
+                ProgressView("ルールと関連する予約を読み込んでいます…")
+                Button("読み込みを中止") { store.cancel() }
+            } else if let error = store.error {
+                Text(error).foregroundStyle(.red)
+                Button("再試行", action: reload).focused($focusedTarget, equals: .loadError)
+            } else if store.cancelled {
+                Text("読み込みを中止しました。")
+                Button("再試行", action: reload).focused($focusedTarget, equals: .loadError)
+            }
+            if let item = store.item {
+                AppSection("ルール \(item.id)") {
+                    Text(epgStationRuleTitle(item.options)).font(.title3)
+                    Text(item.options.enabled == true ? "有効" : "無効")
+                    Text(item.options.isTimeSpecification == true ? "曜日・時刻を指定して予約" : "番組情報から予約")
+                    let excluded = epgStationRuleString(item.options.searchValues["ignoreKeyword"])
+                    if !excluded.isEmpty { Text("除外：" + excluded) }
+                }
+                AppSection("操作") {
+                    Button("検索条件・録画設定を編集") { editor = .init(address: address, original: item) }
+                    Button(item.options.enabled == true ? "ルールを無効にする" : "ルールを有効にする") { confirmation = .toggle }
+                        .focused($focusedTarget, equals: .toggle)
+                    Button("ルールを削除", role: .destructive) { confirmation = .delete }
+                }.disabled(submitting || mutation.busy || mutation.pending != nil || store.loading)
+                AppSection("関連する録画予約") {
+                    Text("ルールの保存・有効無効切替・削除により、関連する録画予約が再計算されます。更新して最新の状態を確認してください。")
+                        .font(.caption).foregroundStyle(.secondary).focusable()
+                    if let error = store.reservationError {
+                        Text("予約の状態は確認できませんでした。" + error).foregroundStyle(.orange)
+                    } else {
+                        Text("\(store.reservationTotal)件（先頭30件まで表示）")
+                        ForEach(store.reservations) { reservation in
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(reservation.name)
+                                Text(epgStationSchedule(start: reservation.startAt, end: reservation.endAt)).font(.caption)
+                                Text(reservation.isSkip ? "除外" : reservation.isConflict ? "競合" : reservation.isOverlap ? "重複" : "予約済み")
+                                    .font(.caption)
+                            }.focusable()
+                        }
+                    }
+                }
+            }
+            if let message {
+                Section { Text(message).foregroundStyle(.orange).focusable() }
+            }
+            if mutation.pending != nil, !submitting {
+                Text("前の操作結果が未確認です。一覧へ戻り、結果を確認してください。")
+                    .foregroundStyle(.orange).focusable()
+            }
+            if submitting { ProgressView("ルールの処理結果を確認しています…") }
+            Button("一覧へ戻る") { if !submitting { dismiss() } }.disabled(submitting)
+        }
     }
 
     private func reload() { store.load(address: address, id: id) }

@@ -46,21 +46,43 @@ struct PlaybackView: View {
     let item: Playback
     let resumeStore: RecordingResumeStore
     let onContinuousDisplayChanged: (Bool) -> Void
-    @Environment(\.dismiss) private var dismiss
+    let closeRequest: UUID?
+    let restoreRequest: UUID?
+    let togglePauseRequest: UInt64
+    let isMiniPlayer: Bool
+    let onMiniPlayerChanged: (Bool) -> Void
+    let onCloseStarted: () -> UUID?
+    let onClose: (UUID, Bool) -> Void
+    let onDetachedChanged: (Bool) -> Void
+    let onPictureInPictureNoticeChanged: (String?) -> Void
+    let onTransportChanged: (PlaybackTransportState) -> Void
+    @State private var isClosing = false
+    @State private var closeFailure: String?
+    @State private var closeTask: Task<Void, Never>?
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var quality: String
     @State private var session = UUID().uuidString
     @State private var maintenanceError: String?
     @State private var hasStarted = false
+    @StateObject private var viewportSettings = VideoViewportSettings()
     @State private var visiblePanel: PlaybackPanel?
     @State private var isQualityOverlayPresented = false
+    @State private var isCaptionOverlayPresented = false
+    @State private var isCommentOverlayPresented = false
+    @State private var isAudioOverlayPresented = false
+    @State private var isChapterOverlayPresented = false
+    @State private var chapterReload = 0
+    @State private var isSceneSearchPresented = false
+    @State private var sceneSearchPosition = 0.0
     @State private var panelBeforeLoading: PlaybackPanel?
     @State private var isSeeking = false
     @State private var didSetInitialPlaybackFocus = false
     @State private var lastReadyPlaybackFocus: PlaybackControlFocus?
     @FocusState private var playbackFocus: PlaybackControlFocus?
+    @AppStorage("liveCaptionsEnabled") private var liveCaptionsEnabled = true
     @AppStorage("recordingCaptionsEnabled") private var recordingCaptionsEnabled = true
+    @AppStorage("recordingAutoSkipCM") private var automaticCommercialSkip = false
     @AppStorage("recordingCommentsEnabled") private var recordingCommentsEnabled = false
     @AppStorage("liveCommentsEnabled") private var liveCommentsEnabled = false
     @AppStorage("liveCommentDelay") private var liveCommentDelay = 2.0
@@ -69,9 +91,26 @@ struct PlaybackView: View {
     @State private var commentReload = 0
     @StateObject private var commentStore = RecordingCommentStore()
     init(item: Playback, resumeStore: RecordingResumeStore,
+         closeRequest: UUID?, restoreRequest: UUID?, togglePauseRequest: UInt64,
+         isMiniPlayer: Bool, onMiniPlayerChanged: @escaping (Bool) -> Void,
+         onCloseStarted: @escaping () -> UUID?,
+         onClose: @escaping (UUID, Bool) -> Void,
+         onDetachedChanged: @escaping (Bool) -> Void,
+         onPictureInPictureNoticeChanged: @escaping (String?) -> Void,
+         onTransportChanged: @escaping (PlaybackTransportState) -> Void,
          onContinuousDisplayChanged: @escaping (Bool) -> Void) {
         self.item = item
         self.resumeStore = resumeStore
+        self.closeRequest = closeRequest
+        self.restoreRequest = restoreRequest
+        self.togglePauseRequest = togglePauseRequest
+        self.isMiniPlayer = isMiniPlayer
+        self.onMiniPlayerChanged = onMiniPlayerChanged
+        self.onCloseStarted = onCloseStarted
+        self.onClose = onClose
+        self.onDetachedChanged = onDetachedChanged
+        self.onPictureInPictureNoticeChanged = onPictureInPictureNoticeChanged
+        self.onTransportChanged = onTransportChanged
         self.onContinuousDisplayChanged = onContinuousDisplayChanged
         _quality = State(initialValue: item.initialQuality)
     }
@@ -81,17 +120,39 @@ struct PlaybackView: View {
 #if canImport(TVVLCKit)
     @StateObject private var controller = PlaybackController()
     @StateObject private var recordingController = RecordingPlaybackController()
+    @StateObject private var chapterStore = RecordingChapterStore()
     private var isRecording: Bool { item.recordingID != nil }
     private var isLoading: Bool { isRecording ? recordingController.isLoading : controller.isLoading }
-    private var failure: String? { isRecording ? recordingController.failure : controller.failure }
+    private var failure: String? { closeFailure ?? (isRecording ? recordingController.failure : controller.failure) }
     private var audioOptions: [PlaybackAudioOption] { isRecording ? recordingController.audioOptions : controller.audioOptions }
     private var selectedAudioID: String? { isRecording ? recordingController.selectedAudioID : controller.selectedAudioID }
     private var audioSelectionError: String? { isRecording ? recordingController.audioSelectionError : controller.audioSelectionError }
-    private var surfaceIsFocusable: Bool { visiblePanel == nil && !isLoading && failure == nil }
+    private var isPlaybackChoicePresented: Bool { isCommentOverlayPresented || isQualityOverlayPresented || isCaptionOverlayPresented || isAudioOverlayPresented || isChapterOverlayPresented }
+    private var acceptsInlineInput: Bool {
+        !isClosing && !isMiniPlayer && !recordingController.pictureInPicture.isDetached && !recordingController.pictureInPicture.isTransitioning
+    }
+    private var readyFocus: PlaybackControlFocus { failure != nil ? .retry : (isLoading ? .close : .surface) }
+    private var pictureInPictureNotice: String? {
+        if isMiniPlayer {
+            return failure ?? maintenanceError ?? (isLoading ? "映像と音声を準備しています…" : nil)
+        }
+        guard isRecording else { return nil }
+        // The inline subtree is hidden during PiP. Keep connection and
+        // buffering status visible in the library's playback banner too.
+        return recordingController.pictureInPicture.notice ?? failure ?? maintenanceError
+            ?? (recordingController.pictureInPicture.ownsPlayback && isLoading ? "録画を読み込んでいます…" : nil)
+    }
+    private var pictureInPictureTransport: PlaybackTransportState {
+        PlaybackTransportState(isPaused: isRecording ? recordingController.isPaused : controller.isPaused,
+                               canToggle: isMiniPlayer
+                                   ? hasStarted && !isClosing && !isLoading && failure == nil
+                                   : isRecording && !isClosing && recordingController.canControlPictureInPicture)
+    }
+    private var surfaceIsFocusable: Bool { acceptsInlineInput && visiblePanel == nil && !isLoading && failure == nil && !isSceneSearchPresented && !viewportSettings.isPresented && !isPlaybackChoicePresented }
 #endif
     private var needsContinuousDisplay: Bool {
 #if canImport(TVVLCKit)
-        hasStarted && failure == nil && !(isRecording ? recordingController.isPaused : controller.isPaused)
+        hasStarted && !isClosing && failure == nil && !(isRecording ? recordingController.isPaused : controller.isPaused)
 #else
         false
 #endif
@@ -123,10 +184,94 @@ struct PlaybackView: View {
                 Color.black.ignoresSafeArea()
             }
         }
+        .environment(\.colorScheme, .dark)
+        .tint(.cyan)
         .onAppear {
             if !hasStarted, item.savedPosition == nil { beginPlayback(at: 0) }
         }
         .onExitCommand { handleExitCommand() }
+        .onChange(of: closeRequest, initial: true) { _, request in
+            if request != nil { close() }
+        }
+#if canImport(TVVLCKit)
+        .onChange(of: isMiniPlayer) { _, mini in
+            if mini {
+                closeViewport(restoreFocus: false)
+                finishSceneSearch(restoreFocus: false, preparePlayback: false)
+                closeSelectionCards()
+                visiblePanel = nil
+                panelBeforeLoading = nil
+                playbackFocus = nil
+            } else if acceptsInlineInput {
+                playbackFocus = readyFocus
+            }
+#if DEBUG
+            print("RingonomiMiniPlayer: active=\(mini)")
+#endif
+        }
+        .onChange(of: recordingController.pictureInPicture.isDetached) { _, detached in
+            onDetachedChanged(detached)
+            if detached {
+                closeViewport(restoreFocus: false)
+                finishSceneSearch(restoreFocus: false, preparePlayback: false)
+                closeSelectionCards()
+                visiblePanel = nil
+                playbackFocus = nil
+            } else if !isClosing {
+                playbackFocus = acceptsInlineInput ? readyFocus : nil
+            }
+        }
+        .onChange(of: pictureInPictureNotice, initial: true) { _, notice in
+            onPictureInPictureNoticeChanged(notice)
+        }
+        .onChange(of: recordingController.pictureInPicture.isTransitioning) { _, transitioning in
+            if transitioning { closeSelectionCards() }
+            playbackFocus = !transitioning && acceptsInlineInput ? readyFocus : nil
+        }
+        .onChange(of: pictureInPictureTransport, initial: true) { _, state in
+            onTransportChanged(state)
+        }
+        .onChange(of: togglePauseRequest) { previous, current in
+            guard !isClosing, !(current &- previous).isMultiple(of: 2) else { return }
+            if isMiniPlayer {
+                if isRecording { recordingController.togglePause() } else { controller.togglePause() }
+            } else if isRecording { recordingController.togglePictureInPicturePause() }
+        }
+        .onChange(of: restoreRequest) { _, request in
+            guard request != nil, closeRequest == nil, !isClosing else { return }
+            if recordingController.pictureInPicture.isDetached {
+                recordingController.pictureInPicture.returnToInline()
+            } else if acceptsInlineInput { playbackFocus = readyFocus }
+        }
+        .onChange(of: recordingController.pictureInPicture.endedWhileDetached) { _, ended in
+            if ended != nil, failure == nil { close() }
+        }
+        .onChange(of: recordingController.pictureInPicture.ownsPlayback) { _, owned in
+            if !owned, !isClosing {
+                recordingController.captions.reset(for: recordingController.currentSeconds)
+#if canImport(UIKit)
+                if UIApplication.shared.applicationState != .active { recordingController.suspendForBackground() }
+#endif
+            }
+        }
+        .task(id: recordingController.pictureInPicture.restoreRequest) {
+            guard let request = recordingController.pictureInPicture.restoreRequest else { return }
+            // The subtree stays mounted. Allow the library's opacity/focus
+            // update to commit, and wait for app activation after Home.
+            for _ in 0..<100 {
+                guard !Task.isCancelled else { return }
+#if canImport(UIKit)
+                if UIApplication.shared.applicationState == .active {
+                    await Task.yield()
+                    recordingController.pictureInPicture.completeRestore(true, request: request)
+                    return
+                }
+#endif
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            recordingController.pictureInPicture.completeRestore(false, request: request)
+        }
+#endif
 #if canImport(UIKit)
         // UIApplication notifications are the primary lifecycle boundary on
         // tvOS.  scenePhase remains a fallback because it can lag during a
@@ -148,6 +293,8 @@ struct PlaybackView: View {
 #if DEBUG
             print("RingonomiPlaybackDismissed")
 #endif
+            // Detail sheets can cover the shared playback host. Keep a
+            // pending final stop acknowledgement alive through that transition.
             flushPosition()
             commentStore.cancel()
             liveCommentStore.cancel()
@@ -172,10 +319,14 @@ struct PlaybackView: View {
         print("RingonomiPlaybackBegin: target=\(seconds)")
 #endif
 #if canImport(TVVLCKit)
+        if item.recordingID != nil {
+            recordingController.configureHTTPAuthentication(client: item.client)
+            recordingController.configureNowPlaying(title: item.title)
+        } else { controller.configureLiveConnection(client: item.client) }
         if let id = item.resumeID {
             let store = resumeStore
             let mediaStatus = item.recordingStatus
-            recordingController.configurePosition(seconds: seconds, durationHint: item.durationHint) {
+            recordingController.configurePosition(seconds: seconds, durationHint: item.durationHint, status: mediaStatus) {
                 position, duration, reachedEnd in
                 store.save(id, seconds: position, duration: duration, status: mediaStatus, reachedEnd: reachedEnd)
             }
@@ -191,7 +342,11 @@ struct PlaybackView: View {
     }
 
     private func suspendPlaybackForBackground() {
-        isQualityOverlayPresented = false
+        closeViewport(restoreFocus: false)
+#if canImport(TVVLCKit)
+        finishSceneSearch(restoreFocus: false, preparePlayback: false)
+#endif
+        closeSelectionCards()
         guard hasStarted else { return }
 #if canImport(TVVLCKit)
         if isRecording {
@@ -216,28 +371,112 @@ struct PlaybackView: View {
 #endif
     }
 
+    private func closeSelectionCards() {
+        isCommentOverlayPresented = false
+        isQualityOverlayPresented = false
+        isCaptionOverlayPresented = false
+        isAudioOverlayPresented = false
+        isChapterOverlayPresented = false
+    }
+
     private func close() {
+        guard !isClosing, let request = onCloseStarted() else { return }
+        isClosing = true
+#if canImport(TVVLCKit)
+        chapterStore.cancel()
+#endif
+        closeViewport(restoreFocus: false)
         onContinuousDisplayChanged(false)
 #if DEBUG
         print("RingonomiPlaybackClose: panel=\(visiblePanel.map { $0 == .top ? "top" : "bottom" } ?? "hidden")")
 #endif
         flushPosition()
+#if canImport(TVVLCKit)
+        finishSceneSearch(restoreFocus: false, preparePlayback: false)
+#endif
         visiblePanel = nil
-        isQualityOverlayPresented = false
+        closeSelectionCards()
         isSeeking = false
-        dismiss()
+#if canImport(TVVLCKit)
+        if isRecording {
+            recordingController.pictureInPicture.stopBeforeClosing { success in
+                if success {
+                    recordingController.flushPosition()
+                    closeTask = Task { @MainActor in
+                        await recordingController.finishClosing()
+                        onClose(request, true)
+                        closeTask = nil
+                    }
+                } else {
+                    isClosing = false
+                    onClose(request, false)
+                }
+            }
+        } else {
+            closeTask = Task { @MainActor in
+                let stopped = await controller.stopBeforeClosing()
+                guard !Task.isCancelled else { onClose(request, false); return }
+#if DEBUG
+                print("RingonomiLiveClose: stopped=\(stopped)")
+#endif
+                if !stopped {
+                    isClosing = false
+                    closeFailure = "再生の終了を確認できませんでした。もう一度閉じてください。"
+                }
+                onClose(request, stopped)
+                if !stopped { onMiniPlayerChanged(false) }
+                closeTask = nil
+            }
+        }
+#else
+        onClose(request, true)
+#endif
     }
 
     private var playerBody: some View {
         ZStack {
 #if canImport(TVVLCKit)
-            if isRecording {
-                NativeRecordingVideo(url: streamURL, controller: recordingController)
-                    .ignoresSafeArea()
-            } else {
-                VLCVideo(url: streamURL, controller: controller)
-                    .ignoresSafeArea()
+            VideoViewportMedia(crop: viewportSettings.crop,
+                               videoRect: isRecording ? recordingController.videoRect : controller.videoRect) {
+                ZStack {
+                    if isRecording {
+                        NativeRecordingVideo(url: streamURL, controller: recordingController)
+                            .ignoresSafeArea()
+                    } else {
+                        VLCVideo(url: streamURL, controller: controller)
+                            .ignoresSafeArea()
+                    }
+                    if isRecording, recordingCommentsEnabled {
+                        PlaybackCommentOverlay(comments: commentStore.comments,
+                                                clock: { recordingController.currentSeconds },
+                                                videoRect: recordingController.videoRect,
+                                                isPaused: recordingController.isPaused,
+                                                isVisible: !isLoading && failure == nil, topReservedSpace: 480)
+                            .ignoresSafeArea()
+                    }
+                    if !isRecording, liveCommentsEnabled {
+                        PlaybackCommentOverlay(comments: liveCommentStore.comments,
+                                               clock: { liveCommentStore.currentSeconds },
+                                               videoRect: controller.videoRect,
+                                               isPaused: controller.isPaused || isLoading,
+                                               isVisible: !isLoading && failure == nil)
+                            .ignoresSafeArea()
+                    }
+                    if !isRecording, liveCaptionsEnabled {
+                        LiveCaptionOverlay(controller: controller.captions,
+                                           videoRect: controller.videoRect,
+                                           isVisible: !isLoading && failure == nil)
+                            .ignoresSafeArea()
+                    }
+                    if isRecording, recordingCaptionsEnabled {
+                        RecordingCaptionOverlay(controller: recordingController.captions,
+                                                videoRect: recordingController.videoRect,
+                                                isVisible: !isLoading && failure == nil)
+                            .ignoresSafeArea()
+                    }
+                }
             }
+            .ignoresSafeArea()
             // Keep focus effects and remote input away from the native video
             // layer. Returning from a panel must not refocus AVPlayer/VLC views.
             Color.clear
@@ -252,40 +491,23 @@ struct PlaybackView: View {
                 .onTapGesture { revealBottomPanel() }
                 .accessibilityLabel("再生メニュー")
                 .accessibilityHidden(!surfaceIsFocusable)
-            if isRecording, recordingCommentsEnabled {
-                PlaybackCommentOverlay(comments: commentStore.comments,
-                                        clock: { recordingController.currentSeconds },
-                                        videoRect: recordingController.videoRect,
-                                        isPaused: recordingController.isPaused,
-                                        isVisible: !isLoading && failure == nil, topReservedSpace: 480)
-                    .ignoresSafeArea()
-            }
-            if !isRecording, liveCommentsEnabled {
-                PlaybackCommentOverlay(comments: liveCommentStore.comments,
-                                       clock: { liveCommentStore.currentSeconds },
-                                       videoRect: controller.videoRect,
-                                       isPaused: controller.isPaused || isLoading,
-                                       isVisible: !isLoading && failure == nil)
-                    .ignoresSafeArea()
-            }
-            if isRecording, recordingCaptionsEnabled {
-                RecordingCaptionOverlay(controller: recordingController.captions,
-                                        videoRect: recordingController.videoRect,
-                                        isVisible: !isLoading && failure == nil)
-                    .ignoresSafeArea()
-            }
-            if isLoading || failure != nil {
+            if isClosing || isLoading || failure != nil {
                 Color.black.ignoresSafeArea()
                 VStack(spacing: 24) {
-                    if isLoading {
+                    if isClosing {
+                        ProgressView().scaleEffect(1.6)
+                        Text("再生を終了しています…")
+                    } else if isLoading {
                         ProgressView().scaleEffect(1.6)
                         Text("映像と音声を準備しています…")
                     }
                     if let failure {
                         Text(failure).multilineTextAlignment(.center)
                         HStack(spacing: 24) {
-                            Button("再試行") {
-                                if isRecording { recordingController.retry() } else { controller.retry() }
+                            Button(closeFailure == nil ? "再試行" : "もう一度閉じる") {
+                                if closeFailure != nil { close() }
+                                else if isRecording { recordingController.retry() }
+                                else { controller.retry() }
                             }.focused($playbackFocus, equals: .retry)
                             Button("閉じる", action: close)
                                 .focused($playbackFocus, equals: .close)
@@ -295,6 +517,7 @@ struct PlaybackView: View {
                             .focused($playbackFocus, equals: .close)
                     }
                 }.padding(60).frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .disabled(isClosing)
             }
             // Preserve the controls' identity while handing focus back to the
             // remote surface. Removing a focused panel during a transition can
@@ -313,6 +536,57 @@ struct PlaybackView: View {
                 .allowsHitTesting(panelIsVisible(.bottom))
                 .accessibilityHidden(!panelIsVisible(.bottom))
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            if isCommentOverlayPresented {
+                commentCard
+                    .padding(.top, 64)
+                    .padding(.trailing, 64)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    .transition(.opacity)
+                    .zIndex(2)
+            }
+            if isChapterOverlayPresented {
+                chapterCard
+                .padding(.top, 64)
+                .padding(.trailing, 64)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .transition(.opacity)
+                .zIndex(2)
+            }
+            if isAudioOverlayPresented {
+                PlaybackAudioChoicesView(
+                    options: audioOptions,
+                    selectedID: selectedAudioID,
+                    isEnabled: acceptsInlineInput && !isLoading && failure == nil,
+                    onSelect: finishAudioSelection,
+                    onClose: { dismissAudioOverlay(restoreFocus: true) }
+                )
+                .padding(.top, 64)
+                .padding(.trailing, 64)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .transition(.opacity)
+                .zIndex(2)
+            }
+            if isCaptionOverlayPresented {
+                PlaybackCaptionChoicesView(
+                    enabled: liveCaptionsEnabled,
+                    canReload: !isLoading && failure == nil,
+                    onSelect: { enabled in
+                        liveCaptionsEnabled = enabled
+                        dismissCaptionOverlay(restoreFocus: true)
+                    },
+                    onReload: {
+                        guard !isLoading, failure == nil else { return }
+                        dismissCaptionOverlay(restoreFocus: false)
+                        controller.retry()
+                    },
+                    onClose: { dismissCaptionOverlay(restoreFocus: true) }
+                )
+                .padding(.top, 64)
+                .padding(.trailing, 64)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .transition(.opacity)
+                .zIndex(2)
+            }
             if isQualityOverlayPresented {
                 QualityChoicesView(
                     currentQuality: quality,
@@ -328,7 +602,18 @@ struct PlaybackView: View {
                 .transition(.opacity)
                 .zIndex(2)
             }
-            if visiblePanel == nil, let maintenanceError {
+            if isSceneSearchPresented, let recordingID = item.recordingID {
+                RecordingSceneSearchView(client: item.client, recordingID: recordingID,
+                    fileID: item.recordedFileID, position: sceneSearchPosition,
+                    onSelect: { finishSceneSearch(at: $0) },
+                    onClose: { finishSceneSearch() })
+                    .zIndex(3)
+            }
+            if viewportSettings.isPresented {
+                VideoViewportSettingsView(settings: viewportSettings, onClose: { closeViewport() })
+                    .zIndex(5)
+            }
+            if visiblePanel == nil, failure == nil, let maintenanceError {
                 Text(maintenanceError)
                     .font(.caption)
                     .foregroundStyle(.orange)
@@ -343,6 +628,9 @@ struct PlaybackView: View {
             }.frame(maxWidth: .infinity, maxHeight: .infinity).background(.black)
 #endif
         }
+#if canImport(TVVLCKit)
+        .disabled(recordingController.pictureInPicture.isTransitioning)
+#endif
         .onExitCommand { handleExitCommand() }
 #if canImport(TVVLCKit)
         .task(id: LiveCommentRequestID(channel: item.channelID, enabled: liveCommentsEnabled,
@@ -358,11 +646,25 @@ struct PlaybackView: View {
             updateLiveCommentClock()
             await liveCommentStore.run(client: item.client, channelID: channel)
         }
+        .task(id: ChapterRequestID(server: item.client.baseURL, playbackID: item.id,
+                                  recordingID: item.recordingID, fileID: item.recordedFileID,
+                                  reload: chapterReload)) {
+            guard let recordingID = item.recordingID else { return }
+            await chapterStore.load(client: item.client, recordingID: recordingID,
+                                    fileID: item.recordedFileID, controller: recordingController)
+        }
+        .task(id: automaticCommercialSkip) {
+            guard isRecording else { return }
+            recordingController.setAutomaticCommercialSkip(automaticCommercialSkip)
+        }
         .defaultFocus($playbackFocus, .surface)
         .onChange(of: isLoading, initial: true) { _, loading in
             updateLiveCommentClock()
+            guard acceptsInlineInput else { playbackFocus = nil; return }
             if loading {
-                isQualityOverlayPresented = false
+                closeViewport(restoreFocus: false)
+                finishSceneSearch(restoreFocus: false)
+                closeSelectionCards()
                 if panelBeforeLoading == nil, let visiblePanel {
                     panelBeforeLoading = visiblePanel
                 }
@@ -396,10 +698,28 @@ struct PlaybackView: View {
 #endif
         }
         .onChange(of: controller.isPaused) { _, _ in updateLiveCommentClock() }
+        .onChange(of: audioOptions) { _, options in
+            // A stream can lose an alternate track without starting a new load.
+            // Do not leave focus pointing at the audio button that vanished.
+            guard options.count < 2 else { return }
+            let cardWasPresented = isAudioOverlayPresented
+            dismissAudioOverlay(restoreFocus: false)
+            let audioLostFocus = cardWasPresented || playbackFocus == .audio
+                || (playbackFocus == nil && lastReadyPlaybackFocus == .audio)
+            if lastReadyPlaybackFocus == .audio {
+                lastReadyPlaybackFocus = .captions
+            }
+            guard audioLostFocus, panelIsVisible(.top), !isPlaybackChoicePresented else { return }
+            playbackFocus = focusForPanel(.top)
+        }
         .onChange(of: failure) { _, failure in
             updateLiveCommentClock()
             if failure != nil {
-                isQualityOverlayPresented = false
+                if isMiniPlayer { onMiniPlayerChanged(false) }
+                if isRecording { recordingController.pictureInPicture.returnToInline() }
+                closeViewport(restoreFocus: false)
+                finishSceneSearch(restoreFocus: false)
+                closeSelectionCards()
                 panelBeforeLoading = nil
                 visiblePanel = nil
                 isSeeking = false
@@ -407,6 +727,7 @@ struct PlaybackView: View {
             }
         }
         .onChange(of: visiblePanel) { _, panel in
+            guard acceptsInlineInput else { playbackFocus = nil; return }
 #if DEBUG
             print("RingonomiPlaybackPanel: \(panel.map { $0 == .top ? "top" : "bottom" } ?? "hidden") uptime=\(ProcessInfo.processInfo.systemUptime)")
 #endif
@@ -416,7 +737,22 @@ struct PlaybackView: View {
                 playbackFocus = failure == nil && !isLoading ? .surface : (failure == nil ? .close : .retry)
             }
         }
+        .onChange(of: item.id) { _, _ in
+            closeSelectionCards()
+            chapterStore.cancel()
+            recordingController.configureCommercialTimeline(nil, isComplete: false)
+            viewportSettings.close()
+            viewportSettings.reset()
+        }
+        .onChange(of: viewportSettings.crop) { _, crop in
+#if DEBUG
+            print("RingonomiViewport: left=\(crop.left) top=\(crop.top) right=\(crop.right) bottom=\(crop.bottom)")
+#endif
+        }
         .onChange(of: liveCommentDelay) { _, _ in updateLiveCommentClock() }
+        .task(id: liveCaptionsEnabled) {
+            controller.captions.setEnabled(liveCaptionsEnabled)
+        }
         .task(id: recordingCaptionsEnabled) {
             recordingController.captions.setEnabled(recordingCaptionsEnabled)
         }
@@ -424,6 +760,7 @@ struct PlaybackView: View {
 #if DEBUG
             print("RingonomiPlaybackCommand: playPause")
 #endif
+            guard acceptsInlineInput, !isPlaybackChoicePresented, !isSceneSearchPresented, !viewportSettings.isPresented else { return }
             if isRecording { recordingController.togglePause() } else { controller.togglePause() }
         }
         .task(id: CommentRequestID(server: item.client.baseURL, recordingID: item.recordingID,
@@ -478,6 +815,84 @@ struct PlaybackView: View {
                                              delay: commentDelay)
     }
 
+    private var commentCard: some View {
+        PlaybackCommentChoicesView(
+            isRecording: isRecording,
+            enabled: isRecording ? recordingCommentsEnabled : liveCommentsEnabled,
+            delay: commentDelay,
+            loading: isRecording ? commentStore.loading : liveCommentStore.loading,
+            status: isRecording ? commentStore.status : liveCommentStore.status,
+            onSetEnabled: { enabled in
+                guard canUseCommentCard else { return }
+                dismissCommentOverlay(restoreFocus: true)
+                if isRecording { recordingCommentsEnabled = enabled }
+                else { liveCommentsEnabled = enabled }
+            },
+            onSetDelay: { delay in
+                guard canUseCommentCard, !isRecording, liveCommentsEnabled,
+                      [0.0, 1, 2, 3, 5, 10].contains(delay) else { return }
+                dismissCommentOverlay(restoreFocus: true)
+                liveCommentDelay = delay
+            },
+            onReload: {
+                guard canUseCommentCard else { return }
+                if isRecording {
+                    guard recordingCommentsEnabled, !commentStore.loading else { return }
+                    dismissCommentOverlay(restoreFocus: true)
+                    commentReload &+= 1
+                } else {
+                    guard liveCommentsEnabled, !liveCommentStore.loading else { return }
+                    dismissCommentOverlay(restoreFocus: true)
+                    liveCommentReload &+= 1
+                }
+            },
+            onClose: { dismissCommentOverlay(restoreFocus: true) }
+        )
+    }
+
+    private var chapterCard: some View {
+        RecordingChapterCard(
+            store: chapterStore,
+            position: recordingController.currentSeconds,
+            automaticSkip: Binding(
+                get: { automaticCommercialSkip },
+                set: { value in
+                    guard isChapterOverlayPresented, acceptsInlineInput,
+                          !isLoading, failure == nil else { return }
+                    automaticCommercialSkip = value
+                }
+            ),
+            canUndo: recordingController.canUndoCommercialSkip,
+            onUndo: { finishChapterAction { recordingController.undoCommercialSkip() } },
+            onPrevious: {
+                finishChapterAction {
+                    if let timeline = chapterStore.timeline {
+                        recordingController.seek(to: timeline.previous(from: recordingController.currentSeconds))
+                    } else { recordingController.seek(seconds: -60) }
+                }
+            },
+            onNext: {
+                finishChapterAction {
+                    if let timeline = chapterStore.timeline {
+                        recordingController.seek(to: timeline.next(from: recordingController.currentSeconds))
+                    } else { recordingController.seek(seconds: 180) }
+                }
+            },
+            onChapter: { seconds in
+                finishChapterAction {
+                    guard chapterStore.timeline?.chapters.contains(where: { $0.startTime == seconds }) == true else { return }
+                    recordingController.seek(to: seconds)
+                }
+            },
+            onReload: {
+                guard isChapterOverlayPresented, acceptsInlineInput,
+                      !isLoading, failure == nil else { return }
+                chapterReload &+= 1
+            },
+            onClose: { dismissChapterOverlay(restoreFocus: true) }
+        )
+    }
+
     private var topPanel: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text(item.title)
@@ -494,11 +909,15 @@ struct PlaybackView: View {
                 if isRecording, let notice = recordingController.commercialSkipNotice {
                     Text(notice).font(.caption)
                 }
+                if isRecording, let notice = recordingController.pictureInPicture.notice {
+                    Text(notice).foregroundStyle(.orange)
+                }
                 if let audioSelectionError {
                     Text(audioSelectionError)
                         .font(.caption)
                         .foregroundStyle(.orange)
                 }
+                if !isRecording, liveCaptionsEnabled { LiveCaptionStatus(controller: controller.captions) }
                 if isRecording, recordingCaptionsEnabled,
                    let captionStatus = recordingController.captions.status {
                     Text(captionStatus).font(.caption)
@@ -513,35 +932,44 @@ struct PlaybackView: View {
             PlaybackTopControls(
                 isRecording: isRecording,
                 recordingCaptionsEnabled: $recordingCaptionsEnabled,
-                recordingCommentsEnabled: $recordingCommentsEnabled,
-                liveCommentsEnabled: $liveCommentsEnabled,
-                liveCommentDelay: $liveCommentDelay,
-                commentStoreLoading: commentStore.loading,
-                commentReload: { commentReload &+= 1 },
-                liveCommentReload: { liveCommentReload &+= 1 },
+                liveCaptionsEnabled: $liveCaptionsEnabled,
+                recordingCommentsEnabled: recordingCommentsEnabled,
+                liveCommentsEnabled: liveCommentsEnabled,
+                openComments: presentCommentChoices,
                 quality: quality,
                 isActive: panelIsVisible(.top),
                 isLoading: isLoading,
                 failure: failure,
                 audioOptions: audioOptions,
                 selectedAudioID: selectedAudioID,
-                selectAudio: { id in
-                    if isRecording { recordingController.selectAudioTrack(id: id) }
-                    else { controller.selectAudioTrack(id: id) }
+                pictureInPictureSupported: isRecording && recordingController.pictureInPicture.isSupported,
+                pictureInPicturePossible: recordingController.pictureInPicture.isPossible,
+                pictureInPictureBusy: recordingController.pictureInPicture.isTransitioning,
+                startPictureInPicture: {
+                    guard isRecording, !isLoading, failure == nil else { return }
+                    recordingController.pictureInPicture.start()
+                },
+                startMiniPlayer: {
+                    guard hasStarted, !isLoading, failure == nil, acceptsInlineInput else { return }
+                    onMiniPlayerChanged(true)
                 },
                 close: close,
+                openViewport: presentViewport,
                 focus: $playbackFocus,
+                isCommentOverlayPresented: $isCommentOverlayPresented,
+                isAudioOverlayPresented: $isAudioOverlayPresented,
+                isCaptionOverlayPresented: $isCaptionOverlayPresented,
                 isQualityOverlayPresented: $isQualityOverlayPresented
             )
         }
         .padding(36)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.black.opacity(0.82))
-        .disabled(isQualityOverlayPresented)
-        .allowsHitTesting(!isQualityOverlayPresented)
-        .accessibilityHidden(isQualityOverlayPresented)
+        .disabled(isPlaybackChoicePresented)
+        .allowsHitTesting(!isPlaybackChoicePresented)
+        .accessibilityHidden(isPlaybackChoicePresented)
         .onMoveCommand { direction in
-            guard !isQualityOverlayPresented,
+            guard !isPlaybackChoicePresented,
                   panelIsVisible(.top), let playbackFocus,
                   focusBelongs(playbackFocus, to: .top) else { return }
             switch direction {
@@ -584,10 +1012,14 @@ struct PlaybackView: View {
                     }
                     .focused($playbackFocus, equals: .playPause)
                     .disabled(isLoading || failure != nil)
-                    if let recordingID = item.recordingID {
-                        RecordingChapterControls(client: item.client, recordingID: recordingID,
-                                                 fileID: item.recordedFileID, controller: recordingController)
+                    if item.recordingID != nil {
+                        Button("チャプター", action: presentChapterChoices)
                             .focused($playbackFocus, equals: .chapters)
+                            .disabled(isLoading || failure != nil)
+                            .accessibilityIdentifier("playback.chapters")
+                        Button("シーンサーチ", action: presentSceneSearch)
+                            .focused($playbackFocus, equals: .scenes)
+                            .disabled(isLoading || failure != nil)
                     }
                 }
                 .onMoveCommand { direction in
@@ -624,6 +1056,9 @@ struct PlaybackView: View {
         .padding(36)
         .frame(maxWidth: .infinity)
         .background(.black.opacity(0.82))
+        .disabled(isPlaybackChoicePresented)
+        .allowsHitTesting(!isPlaybackChoicePresented)
+        .accessibilityHidden(isPlaybackChoicePresented)
         .focusSection()
     }
 
@@ -633,7 +1068,7 @@ struct PlaybackView: View {
     }
 
     private func panelIsVisible(_ panel: PlaybackPanel) -> Bool {
-        visiblePanel == panel && !isLoading && failure == nil
+        visiblePanel == panel && !isLoading && failure == nil && !isSceneSearchPresented && !viewportSettings.isPresented
     }
 
     private func focusForPanel(_ panel: PlaybackPanel,
@@ -643,7 +1078,7 @@ struct PlaybackView: View {
         }
         switch panel {
         case .top:
-            return isRecording ? .captions : .comments
+            return .captions
         case .bottom:
             if isRecording {
                 return recordingController.durationSeconds.map { _ in .seek } ?? .backward
@@ -656,8 +1091,10 @@ struct PlaybackView: View {
         switch panel {
         case .top:
             switch focus {
-            case .captions, .comments, .quality, .panelClose:
+            case .captions, .comments, .quality, .viewport, .miniPlayer, .panelClose:
                 return true
+            case .pictureInPicture:
+                return isRecording && recordingController.pictureInPicture.isSupported
             case .audio:
                 return audioOptions.count > 1
             default:
@@ -669,11 +1106,43 @@ struct PlaybackView: View {
                 return isRecording && recordingController.durationSeconds != nil
             case .backward, .forward, .playPause:
                 return true
-            case .chapters:
+            case .chapters, .scenes:
                 return isRecording
             default:
                 return false
             }
+        }
+    }
+
+    private func presentViewport() {
+        guard !isLoading, failure == nil, !isSceneSearchPresented else { return }
+        closeSelectionCards()
+        playbackFocus = nil
+        viewportSettings.open()
+    }
+
+    private func closeViewport(restoreFocus: Bool = true) {
+        guard viewportSettings.isPresented else { return }
+        viewportSettings.close()
+        if restoreFocus, panelIsVisible(.top) { playbackFocus = .viewport }
+    }
+
+    private func presentSceneSearch() {
+        guard isRecording, !isLoading, failure == nil,
+              recordingController.beginSceneSearch() else { return }
+        sceneSearchPosition = recordingController.currentSeconds
+        isSeeking = false
+        isSceneSearchPresented = true
+    }
+
+    private func finishSceneSearch(at seconds: Double? = nil, restoreFocus: Bool = true,
+                                   preparePlayback: Bool = true) {
+        guard isSceneSearchPresented else { return }
+        isSceneSearchPresented = false
+        recordingController.endSceneSearch(at: seconds, preparePlayback: preparePlayback)
+        if restoreFocus, failure == nil {
+            lastReadyPlaybackFocus = .scenes
+            if !isLoading { playbackFocus = .scenes }
         }
     }
 
@@ -706,6 +1175,7 @@ struct PlaybackView: View {
     }
 
     private func handleMoveCommand(_ direction: MoveCommandDirection) {
+        guard acceptsInlineInput else { return }
         switch direction {
         case .up: revealTopPanel()
         case .down:
@@ -719,11 +1189,92 @@ struct PlaybackView: View {
     }
 
     private func selectQuality(_ value: String) {
+        guard acceptsInlineInput else { return }
         guard value != quality, !isLoading else { return }
         if isRecording { recordingController.prepareQualityChange() }
         else { controller.prepareQualityChange() }
         session = UUID().uuidString
         quality = value
+    }
+
+    private func presentChapterChoices() {
+        guard isRecording, acceptsInlineInput, panelIsVisible(.bottom),
+              !isPlaybackChoicePresented, !isLoading, failure == nil else { return }
+        closeSelectionCards()
+        playbackFocus = nil
+        isChapterOverlayPresented = true
+#if DEBUG
+        print("RingonomiChapterCard: opened")
+#endif
+    }
+
+    private func finishChapterAction(_ action: () -> Void) {
+        guard isChapterOverlayPresented else { return }
+        guard isRecording, acceptsInlineInput, !isLoading, failure == nil else {
+            dismissChapterOverlay(restoreFocus: false)
+            return
+        }
+        dismissChapterOverlay(restoreFocus: true)
+        action()
+    }
+
+    private func dismissChapterOverlay(restoreFocus: Bool) {
+        guard isChapterOverlayPresented else { return }
+        isChapterOverlayPresented = false
+        if restoreFocus, acceptsInlineInput, panelIsVisible(.bottom) {
+            playbackFocus = .chapters
+        }
+    }
+
+    private var canUseCommentCard: Bool {
+        isCommentOverlayPresented && acceptsInlineInput && !isLoading && failure == nil
+            && panelIsVisible(.top)
+    }
+
+    private func presentCommentChoices() {
+        guard acceptsInlineInput, panelIsVisible(.top), !isPlaybackChoicePresented,
+              !isSceneSearchPresented, !viewportSettings.isPresented else { return }
+        playbackFocus = nil
+        isCommentOverlayPresented = true
+#if DEBUG
+        print("RingonomiCommentCard: opened")
+#endif
+    }
+
+    private func dismissCommentOverlay(restoreFocus: Bool) {
+        guard isCommentOverlayPresented else { return }
+        isCommentOverlayPresented = false
+        if restoreFocus, acceptsInlineInput, panelIsVisible(.top) {
+            playbackFocus = .comments
+        }
+    }
+
+    private func finishAudioSelection(_ id: String) {
+        guard isAudioOverlayPresented else { return }
+        guard acceptsInlineInput, !isLoading, failure == nil,
+              audioOptions.contains(where: { $0.id == id }) else {
+            dismissAudioOverlay(restoreFocus: true)
+            return
+        }
+        // Closing first also handles selecting the already-active track,
+        // which does not trigger a new loading/focus transition.
+        dismissAudioOverlay(restoreFocus: true)
+        if isRecording { recordingController.selectAudioTrack(id: id) }
+        else { controller.selectAudioTrack(id: id) }
+    }
+
+    private func dismissAudioOverlay(restoreFocus: Bool) {
+        guard isAudioOverlayPresented else { return }
+        isAudioOverlayPresented = false
+        if restoreFocus, panelIsVisible(.top) {
+            playbackFocus = audioOptions.count > 1 ? .audio : focusForPanel(.top)
+        }
+    }
+
+    private func dismissCaptionOverlay(restoreFocus: Bool) {
+        guard isCaptionOverlayPresented else { return }
+        isCaptionOverlayPresented = false
+        if restoreFocus, panelIsVisible(.top) { playbackFocus = .captions }
     }
 
     private func dismissQualityOverlay(restoreFocus: Bool) {
@@ -753,10 +1304,23 @@ struct PlaybackView: View {
 
     private func handleExitCommand() {
 #if DEBUG
-        print("RingonomiPlaybackExit: card=\(isQualityOverlayPresented) panel=\(visiblePanel.map { $0 == .top ? "top" : "bottom" } ?? "hidden") focus=\(playbackFocus?.rawValue ?? "none")")
+        print("RingonomiPlaybackExit: card=\(isCommentOverlayPresented || isQualityOverlayPresented || isCaptionOverlayPresented || isAudioOverlayPresented || isChapterOverlayPresented) panel=\(visiblePanel.map { $0 == .top ? "top" : "bottom" } ?? "hidden") focus=\(playbackFocus?.rawValue ?? "none")")
 #endif
 #if canImport(TVVLCKit)
-        if isQualityOverlayPresented {
+        guard acceptsInlineInput else { return }
+        if viewportSettings.isPresented {
+            closeViewport()
+        } else if isSceneSearchPresented {
+            finishSceneSearch()
+        } else if isCommentOverlayPresented {
+            dismissCommentOverlay(restoreFocus: true)
+        } else if isChapterOverlayPresented {
+            dismissChapterOverlay(restoreFocus: true)
+        } else if isAudioOverlayPresented {
+            dismissAudioOverlay(restoreFocus: true)
+        } else if isCaptionOverlayPresented {
+            dismissCaptionOverlay(restoreFocus: true)
+        } else if isQualityOverlayPresented {
             dismissQualityOverlay(restoreFocus: true)
         } else if visiblePanel != nil {
             hidePanel()
@@ -780,5 +1344,13 @@ private struct CommentRequestID: Hashable {
     let server: URL
     let recordingID: Int?
     let enabled: Bool
+    let reload: Int
+}
+
+private struct ChapterRequestID: Hashable {
+    let server: URL
+    let playbackID: UUID
+    let recordingID: Int?
+    let fileID: Int?
     let reload: Int
 }

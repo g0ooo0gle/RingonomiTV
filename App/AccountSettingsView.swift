@@ -13,7 +13,7 @@ struct AccountSettingsView: View {
     }
 
     var body: some View {
-        Section("サーバーアカウント") {
+        AppSection("サーバーアカウント") {
             if address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Text("接続先のサーバーURLを入力してください。")
             } else {

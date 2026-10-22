@@ -125,6 +125,10 @@ extension RingonomiClient {
     static func connected(to address: String) throws -> RingonomiClient {
         let anonymous = try RingonomiClient(address: address)
         let token = try AccountKeychain().load(for: anonymous.accountKeyString)
-        return try RingonomiClient(address: address, accessToken: token)
+        let basic: HTTPBasicCredential?
+        if let scope = try? HTTPBasicCredentialsKeychain.konomiScope(address: address) {
+            basic = try HTTPBasicCredentialsKeychain().load(for: scope)
+        } else { basic = nil }
+        return try RingonomiClient(address: address, accessToken: token, httpBasicCredential: basic)
     }
 }

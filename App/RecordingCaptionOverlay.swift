@@ -19,12 +19,22 @@ struct RecordingCaptionOverlay: View {
     }
 
     var body: some View {
+        ARIBCaptionImagesOverlay(images: controller.images, videoRect: videoRect, isVisible: isVisible)
+    }
+}
+
+struct ARIBCaptionImagesOverlay: View {
+    let images: [ARIBCaptionImage]
+    let videoRect: CGRect
+    let isVisible: Bool
+
+    var body: some View {
         GeometryReader { geometry in
             let bounds = CGRect(origin: .zero, size: geometry.size)
             let rect = validVideoRect(in: bounds)
             if isVisible, let rect {
                 ZStack(alignment: .topLeading) {
-                    ForEach(controller.images) { caption in
+                    ForEach(images) { caption in
                         captionView(caption, in: CGRect(origin: .zero, size: rect.size))
                     }
                 }
@@ -59,7 +69,7 @@ struct RecordingCaptionOverlay: View {
 
     @ViewBuilder
     private func captionView(
-        _ caption: RecordingCaptionImage,
+        _ caption: ARIBCaptionImage,
         in rect: CGRect
     ) -> some View {
         let canvasWidth = CGFloat(caption.canvasWidth)

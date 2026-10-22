@@ -36,13 +36,13 @@ struct KeywordReservationEditor: View {
         NavigationStack {
             Form {
                 searchFields
-                Section("対象チャンネル") {
+                AppSection("対象チャンネル") {
                     NavigationLink(search.serviceRanges == nil ? "全チャンネル" : "選択したチャンネル：\(search.serviceRanges?.count ?? 0)件") {
                         KeywordChannelSelection(address: address, selection: $search.serviceRanges)
                     }
                 }
                 filterFields
-                Section("番組長・重複チェック") {
+                AppSection("番組長・重複チェック") {
                     TextField("最短の番組長（分・空欄は指定なし）", text: $minimumDuration)
                     TextField("最長の番組長（分・空欄は指定なし）", text: $maximumDuration)
                     Picker("同名録画の重複チェック", selection: $search.duplicateTitleCheckScope) {
@@ -56,7 +56,7 @@ struct KeywordReservationEditor: View {
                     TextField("重複チェックの対象日数", text: $duplicateDays)
                 }
                 previewSection
-                RecordingSettingsFields(draft: $recording)
+                RecordingSettingsFields(draft: $recording, address: address)
                 Section {
                     if busy { ProgressView("サーバーの処理結果を確認しています…") }
                     Button(original == nil ? "条件を追加" : "変更を保存") { confirmation = true }
@@ -66,7 +66,8 @@ struct KeywordReservationEditor: View {
                 }
             }
             .disabled(busy)
-            .navigationTitle(original == nil ? "新しいキーワード予約" : "キーワード予約を変更")
+            .navigationFormViewport()
+            .appNavigationTitle(Text(original == nil ? "新しいキーワード予約" : "キーワード予約を変更"))
             .interactiveDismissDisabled(busy)
             .onChange(of: search.rawValues) { _, _ in invalidatePreview() }
             .onChange(of: minimumDuration) { _, _ in invalidatePreview() }
@@ -93,7 +94,7 @@ struct KeywordReservationEditor: View {
 
     private var filterFields: some View {
         Group {
-            Section("ジャンル") {
+            AppSection("ジャンル") {
                 NavigationLink(search.genreRanges == nil ? "すべてのジャンル" : "指定したジャンル：\(search.genreRanges?.count ?? 0)件") {
                     KeywordGenreSelection(selection: Binding(
                         get: { search.genreRanges },
@@ -106,7 +107,7 @@ struct KeywordReservationEditor: View {
                 Toggle("指定したジャンルを除外", isOn: $search.isExcludeGenreRanges)
                     .disabled(search.genreRanges == nil)
             }
-            Section("曜日・時間帯") {
+            AppSection("曜日・時間帯") {
                 NavigationLink(search.dateRanges == nil ? "すべての日時" : "指定した日時範囲：\(search.dateRanges?.count ?? 0)件") {
                     KeywordTimeRangeSelection(selection: Binding(
                         get: { search.dateRanges },
@@ -125,7 +126,7 @@ struct KeywordReservationEditor: View {
     }
 
     private var searchFields: some View {
-        Section("検索条件") {
+        AppSection("検索条件") {
             TextField("検索キーワード", text: $search.keyword)
                 .textInputAutocapitalization(.never).autocorrectionDisabled()
             TextField("除外キーワード", text: $search.excludeKeyword)
@@ -148,7 +149,7 @@ struct KeywordReservationEditor: View {
     }
 
     private var previewSection: some View {
-        Section("検索結果の確認") {
+        AppSection("検索結果の確認") {
             Button("この条件で番組を検索") {
                 previewTask?.cancel()
                 previewTask = Task { await loadPreview() }

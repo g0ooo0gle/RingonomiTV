@@ -24,6 +24,31 @@ public struct PlaybackAudioDescriptor: Equatable, Sendable {
     }
 }
 
+/// The choice is restored by a unique label, never by a reused engine ID.
+public enum PlaybackAudioPreferenceMatch: Equatable, Sendable {
+    case notRequested
+    case matched(id: String)
+    case missing
+    case ambiguous
+
+    public var selectedID: String? {
+        if case .matched(let id) = self { return id }
+        return nil
+    }
+
+    /// A nonfatal notice: the engine's current audio remains available.
+    public var notice: String? {
+        switch self {
+        case .missing:
+            return "選択していた音声はこの配信では利用できません。現在の音声を確認してください。"
+        case .ambiguous:
+            return "同じ名前の音声が複数あるため復元できません。音声を選び直してください。"
+        case .notRequested, .matched:
+            return nil
+        }
+    }
+}
+
 public enum PlaybackAudioCatalog {
     public static let maximumTracks = 64
 
@@ -44,8 +69,13 @@ public enum PlaybackAudioCatalog {
     /// Restore a user choice only when the label identifies exactly one
     /// track in the new stream. Otherwise the engine keeps its default.
     public static func preferredID(named name: String?, in options: [PlaybackAudioOption]) -> String? {
-        guard let name else { return nil }
+        preferenceMatch(named: name, in: options).selectedID
+    }
+
+    public static func preferenceMatch(named name: String?, in options: [PlaybackAudioOption]) -> PlaybackAudioPreferenceMatch {
+        guard let name else { return .notRequested }
         let matches = options.filter { $0.preferenceKey == name }
-        return matches.count == 1 ? matches[0].id : nil
+        guard let first = matches.first else { return .missing }
+        return matches.count == 1 ? .matched(id: first.id) : .ambiguous
     }
 }

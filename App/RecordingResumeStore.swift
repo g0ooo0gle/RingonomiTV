@@ -7,14 +7,31 @@ import SwiftUI
 final class RecordingResumeStore: ObservableObject {
     @Published private(set) var revision = 0
     private let defaults: UserDefaults
-    private let storageKey = "recordingResume.v1"
+    private let storageKey: String
     private var archive: RecordingResumeArchive
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, storageKey: String = "recordingResume.v1") {
         self.defaults = defaults
+        self.storageKey = storageKey
         archive = defaults.data(forKey: storageKey).flatMap {
             try? JSONDecoder().decode(RecordingResumeArchive.self, from: $0)
         } ?? RecordingResumeArchive()
+    }
+
+    static func forApplication() -> RecordingResumeStore {
+#if DEBUG
+        // Device checks can persist/reopen fixture bookmarks without changing
+        // the viewer's normal recording history. Reset only this fixed test key.
+        let key = "recordingResume.check.v1"
+        let arguments = ProcessInfo.processInfo.arguments
+        if arguments.contains("--reset-playback-check-resume") {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
+        if arguments.contains("--isolate-playback-resume") {
+            return RecordingResumeStore(storageKey: key)
+        }
+#endif
+        return RecordingResumeStore()
     }
 
     func position(for id: RecordingResumeID, duration: Double?, status: String?) -> Double? {

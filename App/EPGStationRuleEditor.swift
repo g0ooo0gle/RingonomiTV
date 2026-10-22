@@ -31,44 +31,18 @@ struct EPGStationRuleEditor: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                if store.loading {
-                    ProgressView("放送局と保存先を読み込んでいます…")
-                } else if let error = store.error {
-                    Text(error).foregroundStyle(.red)
-                    Button("再試行") { store.load(address: address) }
-                } else {
-                    if original == nil {
-                        Section {
-                            Text("新しいルールは無効の状態から設定できます。有効にすると、一致する番組が自動で録画予約されます。")
-                                .font(.caption).foregroundStyle(.secondary).focusable()
-                        }
-                    }
-                    EPGStationRuleFields(options: $options, channels: store.channels, directories: store.directories)
-                    previewSection
+            VStack(spacing: 0) {
+                EPGStationListHeader(original == nil ? "EPGStationルールを追加" : "EPGStationルールを編集") {
+                    Button("プレビュー") {
+                        store.search(address: address, values: options.searchValues)
+                        showingPreview = true
+                    }.disabled(submitting || store.loading || store.previewing || store.error != nil || options.isTimeSpecification == true)
+                    Button("保存内容を確認") { confirm = true }.disabled(!canSave)
                 }
-                if let message { Section { Text(message).foregroundStyle(.red).focusable() } }
-                if mutation.pending != nil, !submitting {
-                    Section {
-                        Text("前の操作結果が未確認です。ルール一覧へ戻り、結果を確認してください。")
-                            .foregroundStyle(.orange).focusable()
-                    }
-                }
-                Section {
-                    if submitting { ProgressView("ルールの処理結果を確認しています…") }
-                    Button("保存内容を確認") { confirm = true }.disabled(!canSave).focused($footerFocus, equals: .save)
-                    Button("閉じる", action: close).disabled(submitting).focused($footerFocus, equals: .close)
-                }
+                editorForm
             }
             .disabled(submitting)
-            .navigationTitle(original == nil ? "EPGStationルールを追加" : "EPGStationルールを編集")
-            .toolbar {
-                Button("プレビュー") {
-                    store.search(address: address, values: options.searchValues)
-                    showingPreview = true
-                }.disabled(submitting || store.loading || store.previewing || store.error != nil || options.isTimeSpecification == true)
-                Button("保存内容を確認") { confirm = true }.disabled(!canSave)
-            }
+            .navigationTitle("")
             .sheet(isPresented: $showingPreview) {
                 NavigationStack {
                     List {
@@ -82,7 +56,7 @@ struct EPGStationRuleEditor: View {
                         }
                         Button("条件に戻る") { showingPreview = false }
                     }
-                    .navigationTitle("番組検索プレビュー")
+                    .appNavigationTitle(Text("番組検索プレビュー"))
                     .onExitCommand { showingPreview = false }
                 }
             }
@@ -118,8 +92,40 @@ struct EPGStationRuleEditor: View {
         }
     }
 
+    private var editorForm: some View {
+        Form {
+            if store.loading {
+                ProgressView("放送局と保存先を読み込んでいます…")
+            } else if let error = store.error {
+                Text(error).foregroundStyle(.red)
+                Button("再試行") { store.load(address: address) }
+            } else {
+                if original == nil {
+                    Section {
+                        Text("新しいルールは無効の状態から設定できます。有効にすると、一致する番組が自動で録画予約されます。")
+                            .font(.caption).foregroundStyle(.secondary).focusable()
+                    }
+                }
+                EPGStationRuleFields(options: $options, channels: store.channels, directories: store.directories)
+                previewSection
+            }
+            if let message { Section { Text(message).foregroundStyle(.red).focusable() } }
+            if mutation.pending != nil, !submitting {
+                Section {
+                    Text("前の操作結果が未確認です。ルール一覧へ戻り、結果を確認してください。")
+                        .foregroundStyle(.orange).focusable()
+                }
+            }
+            Section {
+                if submitting { ProgressView("ルールの処理結果を確認しています…") }
+                Button("保存内容を確認") { confirm = true }.disabled(!canSave).focused($footerFocus, equals: .save)
+                Button("閉じる", action: close).disabled(submitting).focused($footerFocus, equals: .close)
+            }
+        }
+    }
+
     private var previewSection: some View {
-        Section("検索プレビュー") {
+        AppSection("検索プレビュー") {
             if options.isTimeSpecification == true {
                 Text("時刻指定ルールの時間条件を保持しています。番組検索のプレビューには対応していません。")
                     .font(.caption).foregroundStyle(.secondary).focusable()

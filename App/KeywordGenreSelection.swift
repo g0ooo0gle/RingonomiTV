@@ -22,7 +22,7 @@ struct KeywordGenreSelection: View {
             } else {
                 selectedSummary
 
-                Section("大分類") {
+                AppSection("大分類") {
                     ForEach(KeywordGenreCatalog.all) { major in
                         NavigationLink {
                             KeywordGenreMiddleSelection(
@@ -37,7 +37,7 @@ struct KeywordGenreSelection: View {
                 }
 
                 if !unknownMajorNames.isEmpty {
-                    Section("サーバーから取得した未登録の大分類") {
+                    AppSection("サーバーから取得した未登録の大分類") {
                         ForEach(unknownMajorNames, id: \.self) { major in
                             NavigationLink {
                                 KeywordGenreMiddleSelection(
@@ -59,7 +59,7 @@ struct KeywordGenreSelection: View {
                 }
             }
         }
-        .navigationTitle("対象ジャンル")
+        .appNavigationTitle(Text("対象ジャンル"))
     }
 
     private var allGenresBinding: Binding<Bool> {
@@ -73,7 +73,7 @@ struct KeywordGenreSelection: View {
     }
 
     private var selectedSummary: some View {
-        Section("選択中（OR）") {
+        AppSection("選択中（OR）") {
             if let selection, selection.isEmpty {
                 Text("ジャンルが選択されていません。保存時に確認が必要です。")
                     .foregroundStyle(.orange)
@@ -154,7 +154,7 @@ private struct KeywordGenreMiddleSelection: View {
             }
 
             if !knownMiddles.isEmpty {
-                Section("中分類") {
+                AppSection("中分類") {
                     ForEach(knownMiddles) { middle in
                         Toggle(isOn: binding(for: middle.name)) {
                             VStack(alignment: .leading, spacing: 5) {
@@ -171,7 +171,7 @@ private struct KeywordGenreMiddleSelection: View {
             }
 
             if !unknownMiddleNames.isEmpty {
-                Section("サーバーから取得した未登録の中分類") {
+                AppSection("サーバーから取得した未登録の中分類") {
                     ForEach(unknownMiddleNames, id: \.self) { middle in
                         Toggle(isOn: binding(for: middle)) {
                             VStack(alignment: .leading, spacing: 5) {
@@ -185,7 +185,7 @@ private struct KeywordGenreMiddleSelection: View {
                 }
             }
         }
-        .navigationTitle(majorName.isEmpty ? "未登録の大分類" : majorName)
+        .appNavigationTitle(Text(majorName.isEmpty ? "未登録の大分類" : majorName))
     }
 
     private var unknownMiddleNames: [String] {

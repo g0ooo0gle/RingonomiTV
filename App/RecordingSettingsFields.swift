@@ -6,9 +6,11 @@ struct RecordingSettingsDraft {
     var startMargin: String
     var endMargin: String
     var tuner: String
+    var advanced: RecordingAdvancedDraft
 
     init(settings: RecordSettings) {
         self.settings = settings
+        advanced = RecordingAdvancedDraft(settings: settings)
         startMargin = settings.startMargin.map(String.init) ?? ""
         endMargin = settings.endMargin.map(String.init) ?? ""
         tuner = settings.forcedTunerID.map(String.init) ?? ""
@@ -19,7 +21,7 @@ struct RecordingSettingsDraft {
         result.startMargin = try optionalInteger(startMargin, label: "開始マージン")
         result.endMargin = try optionalInteger(endMargin, label: "終了マージン")
         result.forcedTunerID = try optionalInteger(tuner, label: "チューナーID", nonnegative: true)
-        return result
+        return try advanced.validatedApplying(to: result)
     }
 }
 
@@ -34,10 +36,11 @@ func optionalInteger(_ input: String, label: String, nonnegative: Bool = false) 
 
 struct RecordingSettingsFields: View {
     @Binding var draft: RecordingSettingsDraft
+    let address: String
 
     var body: some View {
         Group {
-            Section("基本設定") {
+            AppSection("基本設定") {
                 Toggle("この予約を有効にする", isOn: $draft.settings.isEnabled)
                 Picker("優先度", selection: $draft.settings.priority) {
                     ForEach(1...5, id: \.self) { Text($0 == 3 ? "3（通常）" : String($0)).tag($0) }
@@ -57,16 +60,15 @@ struct RecordingSettingsFields: View {
                 Toggle("イベントリレーを追従", isOn: $draft.settings.isEventRelayFollowEnabled)
                 Toggle("ぴったり録画", isOn: $draft.settings.isExactRecordingEnabled)
             }
-            Section("詳細設定") {
+            AppSection("詳細設定") {
                 recordingModePicker("字幕", selection: $draft.settings.captionRecordingMode)
                 recordingModePicker("データ放送", selection: $draft.settings.dataBroadcastingRecordingMode)
                 Toggle("ワンセグを別ファイルへ保存", isOn: $draft.settings.isOnesegSeparateOutputEnabled)
                 Toggle("連続する番組を一つのファイルへ保存", isOn: $draft.settings.isSequentialRecordingInSingleFileEnabled)
                 TextField("使用チューナーID（空欄は自動）", text: $draft.tuner)
-                Text(draft.settings.recordingFolders.isEmpty ? "保存先：サーバーの既定フォルダー" : "保存先：\(draft.settings.recordingFolders.count)件の既存設定を保持")
-                    .font(.caption).foregroundStyle(.secondary)
-                Text("録画後の動作・保存先・スクリプトなど、この画面で変更しない設定は保持します。")
-                    .font(.caption).foregroundStyle(.secondary)
+                NavigationLink("保存先と録画後処理") {
+                    RecordingAdvancedSettingsView(draft: $draft.advanced, address: address)
+                }
             }
         }
     }

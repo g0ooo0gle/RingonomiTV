@@ -100,7 +100,7 @@ struct RecordingLibraryView: View {
                 searchControls
                 pagingControls
                 libraryResults
-            }.padding(.horizontal, 40).navigationTitle("録画ライブラリ")
+            }.padding(.horizontal, 40).appNavigationTitle(Text("録画ライブラリ"))
             .task(id: pagedRequest) {
                 if let request = pagedRequest { await store.load(request) }
             }

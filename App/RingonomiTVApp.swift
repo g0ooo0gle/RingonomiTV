@@ -6,11 +6,17 @@ struct RingonomiTVApp: App {
     init() {
 #if DEBUG
         AccountKeychain.checkStorage(arguments: ProcessInfo.processInfo.arguments)
+        HTTPBasicCredentialsKeychain.checkStorage(arguments: ProcessInfo.processInfo.arguments)
+        PlaybackAccessibilityDiagnostics.start(arguments: ProcessInfo.processInfo.arguments)
 #endif
     }
     var body: some Scene { WindowGroup { LibraryView() } }
 }
 struct LibraryView: View {
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.colorScheme) private var systemColorScheme
+    @AppStorage("appAppearanceMode") private var appearanceValue = AppAppearanceMode.system.rawValue
+    @AppStorage("appColorStyle") private var colorStyleValue = AppColorStyle.standard.rawValue
     @AppStorage("serverAddress") private var address = ""
     @State private var draftAddress = ""
     @State private var loadedAddressDraft = false
@@ -18,15 +24,23 @@ struct LibraryView: View {
     @AppStorage("guideSubchannels") private var guideSubchannels = false
     @State private var channels: [Channel] = []
     @State private var error: String?
+    @State private var channelError: String?
     @State private var loading = false
-    @State private var playback: Playback?
+    @StateObject private var playbackPresentation = PlaybackPresentationStore()
+    private var playback: Playback? {
+        get { playbackPresentation.current?.konomi }
+        nonmutating set { playbackPresentation.present(newValue) }
+    }
     @StateObject private var playbackIdleTimer = PlaybackIdleTimer()
     @State private var selectedTab = 0
+    @FocusState private var playerControlFocus: PlayerControlFocus?
     @State private var settingsPath: [SettingsDestination] = []
     @StateObject private var reservations = ReservationStore()
     @StateObject private var keywords = KeywordReservationStore()
-    @StateObject private var resumeStore = RecordingResumeStore()
+    @StateObject private var resumeStore = RecordingResumeStore.forApplication()
+    @StateObject private var smbResumeStore = SMBResumeStore.playbackStore()
     @StateObject private var account = BackendAccountStore(storage: AccountKeychain())
+    @StateObject private var liveFavorites = LiveChannelFavoritesStore()
     @State private var loadGeneration = UUID()
 #if DEBUG
     @State private var launchArgumentsHandled = false
@@ -49,185 +63,300 @@ struct LibraryView: View {
     private var connectionKey: ConnectionLoadKey {
         ConnectionLoadKey(address: effectiveAddress, revision: account.revision)
     }
+    private var appearanceMode: AppAppearanceMode {
+        AppAppearanceMode(rawValue: appearanceValue) ?? .system
+    }
+    private var colorStyle: AppColorStyle {
+        AppColorStyle(rawValue: colorStyleValue) ?? .standard
+    }
+    private var palette: AppColorPalette {
+        colorStyle.palette(for: appearanceMode.preferredColorScheme ?? systemColorScheme)
+    }
     var body: some View {
-        TabView(selection: $selectedTab) {
-            NavigationStack {
-                List(channels) { channel in
-                    Button {
-                        do {
-                            let client = try RingonomiClient.connected(to: effectiveAddress)
-                            playback = Playback(client: client, channelID: channel.displayChannelId, recordingID: nil, title: channel.name, initialQuality: quality)
-                        } catch { self.error = error.localizedDescription }
-                    } label: {
-                        VStack(alignment: .leading) {
-                            Text(channel.name).font(.headline)
-                            Text(channel.programPresent?.title ?? "番組情報なし")
-                            Text(channel.programPresent?.description ?? "").font(.caption).lineLimit(2)
+        VStack(spacing: 0) {
+            TabView(selection: $selectedTab) {
+                NavigationStack {
+                    LiveChannelLibraryView(
+                        channels: channels, loading: loading, error: channelError,
+                        configured: !effectiveAddress.isEmpty, favorites: liveFavorites,
+                        onRefresh: { Task { await refresh() } },
+                        onPlay: { channel in
+                            do {
+                                let client = try RingonomiClient.connected(to: effectiveAddress)
+                                playback = Playback(client: client, channelID: channel.displayChannelId, recordingID: nil, title: channel.name, initialQuality: quality)
+                            } catch { self.error = error.localizedDescription }
                         }
+                    )
+                    .id(connectionKey)
+                }.tabItem { Label("ライブ", systemImage: "tv") }.tag(0)
+                RecordingLibraryView(address: effectiveAddress, resumeStore: resumeStore) { recording, client in
+                    openRecording(recording, client: client)
+                }.id(connectionKey).tabItem { Label("録画", systemImage: "film") }.tag(1)
+                ProgramGuideView(address: effectiveAddress, reservations: reservations) { channel in
+                    do {
+                        let client = try RingonomiClient.connected(to: effectiveAddress)
+                        playback = Playback(client: client, channelID: channel.displayChannelId,
+                                            recordingID: nil, title: channel.name, initialQuality: quality)
+                    } catch { self.error = error.localizedDescription }
+                }.id(connectionKey).tabItem { Label("番組表", systemImage: "calendar") }.tag(2)
+                ReservationListView(address: effectiveAddress, store: reservations, keywords: keywords)
+                    .id(connectionKey)
+                    .tabItem { Label("予約", systemImage: "record.circle") }.tag(3)
+                NavigationStack(path: $settingsPath) {
+                    Form {
+                        TextField("視聴サーバーURL（ポート番号を含む）", text: $draftAddress)
+                            .textInputAutocapitalization(.never).autocorrectionDisabled()
+                            .disabled(reservations.saving || keywords.saving || account.isBusy)
+                        Picker("画質", selection: $quality) {
+                            ForEach(["1080p", "720p", "540p", "360p"], id: \.self) { Text($0) }
+                        }
+                        Toggle("番組表に副チャンネルを表示", isOn: $guideSubchannels)
+                        Button("接続して読み込む") { applyConnection() }
+                            .disabled(loading || account.isBusy || reservations.saving || keywords.saving)
+                        Text("Apple TVのIPではなく、視聴サーバーのURLを入力してください。")
+                        if loading { ProgressView() }
+                        if let error { Text(error).foregroundStyle(.red) }
+                        if let channelError { Text(channelError).foregroundStyle(.red) }
+                        AppearanceSettingsFields(modeValue: $appearanceValue, styleValue: $colorStyleValue)
+                        AppSection("Mirakurun") {
+                            NavigationLink("Mirakurunの番組表") { MirakurunProgramGuideView() }
+                            NavigationLink("Mirakurun直接視聴") {
+                                MirakurunServiceView()
+                            }
+                            Text("Mirakurunのサービス一覧から、raw TSを直接再生します。")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        AppSection("EPGStation") {
+                            NavigationLink("EPGStationの番組表") { EPGStationProgramGuideView() }
+                            NavigationLink("EPGStationの録画") {
+                                EPGStationLibraryView()
+                            }
+                            NavigationLink("EPGStationの予約") {
+                                EPGStationReservationListView()
+                            }
+                            NavigationLink("EPGStationのキーワード予約") { EPGStationRuleListView() }
+                            Text("EPGStationの録画一覧から、保存済みの動画を再生します。")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        AppSection("ファイルライブラリ") {
+                            NavigationLink("SMB共有の動画") { SMBPlaybackLibraryView() }
+                        }
+                        AccountSettingsView(address: effectiveAddress, account: account)
+                            .disabled(reservations.saving || keywords.saving)
                     }
-                }.navigationTitle("りんごのみTV · ライブ")
-                .toolbar { Button("更新") { Task { await refresh() } }.disabled(loading) }
-            }.tabItem { Label("ライブ", systemImage: "tv") }.tag(0)
-            RecordingLibraryView(address: effectiveAddress, resumeStore: resumeStore) { recording, client in
-                openRecording(recording, client: client)
-            }.id(connectionKey).tabItem { Label("録画", systemImage: "film") }.tag(1)
-            ProgramGuideView(address: effectiveAddress, reservations: reservations) { channel in
-                do {
-                    let client = try RingonomiClient.connected(to: effectiveAddress)
-                    playback = Playback(client: client, channelID: channel.displayChannelId,
-                                        recordingID: nil, title: channel.name, initialQuality: quality)
-                } catch { self.error = error.localizedDescription }
-            }.id(connectionKey).tabItem { Label("番組表", systemImage: "calendar") }.tag(2)
-            ReservationListView(address: effectiveAddress, store: reservations, keywords: keywords)
-                .id(connectionKey)
-                .tabItem { Label("予約", systemImage: "record.circle") }.tag(3)
-            NavigationStack(path: $settingsPath) {
-                Form {
-                    TextField("視聴サーバーURL（ポート番号を含む）", text: $draftAddress)
-                        .textInputAutocapitalization(.never).autocorrectionDisabled()
-                        .disabled(reservations.saving || keywords.saving || account.isBusy)
-                    Picker("画質", selection: $quality) {
-                        ForEach(["1080p", "720p", "540p", "360p"], id: \.self) { Text($0) }
-                    }
-                    Toggle("番組表に副チャンネルを表示", isOn: $guideSubchannels)
-                    Button("接続して読み込む") { applyConnection() }
-                        .disabled(loading || account.isBusy || reservations.saving || keywords.saving)
-                    Text("Apple TVのIPではなく、視聴サーバーのURLを入力してください。")
-                    if loading { ProgressView() }
-                    if let error { Text(error).foregroundStyle(.red) }
-                    Section("Mirakurun") {
-                        NavigationLink("Mirakurun直接視聴") {
+                    .navigationFormViewport()
+                    .appNavigationTitle(Text("設定"))
+                    .navigationDestination(for: SettingsDestination.self) { destination in
+                        switch destination {
+                        case .mirakurun:
                             MirakurunServiceView()
-                        }
-                        Text("Mirakurunのサービス一覧から、raw TSを直接再生します。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Section("EPGStation") {
-                        NavigationLink("EPGStationの録画") {
+                        case .mirakurunGuide:
+                            MirakurunProgramGuideView()
+                        case .epgstation:
                             EPGStationLibraryView()
-                        }
-                        NavigationLink("EPGStationの予約") {
+                        case .epgstationReservations:
                             EPGStationReservationListView()
+                        case .epgstationRules:
+                            EPGStationRuleListView()
+                        case .epgstationGuide:
+                            EPGStationProgramGuideView()
+                        case .smb:
+                            SMBPlaybackLibraryView()
                         }
-                        NavigationLink("EPGStationのキーワード予約") { EPGStationRuleListView() }
-                        Text("EPGStationの録画一覧から、保存済みの動画を再生します。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    AccountSettingsView(address: effectiveAddress, account: account)
-                        .disabled(reservations.saving || keywords.saving)
-                }
-                .navigationTitle("設定")
-                .navigationDestination(for: SettingsDestination.self) { destination in
-                    switch destination {
-                    case .mirakurun:
-                        MirakurunServiceView()
-                    case .epgstation:
-                        EPGStationLibraryView()
-                    case .epgstationReservations:
-                        EPGStationReservationListView()
-                    case .epgstationRules:
-                        EPGStationRuleListView()
                     }
                 }
+                .tabItem { Label("設定", systemImage: "gear") }.tag(4)
             }
-            .tabItem { Label("設定", systemImage: "gear") }.tag(4)
-        }
-        .onAppear {
-            if !loadedAddressDraft { draftAddress = address; loadedAddressDraft = true }
-#if DEBUG
-            let arguments = ProcessInfo.processInfo.arguments
-            if arguments.contains("--show-mirakurun") || arguments.contains("--play-mirakurun-service") {
-                selectedTab = 4
-                settingsPath = [.mirakurun]
-            }
-            if arguments.contains("--show-epgstation") || arguments.contains("--play-epgstation-recording") {
-                selectedTab = 4
-                settingsPath = [.epgstation]
-            }
-            if arguments.contains("--show-epgstation-reservations") || arguments.contains("--epgstation-reservation") {
-                selectedTab = 4
-                settingsPath = [.epgstationReservations]
-            }
-            if arguments.contains("--show-epgstation-rules") || arguments.contains("--epgstation-rule") {
-                selectedTab = 4
-                settingsPath = [.epgstationRules]
-            }
-#endif
-        }
-        .task(id: connectionKey) {
-            channels = []
-            playback = nil
-            reservations.invalidateConnection()
-            keywords.invalidateConnection()
-            if effectiveAddress.isEmpty { selectedTab = 4 }
-            else {
-                async let reservationReload: () = reservations.refresh(address: effectiveAddress)
-                async let keywordReload: () = keywords.refresh(address: effectiveAddress)
-                await refresh()
-                _ = await (reservationReload, keywordReload)
-#if DEBUG
-                if ProcessInfo.processInfo.arguments.contains("--show-recordings") { selectedTab = 1 }
-                if ProcessInfo.processInfo.arguments.contains("--show-guide") { selectedTab = 2 }
-                if ProcessInfo.processInfo.arguments.contains("--show-reservations") { selectedTab = 3 }
-                if ProcessInfo.processInfo.arguments.contains("--show-settings") { selectedTab = 4 }
-                if !accountCheckHandled, ProcessInfo.processInfo.arguments.contains("--test-account-invalid-login") {
-                    accountCheckHandled = true
+            .onAppear {
+                if !loadedAddressDraft { draftAddress = address; loadedAddressDraft = true }
+    #if DEBUG
+                let arguments = ProcessInfo.processInfo.arguments
+                if arguments.contains("--show-smb") {
                     selectedTab = 4
-                    // A new fictional username cannot lock out an existing
-                    // account. No password or token is written to the log.
-                    await account.login(address: effectiveAddress,
-                                        username: "ringonomi-check-" + UUID().uuidString,
-                                        password: UUID().uuidString)
-                    let expectedFailure = account.error?.contains("HTTP 401") == true
-                    print("RingonomiAccountLogin: expected401=\(expectedFailure)")
+                    settingsPath = [.smb]
                 }
-#endif
+                if arguments.contains("--show-mirakurun") || arguments.contains("--play-mirakurun-service") {
+                    selectedTab = 4
+                    settingsPath = [.mirakurun]
+                }
+                if arguments.contains("--show-mirakurun-guide") {
+                    selectedTab = 4
+                    settingsPath = [.mirakurunGuide]
+                }
+                if arguments.contains("--show-epgstation") || arguments.contains("--play-epgstation-recording") {
+                    selectedTab = 4
+                    settingsPath = [.epgstation]
+                }
+                if arguments.contains("--show-epgstation-reservations") || arguments.contains("--epgstation-reservation") {
+                    selectedTab = 4
+                    settingsPath = [.epgstationReservations]
+                }
+                if arguments.contains("--show-epgstation-rules") || arguments.contains("--epgstation-rule") {
+                    selectedTab = 4
+                    settingsPath = [.epgstationRules]
+                }
+                if arguments.contains("--show-epgstation-guide") {
+                    selectedTab = 4
+                    settingsPath = [.epgstationGuide]
+                }
+    #endif
             }
-#if DEBUG
-            let arguments = ProcessInfo.processInfo.arguments
-            if arguments.contains("--show-mirakurun") || arguments.contains("--play-mirakurun-service") {
-                selectedTab = 4
-                settingsPath = [.mirakurun]
+            .task(id: connectionKey) {
+                channels = []
+                channelError = nil
+                liveFavorites.configure(address: effectiveAddress)
+                playbackPresentation.cancelSessions(for: .konomi)
+                reservations.invalidateConnection()
+                keywords.invalidateConnection()
+                if effectiveAddress.isEmpty { selectedTab = 4 }
+                else {
+                    async let reservationReload: () = reservations.refresh(address: effectiveAddress)
+                    async let keywordReload: () = keywords.refresh(address: effectiveAddress)
+                    await refresh()
+                    _ = await (reservationReload, keywordReload)
+    #if DEBUG
+                    if ProcessInfo.processInfo.arguments.contains("--show-recordings") { selectedTab = 1 }
+                    if ProcessInfo.processInfo.arguments.contains("--show-guide") { selectedTab = 2 }
+                    if ProcessInfo.processInfo.arguments.contains("--show-reservations") { selectedTab = 3 }
+                    if ProcessInfo.processInfo.arguments.contains("--show-settings") { selectedTab = 4 }
+                    if !accountCheckHandled, ProcessInfo.processInfo.arguments.contains("--test-account-invalid-login") {
+                        accountCheckHandled = true
+                        selectedTab = 4
+                        // A new fictional username cannot lock out an existing
+                        // account. No password or token is written to the log.
+                        await account.login(address: effectiveAddress,
+                                            username: "ringonomi-check-" + UUID().uuidString,
+                                            password: UUID().uuidString)
+                        let expectedFailure = account.error?.contains("HTTP 401") == true
+                        print("RingonomiAccountLogin: expected401=\(expectedFailure)")
+                    }
+    #endif
+                }
+    #if DEBUG
+                let arguments = ProcessInfo.processInfo.arguments
+                if arguments.contains("--show-mirakurun") || arguments.contains("--play-mirakurun-service") {
+                    selectedTab = 4
+                    settingsPath = [.mirakurun]
+                }
+                if arguments.contains("--show-mirakurun-guide") {
+                    selectedTab = 4
+                    settingsPath = [.mirakurunGuide]
+                }
+                if arguments.contains("--show-epgstation") || arguments.contains("--play-epgstation-recording") {
+                    selectedTab = 4
+                    settingsPath = [.epgstation]
+                }
+                if arguments.contains("--show-epgstation-reservations") || arguments.contains("--epgstation-reservation") {
+                    selectedTab = 4
+                    settingsPath = [.epgstationReservations]
+                }
+                if arguments.contains("--show-epgstation-rules") || arguments.contains("--epgstation-rule") {
+                    selectedTab = 4
+                    settingsPath = [.epgstationRules]
+                }
+    #endif
             }
-            if arguments.contains("--show-epgstation") || arguments.contains("--play-epgstation-recording") {
-                selectedTab = 4
-                settingsPath = [.epgstation]
+            .task(id: effectiveAddress) {
+                await account.restore(address: effectiveAddress)
             }
-            if arguments.contains("--show-epgstation-reservations") || arguments.contains("--epgstation-reservation") {
-                selectedTab = 4
-                settingsPath = [.epgstationReservations]
+            .disabled(playbackPresentation.current != nil && !playbackPresentation.exposesLibrary)
+            .accessibilityHidden(playbackPresentation.current != nil && !playbackPresentation.exposesLibrary)
+            if playbackPresentation.exposesLibrary, let item = playbackPresentation.current {
+                VStack(alignment: .leading, spacing: 12) {
+                    if let notice = playbackPresentation.notice {
+                        Text(notice).font(.callout).foregroundStyle(.orange)
+                    }
+                    Text(item.title).font(.callout).lineLimit(1)
+                    HStack(spacing: 24) {
+                        Button(playbackPresentation.transport.isPaused ? "再生" : "一時停止") {
+                            playbackPresentation.toggleDetachedPause()
+                        }
+                        .disabled(!playbackPresentation.transport.canToggle || playbackPresentation.closeRequest != nil)
+                        .focused($playerControlFocus, equals: .playPause)
+                        Button("全画面へ戻る") { playbackPresentation.restoreInline() }
+                            .focused($playerControlFocus, equals: .restore)
+                        Button("再生を終了") { playbackPresentation.present(nil) }
+                            .focused($playerControlFocus, equals: .close)
+                    }
+                    .disabled(playbackPresentation.closeRequest != nil)
+                }
+                // Reserve the lower-right corner for the persistent video.
+                .frame(maxWidth: 1_100, minHeight: playbackPresentation.isMiniPlayer ? 216 : nil, alignment: .leading)
+                .padding(.trailing, playbackPresentation.isMiniPlayer ? 440 : 0)
+                .padding(24)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.ultraThinMaterial)
+                .focusSection()
+                .onExitCommand { playbackPresentation.restoreInline() }
             }
-            if arguments.contains("--show-epgstation-rules") || arguments.contains("--epgstation-rule") {
-                selectedTab = 4
-                settingsPath = [.epgstationRules]
-            }
-#endif
         }
-        .task(id: effectiveAddress) {
-            await account.restore(address: effectiveAddress)
-        }
-        .fullScreenCover(item: $playback) { item in
-            PlaybackView(item: item, resumeStore: resumeStore) { needsDisplay in
-                // Ignore a late update from a player that has already closed.
-                guard playback?.id == item.id else { return }
-                playbackIdleTimer.setNeedsContinuousDisplay(needsDisplay)
+        .overlay {
+            if let item = playbackPresentation.current {
+                GeometryReader { geometry in
+                    let mini = playbackPresentation.isMiniPlayer
+                    let scale = min(384 / max(1, geometry.size.width), 216 / max(1, geometry.size.height))
+                    player(for: item)
+                    .id(item.id)
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                    .clipped()
+                    .scaleEffect(mini ? scale : 1, anchor: .bottomTrailing)
+                    .offset(x: playbackPresentation.isMiniPlayer ? -24 : 0,
+                            y: playbackPresentation.isMiniPlayer ? -24 : 0)
+                    // Preserve the subtree, its layer, quality and keep-alive task
+                    // while the library accepts input below system PiP.
+                    .opacity(playbackPresentation.isDetached ? 0 : 1)
+                    .allowsHitTesting(!playbackPresentation.exposesLibrary)
+                    .disabled(playbackPresentation.exposesLibrary)
+                    .accessibilityHidden(playbackPresentation.exposesLibrary)
+                }
+                .ignoresSafeArea()
             }
         }
-        .onChange(of: playback?.id) { _, id in
-            if id == nil { playbackIdleTimer.setNeedsContinuousDisplay(false) }
+        .onPlayPauseCommand {
+            if playbackPresentation.exposesLibrary { playbackPresentation.toggleDetachedPause() }
+        }
+        .environmentObject(playbackPresentation)
+        .environmentObject(resumeStore)
+        .environmentObject(smbResumeStore)
+        .environment(\.playbackHandoff, PlaybackHandoff(stopPrevious: { [weak playbackPresentation] in
+            await playbackPresentation?.stopForAnotherPlayer() ?? true
+        }))
+        .onChange(of: playbackPresentation.exposesLibrary) { _, exposed in
+            if !exposed { playerControlFocus = nil }
+        }
+        .onChange(of: playbackPresentation.controlsFocusRequest) { _, request in
+            guard request != nil, playbackPresentation.exposesLibrary,
+                  playbackPresentation.closeRequest == nil else { return }
+            playerControlFocus = .restore
+        }
+        .onChange(of: playbackPresentation.current?.id) { _, id in
+            playerControlFocus = nil
+            if id == nil {
+                playbackIdleTimer.setNeedsContinuousDisplay(false)
+                // Refresh current-program labels after watching while the
+                // live library keeps its filters and selected channel.
+                if selectedTab == 0, scenePhase == .active, !loading {
+                    Task { await refresh() }
+                }
+            }
         }
         .alert("接続エラー", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
             Button("閉じる") { error = nil }
         } message: { Text(error ?? "") }
+        .preferredColorScheme(appearanceMode.preferredColorScheme)
+        .environment(\.appAppearanceMode, appearanceMode)
+        .environment(\.appColorStyle, colorStyle)
+        .tint(palette.accent)
+        .background(palette.background.ignoresSafeArea())
     }
     @MainActor private func refresh() async {
         let expected = UUID()
         let requestedAddress = effectiveAddress
         loadGeneration = expected
         loading = true
-        error = nil
+        channelError = nil
         defer { if loadGeneration == expected { loading = false } }
         do {
             let client = try RingonomiClient.connected(to: requestedAddress)
@@ -257,11 +386,108 @@ struct LibraryView: View {
 #endif
         } catch {
             guard !Task.isCancelled, expected == loadGeneration, requestedAddress == effectiveAddress else { return }
-            self.error = error.localizedDescription
+            channelError = (error as? ConnectionError)?.errorDescription
+                ?? "チャンネルを読み込めませんでした。接続先を確認し、再試行してください。"
         }
     }
 
+    @ViewBuilder
+    private func player(for session: PlaybackSession) -> some View {
+        switch session {
+        case .konomi(let item):
+            PlaybackView(item: item, resumeStore: resumeStore,
+                         closeRequest: playbackPresentation.closeRequest,
+                         restoreRequest: playbackPresentation.restoreRequest,
+                         togglePauseRequest: playbackPresentation.togglePauseRequest,
+                         isMiniPlayer: playbackPresentation.isMiniPlayer,
+                         onMiniPlayerChanged: { playbackPresentation.setMiniPlayer($0, for: item.id) },
+                         onCloseStarted: { playbackPresentation.beginClosing(item.id) },
+                         onClose: { playbackPresentation.didClose(item.id, request: $0, success: $1) },
+                         onDetachedChanged: { playbackPresentation.setDetached($0, for: item.id) },
+                         onPictureInPictureNoticeChanged: { playbackPresentation.setNotice($0, for: item.id) },
+                         onTransportChanged: { playbackPresentation.setTransport($0, for: item.id) }) { needsDisplay in
+                updateContinuousDisplay(needsDisplay, for: item.id)
+            }
+        case .mirakurun(let item):
+            MirakurunPlaybackView(item: item,
+                                  closeRequest: playbackPresentation.closeRequest,
+                                  restoreRequest: playbackPresentation.restoreRequest,
+                                  togglePauseRequest: playbackPresentation.togglePauseRequest,
+                                  isMiniPlayer: playbackPresentation.isMiniPlayer,
+                                  onMiniPlayerChanged: { playbackPresentation.setMiniPlayer($0, for: item.id) },
+                                  onCloseStarted: { playbackPresentation.beginClosing(item.id) },
+                                  onClose: { playbackPresentation.didClose(item.id, request: $0, success: $1) },
+                                  onNoticeChanged: { playbackPresentation.setNotice($0, for: item.id) },
+                                  onTransportChanged: { playbackPresentation.setTransport($0, for: item.id) }) { needsDisplay in
+                updateContinuousDisplay(needsDisplay, for: item.id)
+            }
+        case .epgStationLive(let item):
+            EPGStationLivePlaybackView(item: item,
+                                      closeRequest: playbackPresentation.closeRequest,
+                                      restoreRequest: playbackPresentation.restoreRequest,
+                                      togglePauseRequest: playbackPresentation.togglePauseRequest,
+                                      isMiniPlayer: playbackPresentation.isMiniPlayer,
+                                      onMiniPlayerChanged: { playbackPresentation.setMiniPlayer($0, for: item.id) },
+                                      onCloseStarted: { playbackPresentation.beginClosing(item.id) },
+                                      onClose: { playbackPresentation.didClose(item.id, request: $0, success: $1) },
+                                      onNoticeChanged: { playbackPresentation.setNotice($0, for: item.id) },
+                                      onTransportChanged: { playbackPresentation.setTransport($0, for: item.id) }) {
+                updateContinuousDisplay($0, for: item.id)
+            }
+        case .smb(let session):
+            SMBResumePlaybackView(item: session.item,
+                                  closeRequest: playbackPresentation.closeRequest,
+                                  restoreRequest: playbackPresentation.restoreRequest,
+                                  togglePauseRequest: playbackPresentation.togglePauseRequest,
+                                  isMiniPlayer: playbackPresentation.isMiniPlayer,
+                                  onMiniPlayerChanged: { playbackPresentation.setMiniPlayer($0, for: session.id) },
+                                  onCloseStarted: { playbackPresentation.beginClosing(session.id) },
+                                  onClose: { playbackPresentation.didClose(session.id, request: $0, success: $1) },
+                                  onNoticeChanged: { playbackPresentation.setNotice($0, for: session.id) },
+                                  onTransportChanged: { playbackPresentation.setTransport($0, for: session.id) },
+                                  onBeginning: {
+                                      guard playbackPresentation.current?.id == session.id else { return }
+                                      smbResumeStore.remove(session.resumeID)
+                                  },
+                                  onContinuousDisplayChanged: { updateContinuousDisplay($0, for: session.id) },
+                                  onProgress: { position, duration, ended in
+                                      guard playbackPresentation.current?.id == session.id else { return }
+                                      smbResumeStore.save(session.resumeID, seconds: position,
+                                                          duration: duration, reachedEnd: ended)
+#if DEBUG
+                                      print("RingonomiSMBProgress: seconds=\(position) duration=\(duration ?? -1) ended=\(ended)")
+#endif
+                                  })
+        case .epgStationRecording(let session):
+            FilePlaybackView(item: session.item,
+                             closeRequest: playbackPresentation.closeRequest,
+                             restoreRequest: playbackPresentation.restoreRequest,
+                             togglePauseRequest: playbackPresentation.togglePauseRequest,
+                             isMiniPlayer: playbackPresentation.isMiniPlayer,
+                             onMiniPlayerChanged: { playbackPresentation.setMiniPlayer($0, for: session.id) },
+                             onCloseStarted: { playbackPresentation.beginClosing(session.id) },
+                             onClose: { playbackPresentation.didClose(session.id, request: $0, success: $1) },
+                             onNoticeChanged: { playbackPresentation.setNotice($0, for: session.id) },
+                             onTransportChanged: { playbackPresentation.setTransport($0, for: session.id) },
+                             onContinuousDisplayChanged: { updateContinuousDisplay($0, for: session.id) },
+                             onProgress: { position, duration, ended in
+                                 guard playbackPresentation.current?.id == session.id else { return }
+                                 resumeStore.save(session.resumeID, seconds: position, duration: duration,
+                                                  status: session.status, reachedEnd: ended)
+#if DEBUG
+                                 print("RingonomiEPGStationProgress: seconds=\(position) duration=\(duration ?? -1) ended=\(ended)")
+#endif
+                             })
+        }
+    }
+
+    private func updateContinuousDisplay(_ needed: Bool, for id: UUID) {
+        guard playbackPresentation.current?.id == id else { return }
+        playbackIdleTimer.setNeedsContinuousDisplay(needed)
+    }
+
     private func applyConnection() {
+        error = nil
         do {
             let next = draftAddress.trimmingCharacters(in: .whitespacesAndNewlines)
             _ = try RingonomiClient(address: next)
@@ -285,14 +511,19 @@ struct LibraryView: View {
     }
 }
 
+private enum PlayerControlFocus: Hashable { case playPause, restore, close }
+
 private struct ConnectionLoadKey: Hashable {
     let address: String
     let revision: Int
 }
 
 private enum SettingsDestination: Hashable {
+    case smb
     case mirakurun
+    case mirakurunGuide
     case epgstation
     case epgstationReservations
     case epgstationRules
+    case epgstationGuide
 }

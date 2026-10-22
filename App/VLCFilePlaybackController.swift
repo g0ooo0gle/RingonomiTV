@@ -19,23 +19,32 @@ struct FilePlaybackSelection: Identifiable, Equatable {
     let url: URL
     let title: String
     let durationHint: Double?
+    let isGrowingRecording: Bool
     let resumePosition: Double
     let identity: String?
+    let smbConnection: SMBConnection?
+    let smbResumeBookmark: SMBResumeBookmark?
 
     init(
         id: UUID = UUID(),
         url: URL,
         title: String,
         durationHint: Double? = nil,
+        isGrowingRecording: Bool = false,
         resumePosition: Double = 0,
-        identity: String? = nil
+        identity: String? = nil,
+        smbConnection: SMBConnection? = nil,
+        smbResumeBookmark: SMBResumeBookmark? = nil
     ) {
         self.id = id
         self.url = url
         self.title = title
         self.durationHint = durationHint
+        self.isGrowingRecording = isGrowingRecording
         self.resumePosition = resumePosition
         self.identity = identity
+        self.smbConnection = smbConnection
+        self.smbResumeBookmark = smbResumeBookmark
     }
 }
 
@@ -49,6 +58,7 @@ struct FilePlaybackSelection: Identifiable, Equatable {
 @MainActor
 final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelegate {
     private(set) var player: VLCMediaPlayer
+    private var smbAuthentication: RNGSMBPlaybackAuthentication?
 
     @Published private(set) var status = "読み込み中…"
     @Published private(set) var isLoading = true
@@ -61,10 +71,15 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
     @Published private(set) var audioOptions: [PlaybackAudioOption] = []
     @Published private(set) var selectedAudioID: String?
     @Published private(set) var audioSelectionError: String?
+    // Incremented after the background track metadata read completes so the
+    // video surface recomputes its aspect-correct rectangle.
+    @Published private(set) var videoGeometryRevision = 0
 
     private var selection: FilePlaybackSelection?
     private var currentURL: URL?
     private var durationHint: Double?
+    private var deferredSMBResume: SMBResumeBookmark?
+    private var deferredSMBResumeStartedAt: Date?
     private var targetSeconds = 0.0
     // A VLC time assignment is asynchronous. Keep the request separate from
     // the trusted playback position so an old/zero time cannot overwrite a
@@ -78,10 +93,13 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
     private var pendingPositionIsInitial = false
     private var retryFromBeginningAfterPositionFailure = false
     private var lastTrustedSeconds: Double?
+    private var trustedPositionGeneration: Int?
     private var lastTrustedDuration: Double?
     private var lastTrustedEnded = false
+    private var fileEndConfirmed = false
     private var wantsPause = false
     private var isStopped = false
+    private var isClosingPermanently = false
     private var isSuspendedForBackground = false
     private var generation = 0
     private var isRetiringPlayer = false
@@ -120,6 +138,9 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
     private var audioBaselineDecoded = 0
     private var audioBaselinePlayed = 0
     private var audioNeedsFreshBuffers = true
+    private var cachedVideoSampleAspectRatio: RingonomiVLCVideoSampleAspectRatio?
+    private var videoGeometryReadToken = UUID()
+    private var videoGeometryReadScheduled = false
 
     private struct PendingAudioSelection {
         let id: String
@@ -146,16 +167,80 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
 #if DEBUG
         if !isStopped { NSLog("RingonomiFileLifecycle: released-without-stop") }
 #endif
-        StoppedVLCPlayerRetirement(player, context: .file).releaseAfterCurrentTurn {}
+        smbAuthentication?.invalidate()
+        StoppedVLCPlayerRetirement(player, context: .file,
+            retainedResources: smbAuthentication.map { [$0] } ?? []).releaseAfterCurrentTurn {}
     }
 
     var canSeek: Bool {
-        !isStopped && !isLoading && failure == nil && isSeekable && durationSeconds != nil
+        canSeekRelative && durationSeconds != nil
+    }
+
+    /// Relative moves need a current timestamp, rather than a total duration.
+    /// The position gate still verifies that the demuxer actually moved.
+    var canSeekRelative: Bool {
+        !isStopped && !isSuspendedForBackground && !isLoading
+            && failure == nil && isSeekable
+            && (selection?.smbConnection == nil || durationSeconds != nil)
+            && (durationSeconds != nil || (!isEnded && rawPlaybackSeconds != nil))
+    }
+
+    var videoRect: CGRect {
+        guard let bounds = videoSurface?.bounds else { return .zero }
+        return RingonomiVLCVideoGeometry.fittedRect(
+            in: bounds, codedSize: player.videoSize,
+            sampleAspectRatio: cachedVideoSampleAspectRatio)
     }
 
     func attachSurface(_ view: UIView) {
+        guard !isClosingPermanently else { return }
         videoSurface = view
         player.drawable = view
+    }
+
+    private func resetVideoGeometryCache(notifyUI: Bool = true) {
+        videoGeometryReadToken = UUID()
+        videoGeometryReadScheduled = false
+        cachedVideoSampleAspectRatio = nil
+        if notifyUI { videoGeometryRevision &+= 1 }
+    }
+
+    /// `VLCMedia.tracksInformation` may synchronously parse the media. Read
+    /// it once after the readiness gate opens, away from the main actor, and
+    /// publish only a generation-scoped result.
+    private func scheduleVideoGeometryReadIfNeeded(codedSize: CGSize) {
+        guard !isStopped, !isSuspendedForBackground, !isLoading,
+              failure == nil, !videoGeometryReadScheduled,
+              let media = player.media,
+              codedSize.width.isFinite, codedSize.height.isFinite,
+              codedSize.width > 0, codedSize.height > 0 else { return }
+
+        let activeTrackID = player.currentVideoTrackIndex >= 0
+            ? Int(player.currentVideoTrackIndex) : nil
+        let token = videoGeometryReadToken
+        videoGeometryReadScheduled = true
+        DispatchQueue.global(qos: .utility).async {
+            let aspectRatio = RingonomiVLCVideoGeometry.sampleAspectRatio(
+                from: media.tracksInformation,
+                activeTrackID: activeTrackID,
+                codedSize: codedSize
+            )
+            Task { @MainActor [weak self] in
+                guard let self, self.videoGeometryReadToken == token,
+                      !self.isStopped, !self.isSuspendedForBackground else { return }
+                self.cachedVideoSampleAspectRatio = aspectRatio
+                self.videoGeometryRevision &+= 1
+#if DEBUG
+                let activeTrackDescription = activeTrackID.map(String.init) ?? "nil"
+                let codedSizeDescription = "\(codedSize.width)x\(codedSize.height)"
+                if let aspectRatio {
+                    print("RingonomiVLCGeometry: sar=\(aspectRatio.numerator)/\(aspectRatio.denominator) coded=\(codedSizeDescription) activeTrack=\(activeTrackDescription)")
+                } else {
+                    print("RingonomiVLCGeometry: sar=none coded=\(codedSizeDescription) activeTrack=\(activeTrackDescription)")
+                }
+#endif
+            }
+        }
     }
 
     /// Starts or updates the selected file.  Repeated SwiftUI updates with
@@ -165,6 +250,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         onContinuousDisplayChanged: @escaping (Bool) -> Void,
         onProgress: @escaping (Double, Double?, Bool) -> Void
     ) {
+        guard !isClosingPermanently else { return }
         self.onContinuousDisplayChanged = onContinuousDisplayChanged
         self.onProgress = onProgress
 
@@ -176,8 +262,10 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         isSuspendedForBackground = false
         selection = item
         durationHint = validDuration(item.durationHint)
+        deferredSMBResume = item.smbConnection != nil ? item.smbResumeBookmark : nil
+        deferredSMBResumeStartedAt = nil
         targetSeconds = clamp(item.resumePosition, duration: durationHint) ?? 0
-        lastTrustedSeconds = targetSeconds
+        lastTrustedSeconds = item.smbConnection == nil ? targetSeconds : nil
         lastTrustedDuration = durationHint
         lastTrustedEnded = false
         retryFromBeginningAfterPositionFailure = false
@@ -188,6 +276,8 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
 
     func retry() {
         guard !isStopped, !isSuspendedForBackground, let selection else { return }
+        deferredSMBResume = nil
+        deferredSMBResumeStartedAt = nil
         let position: Double
         if isEnded || retryFromBeginningAfterPositionFailure {
             position = 0
@@ -242,27 +332,37 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
     }
 
     func seek(seconds: Double) {
-        guard seconds.isFinite else { return }
-        seek(to: safeCurrentSeconds + seconds)
+        guard canSeekRelative, seconds.isFinite else { return }
+        // An unknown-length stream must provide a real native timestamp;
+        // a requested or cached position is not a safe basis for a move.
+        let current = durationSeconds == nil ? rawPlaybackSeconds : safeCurrentSeconds
+        guard let current,
+              let target = clamp(current + seconds, duration: durationSeconds),
+              milliseconds(target) != nil else { return }
+        seekToPosition(target)
     }
 
     func seek(to seconds: Double) {
         guard canSeek, seconds.isFinite,
-              let duration = durationSeconds,
-              let target = clamp(seconds, duration: duration) else { return }
+              let target = clamp(seconds, duration: durationSeconds),
+              milliseconds(target) != nil else { return }
+        seekToPosition(target)
+    }
 
+    private func seekToPosition(_ target: Double) {
         // The rightmost seek-bar position means the end of a completed
         // recording. Asking the TS decoder to seek into its final fraction
         // of a second can leave its input teardown blocked. End explicitly
         // without opening that tail; growing/unknown-duration files and
         // media that have never produced a frame cannot take this shortcut.
-        if let completedDuration = durationHint, lastPictures > 0,
+        if selection?.isGrowingRecording != true,
+           let completedDuration = durationHint, lastPictures > 0,
            target >= max(0, completedDuration - 0.11) {
             targetSeconds = target
 #if DEBUG
             print("RingonomiFileExplicitEnd: target=\(target)")
 #endif
-            finishPlayback()
+            finishPlayback(verifiedEndSeek: true)
             return
         }
 
@@ -305,15 +405,15 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
               failure == nil else { return }
         refreshDurationAndSeekability()
         if player.state == .error {
-            fail("録画を再生できませんでした。接続先とファイル状態を確認してください。")
+            fail(mediaOpenFailureMessage)
             return
         }
         var preservingTrustedPosition = false
         if player.state == .ended, !isEnded {
-            if pendingPositionSeconds != nil {
+            if deferredSMBResume != nil || pendingPositionSeconds != nil {
                 if canFinishAtEndWithPendingPosition() {
                     clearPendingPositionRequest()
-                    finishPlayback()
+                    finishPlayback(verifiedEndSeek: true)
                 } else {
                     // A stale ended callback can arrive while a seek is still
                     // pending. Do not turn that callback into an EOF bookmark;
@@ -329,6 +429,9 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
                 finishPlayback()
             }
         }
+        // A premature native EOF may have become an explicit error above.
+        // Keep that error visible instead of scheduling an implicit resume.
+        guard failure == nil else { return }
         if preservingTrustedPosition {
             targetSeconds = lastTrustedSeconds ?? targetSeconds
         } else if !isLoading, !isEnded {
@@ -369,7 +472,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
             // controls available and wait for an explicit Replay/seek action.
             isLoading = false
             isPaused = true
-            status = "再生終了（再生ボタンで最初から）"
+            status = endedStatus
             updateContinuousDisplayNeed()
 #if DEBUG
             print("RingonomiFileLifecycle: resumed-at-end target=\(targetSeconds)")
@@ -395,6 +498,9 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         print("RingonomiFileLifecycle: stopped trusted=\(lastTrustedSeconds ?? -1) ended=\(lastTrustedEnded)")
 #endif
         isStopped = true
+        deferredSMBResume = nil
+        deferredSMBResumeStartedAt = nil
+        smbAuthentication?.invalidate()
         isSuspendedForBackground = false
         generation &+= 1
         endGate.reset()
@@ -409,6 +515,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         pendingPositionIsInitial = false
         currentURL = nil
         selection = nil
+        resetVideoGeometryCache(notifyUI: false)
         monitor?.cancel()
         monitor = nil
         stopTask?.cancel()
@@ -422,6 +529,19 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         requestPlayerStop()
         holdPlayerUntilStopped()
         videoSurface = nil
+    }
+
+    /// Flush the trusted bookmark while the host still owns this session,
+    /// then wait before allowing another backend to create its decoder.
+    func stopBeforeClosing() async -> Bool {
+        isClosingPermanently = true
+        stop()
+        for _ in 0..<100 {
+            if player.state == .stopped { return true }
+            do { try await Task.sleep(for: .milliseconds(50)) }
+            catch { return false }
+        }
+        return player.state == .stopped
     }
 
     nonisolated func mediaPlayerStateChanged(_ notification: Notification) {
@@ -452,11 +572,19 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         player.delegate = nil
         currentURL = url
         generation &+= 1
+        trustedPositionGeneration = nil
+        fileEndConfirmed = false
+        resetVideoGeometryCache()
         endGate.reset()
         pendingLoadGeneration = generation
         pendingLoadURL = url
+        deferredSMBResumeStartedAt = nil
         let effectiveDuration = durationHint ?? durationSeconds
-        targetSeconds = clamp(position, duration: effectiveDuration) ?? 0
+        // Unknown-length SMB streams cannot reliably restore a timestamp.
+        // Restart them at the beginning after Retry or foreground return.
+        let canRestorePosition = selection?.smbConnection == nil || effectiveDuration != nil
+        targetSeconds = canRestorePosition
+            ? (clamp(position, duration: effectiveDuration) ?? 0) : 0
         pendingPositionSeconds = nil
         pendingPositionGeneration = generation
         pendingPositionApplied = false
@@ -539,30 +667,80 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         // Native release owns media cleanup. Scheduling an asynchronous
         // media detach immediately before release can stall VLC teardown.
 
-        let freshPlayer = VLCMediaPlayer()
+        let oldAuthentication = smbAuthentication
+        oldAuthentication?.invalidate()
+        let freshPlayer: VLCMediaPlayer
+        let freshAuthentication: RNGSMBPlaybackAuthentication?
+        let freshMedia = VLCMedia(url: url)
+        do {
+            if let connection = selection?.smbConnection {
+                _ = try connection.relativePath(for: url)
+                let credentials = try SMBCredentialsKeychain().load(for: connection)
+                guard credentials?.domain.isEmpty != false else {
+                    throw SMBError.invalidConnection
+                }
+                freshPlayer = VLCMediaPlayer(options: [
+                    "--quiet", "--verbose=-1", "--keystore=memory"
+                ])
+                freshPlayer.libraryInstance.loggers = nil
+                if let credentials {
+                    // Supply credentials before opening the file so SMB does
+                    // not need an anonymous probe before requesting a login.
+                    // The fresh player's instance owns any in-memory cache.
+                    freshMedia.addOptions([
+                        "smb-user": credentials.username,
+                        "smb-pwd": credentials.password
+                    ])
+                }
+                freshAuthentication = RNGSMBPlaybackAuthentication(
+                    library: freshPlayer.libraryInstance,
+                    username: credentials?.username, password: credentials?.password)
+                guard freshAuthentication != nil else { throw SMBError.invalidConnection }
+            } else {
+                freshPlayer = VLCMediaPlayer()
+                freshAuthentication = nil
+            }
+        } catch {
+            fail("共有を開けませんでした。接続設定とログイン情報を確認してください。")
+            return
+        }
         freshPlayer.delegate = self
         if let videoSurface { freshPlayer.drawable = videoSurface }
         freshPlayer.audio?.isMuted = true
+        // The fresh player has a different media/track set. Invalidate any
+        // background metadata read belonging to the retired instance before
+        // exposing the new one to the readiness loop.
+        resetVideoGeometryCache()
         player = freshPlayer
+        smbAuthentication = freshAuthentication
         stopRequested = false
-        freshPlayer.media = VLCMedia(url: url)
+        freshPlayer.media = freshMedia
         freshPlayer.audio?.isMuted = true
         if pendingPositionSeconds != nil, pendingPositionStartedAt == nil {
             pendingPositionStartedAt = Date()
         }
         freshPlayer.play()
-        retireStoppedPlayer(oldPlayer)
+        retireStoppedPlayer(oldPlayer, authentication: oldAuthentication)
     }
 
-    private func retireStoppedPlayer(_ oldPlayer: VLCMediaPlayer) {
+    private func retireStoppedPlayer(_ oldPlayer: VLCMediaPlayer,
+                                     authentication: RNGSMBPlaybackAuthentication? = nil) {
         isRetiringPlayer = true
-        let retirement = StoppedVLCPlayerRetirement(oldPlayer, context: .file)
+        let retirement = StoppedVLCPlayerRetirement(oldPlayer, context: .file,
+            retainedResources: authentication.map { [$0] } ?? [])
         // Start after this stack unwinds so its local references cannot make
         // the final native release fall back onto the main thread. VLC release
         // can wait for decoder callbacks that themselves need the main queue.
         retirement.releaseAfterCurrentTurn { [weak self] in
             self?.isRetiringPlayer = false
         }
+    }
+
+    private var mediaOpenFailureMessage: String {
+        if selection?.smbConnection != nil {
+            return "共有ファイルを再生できませんでした。接続先、ログイン情報とファイルの状態を確認して再試行してください。"
+        }
+        return "録画を再生できませんでした。接続先とファイル状態を確認してください。"
     }
 
     private func updateStatus() {
@@ -588,14 +766,16 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
             if pendingPositionSeconds != nil {
                 failPositionRequest()
             } else {
-                fail("録画を再生できませんでした。接続先とファイル状態を確認してください。")
+                fail(mediaOpenFailureMessage)
             }
             return
         case .ended:
-            if pendingPositionSeconds != nil {
+            if deferredSMBResume != nil {
+                failDeferredSMBResume("このファイルの続きから再生できませんでした。")
+            } else if pendingPositionSeconds != nil {
                 if canFinishAtEndWithPendingPosition() {
                     clearPendingPositionRequest()
-                    finishPlayback()
+                    finishPlayback(verifiedEndSeek: true)
                 } else {
                     failPositionRequest()
                 }
@@ -605,18 +785,24 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
             return
         case .stopped:
             if !isLoading {
-                fail("録画の再生が停止しました。再試行してください。")
+                fail(selection?.smbConnection == nil
+                     ? "録画の再生が停止しました。再試行してください。"
+                     : "共有ファイルの再生が停止しました。接続を確認して再試行してください。")
                 return
             }
         default:
             break
         }
 
+        if prepareSMBResumeIfNeeded() { return }
         if processPositionRequest() { return }
         refreshAudioTracks()
 
         let size = player.videoSize
         let hasVideo = player.hasVideoOut && size.width > 0 && size.height > 0
+        if hasVideo, !isLoading {
+            scheduleVideoGeometryReadIfNeeded(codedSize: size)
+        }
         if canReadPlaybackStatistics, let media = player.media {
             let stats = media.statistics
             let totalPictures = max(0, Int(stats.displayedPictures))
@@ -675,7 +861,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
                 let remainingSeconds = remainingMilliseconds >= 0 ? remainingMilliseconds / 1000 : -1
                 let mediaLengthMilliseconds = media.length.value?.doubleValue ?? -1
                 let mediaLengthSeconds = mediaLengthMilliseconds >= 0 ? mediaLengthMilliseconds / 1000 : -1
-                print("RingonomiFileStats: rawSeconds=\(rawSeconds) position=\(player.position) remainingSeconds=\(remainingSeconds) mediaLengthSeconds=\(mediaLengthSeconds) readBytes=\(stats.readBytes) demuxReadBytes=\(stats.demuxReadBytes) inputBitrate=\(stats.inputBitrate) demuxBitrate=\(stats.demuxBitrate) pictures=\(totalPictures) delta=\(pictures) decodedAudio=\(decodedAudio) playedAudio=\(playedAudio) loading=\(isLoading) muted=\(player.audio?.isMuted == true) state=\(player.state.rawValue)")
+                print("RingonomiFileStats: rawSeconds=\(rawSeconds) position=\(player.position) remainingSeconds=\(remainingSeconds) mediaLengthSeconds=\(mediaLengthSeconds) seekable=\(player.isSeekable) parsedStatus=\(media.parsedStatus.rawValue) readBytes=\(stats.readBytes) demuxReadBytes=\(stats.demuxReadBytes) inputBitrate=\(stats.inputBitrate) demuxBitrate=\(stats.demuxBitrate) pictures=\(totalPictures) delta=\(pictures) decodedAudio=\(decodedAudio) playedAudio=\(playedAudio) loading=\(isLoading) muted=\(player.audio?.isMuted == true) state=\(player.state.rawValue)")
             }
 #endif
 
@@ -746,6 +932,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
             return
         }
         targetSeconds = target
+        trustedPositionGeneration = nil
         pendingPositionSeconds = target
         pendingPositionGeneration = generation
         pendingPositionApplied = false
@@ -919,14 +1106,51 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         // with decoded output from this generation. Unknown/growing files and
         // frame-less EOF remain failures.
         guard player.state == .ended,
+              !pendingPositionIsInitial,
               let completedDuration = validDuration(durationHint),
               displayedPictures > 0 else { return false }
         let completedTolerance = positionTolerance(for: requested, duration: completedDuration)
         return abs(completedDuration - requested) <= completedTolerance
     }
 
+    /// A stored SMB duration is only a comparison token, never a duration hint
+    /// or evidence that the file has finished recording. Wait for this input
+    /// to expose its own timing before issuing the initial position request.
+    private func prepareSMBResumeIfNeeded() -> Bool {
+        guard let bookmark = deferredSMBResume else { return false }
+        let started = deferredSMBResumeStartedAt ?? Date()
+        deferredSMBResumeStartedAt = started
+        if let duration = validDuration(durationSeconds), isSeekable {
+            guard let position = SMBResumePolicy.restoredPosition(
+                bookmark: bookmark, currentDuration: duration
+            ) else {
+                failDeferredSMBResume("ファイルの再生時間が変わったため、続きから再生できません。")
+                return true
+            }
+            deferredSMBResume = nil
+            deferredSMBResumeStartedAt = nil
+            queuePositionRequest(position, isInitial: true)
+            return false
+        }
+        if Date().timeIntervalSince(started) >= 3 {
+            failDeferredSMBResume("再生時間またはシーク可否を確認できないため、続きから再生できません。")
+        }
+        return true
+    }
+
+    private func failDeferredSMBResume(_ reason: String) {
+        deferredSMBResume = nil
+        deferredSMBResumeStartedAt = nil
+        retryFromBeginningAfterPositionFailure = true
+        fail(reason + "再試行すると先頭から開始します。")
+    }
+
     private func refreshDurationAndSeekability() {
-        if let milliseconds = player.media?.length.value?.doubleValue,
+        if let durationHint {
+            // The completed-file endpoint is authoritative even if a partial
+            // transport exposes a shorter native media length.
+            durationSeconds = durationHint
+        } else if let milliseconds = player.media?.length.value?.doubleValue,
            milliseconds.isFinite, milliseconds > 0 {
             durationSeconds = milliseconds / 1000
         } else if durationSeconds == nil {
@@ -935,9 +1159,33 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         isSeekable = player.isSeekable
     }
 
-    private func finishPlayback() {
+    private var endedStatus: String {
+        fileEndConfirmed
+            ? "再生終了（再生ボタンで最初から）"
+            : "再生停止（総時間不明・再生ボタンで最初から）"
+    }
+
+    private func finishPlayback(verifiedEndSeek: Bool = false) {
         guard !isStopped, !isSuspendedForBackground else { return }
         guard !isEnded else { return }
+        // A dropped HTTP stream can report native EOF just like a shared
+        // file. Keep the trusted bookmark unless this input reached the end;
+        // a completed recording's server duration also survives truncation.
+        let completionDuration = selection?.isGrowingRecording == true
+            ? nil : validDuration(durationHint ?? durationSeconds)
+        fileEndConfirmed = FilePlaybackCompletion.confirmsEnd(
+            duration: completionDuration,
+            trustedSeconds: lastTrustedSeconds,
+            hasPresentedCurrentPosition: trustedPositionGeneration == generation
+                && lastPictures > 0,
+            verifiedEndSeek: verifiedEndSeek
+        )
+        if completionDuration != nil, !fileEndConfirmed {
+            fail(selection?.smbConnection == nil
+                 ? "録画の読み込みが途中で終了しました。接続先とファイルの状態を確認して再試行してください。"
+                 : "共有ファイルの読み込みが途中で終了しました。接続先とファイルの状態を確認して再試行してください。")
+            return
+        }
         endGate.reset()
         isEnded = true
         wantsPause = true
@@ -950,7 +1198,7 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         // decoder and create a fresh instance for the next explicit action.
         requestPlayerStop()
         if let duration = durationSeconds { currentSeconds = duration }
-        status = "再生終了（再生ボタンで最初から）"
+        status = endedStatus
         updateContinuousDisplayNeed()
         reportProgress(force: true)
 #if DEBUG
@@ -985,7 +1233,11 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         guard !isStopped, !isSuspendedForBackground, failure == nil else { return }
         endGate.reset()
         player.audio?.isMuted = true
-        player.pause()
+        if player.state == .ended {
+            requestPlayerStop()
+        } else {
+            player.pause()
+        }
         failure = message
         isLoading = false
         isPaused = false
@@ -1048,20 +1300,31 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
 
     private func reportProgress(force: Bool = false) {
         guard !isStopped, !isLoading, failure == nil else { return }
-        let position = isEnded ? (durationSeconds ?? safeCurrentSeconds) : safeCurrentSeconds
-        let duration = durationSeconds
+        let position: Double
+        if isEnded {
+            position = fileEndConfirmed
+                ? (durationSeconds ?? safeCurrentSeconds)
+                : (lastTrustedSeconds ?? safeCurrentSeconds)
+        } else {
+            position = safeCurrentSeconds
+        }
+        let duration = selection?.smbConnection != nil && !isSeekable ? nil : durationSeconds
+        // An unknown-length native EOF may be a disconnect. Allow replay in
+        // the UI, but never discard an existing bookmark on that evidence.
+        let reachedEnd = isEnded && fileEndConfirmed
         let changed = force
             || lastProgressPosition.map { abs($0 - position) >= 0.25 } == true
             || lastProgressPosition == nil
             || lastProgressDuration != duration
-            || lastProgressEnded != isEnded
+            || lastProgressEnded != reachedEnd
         guard changed else { return }
         lastProgressPosition = position
         lastProgressDuration = duration
-        lastProgressEnded = isEnded
+        lastProgressEnded = reachedEnd
         lastTrustedSeconds = position
+        trustedPositionGeneration = generation
         lastTrustedDuration = duration
-        lastTrustedEnded = isEnded
+        lastTrustedEnded = reachedEnd
         currentSeconds = position
 
         // `currentSeconds` drives the on-screen clock and can update several
@@ -1073,15 +1336,15 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         let bookmarkChanged = force
             || lastBookmarkPosition == nil
             || lastBookmarkDuration != duration
-            || lastBookmarkEnded != isEnded
+            || lastBookmarkEnded != reachedEnd
             || abs((lastBookmarkPosition ?? position) - position) >= 5
             || now.timeIntervalSince(lastBookmarkDate) >= 5
         guard bookmarkChanged else { return }
         lastBookmarkPosition = position
         lastBookmarkDuration = duration
-        lastBookmarkEnded = isEnded
+        lastBookmarkEnded = reachedEnd
         lastBookmarkDate = now
-        onProgress?(position, duration, isEnded)
+        onProgress?(position, duration, reachedEnd)
     }
 
     /// Sends only the last position that passed the readiness gate. This is
@@ -1298,6 +1561,11 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
 
     private func isSupported(_ url: URL) -> Bool {
         guard let scheme = url.scheme?.lowercased() else { return false }
+        if scheme == "smb" {
+            guard let connection = selection?.smbConnection,
+                  let path = try? connection.relativePath(for: url) else { return false }
+            return !path.isRoot
+        }
         return scheme == "http" || scheme == "https" || scheme == "file"
     }
 
@@ -1317,17 +1585,9 @@ final class VLCFilePlaybackController: NSObject, ObservableObject, VLCMediaPlaye
         guard seconds.isFinite, seconds >= 0 else { return nil }
         let value = seconds * 1000
         guard value.isFinite else { return nil }
-
-        // VLCTime(number:) accepts an NSNumber, so retain the 64-bit millisecond
-        // range instead of narrowing a long recording to VLCTime(int:)'s
-        // 32-bit argument. Leave one value below Int64.max because Double's
-        // rounded representation of the endpoint can otherwise overflow the
-        // integer conversion.
-        let maximum = Double(Int64.max - 1)
-        guard value <= maximum else { return nil }
-        let rounded = value.rounded()
-        guard rounded <= maximum else { return nil }
-        return Int64(rounded)
+        // Double rounds Int64.max up to an out-of-range value. A checked
+        // conversion preserves long recordings without trapping at that edge.
+        return Int64(exactly: value.rounded())
     }
 }
 

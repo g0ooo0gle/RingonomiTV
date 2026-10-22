@@ -36,7 +36,7 @@ struct EPGStationChoiceList<Value: Hashable>: View {
                     if selection == item.0 { Image(systemName: "checkmark") }
                 }
             }
-        }.navigationTitle(title)
+        }.appNavigationTitle(Text(title))
     }
 }
 
@@ -65,7 +65,7 @@ struct EPGStationDateTimeField: View {
                 NavigationLink("日付") { dayChoice }
                 NavigationLink("時：\(parts.hour ?? 0)") { hourChoice }
                 NavigationLink("分：\(parts.minute ?? 0)") { minuteChoice }
-            }.navigationTitle(title + "時刻")
+            }.appNavigationTitle(Text(title + "時刻"))
         }
     }
 

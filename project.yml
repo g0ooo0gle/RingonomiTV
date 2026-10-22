@@ -13,6 +13,7 @@ targets:
     info:
       path: App/Info.plist
       properties:
+        UIBackgroundModes: [audio]
         NSLocalNetworkUsageDescription: 設定した視聴サーバーから番組情報と映像を取得します。
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
@@ -28,6 +29,7 @@ targets:
       - sdk: CoreGraphics.framework
       - sdk: CoreFoundation.framework
       - sdk: AVFoundation.framework
+      - sdk: MediaPlayer.framework
       - sdk: AudioToolbox.framework
       - sdk: OpenGLES.framework
       - sdk: VideoToolbox.framework

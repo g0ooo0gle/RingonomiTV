@@ -53,6 +53,32 @@ final class PlaybackAudioTests: XCTestCase {
         XCTAssertNil(PlaybackAudioCatalog.preferredID(named: "日本語", in: options + [.init(id: "c", name: "日本語", preferenceKey: "日本語")]))
     }
 
+    func testPreferenceDistinguishesMissingAmbiguousAndUnrequestedChoices() {
+        let options = [PlaybackAudioOption(id: "new:1", name: "日本語", preferenceKey: "日本語"),
+                       .init(id: "new:2", name: "English", preferenceKey: "English")]
+        XCTAssertEqual(PlaybackAudioCatalog.preferenceMatch(named: nil, in: options), .notRequested)
+        XCTAssertEqual(PlaybackAudioCatalog.preferenceMatch(named: "English", in: options), .matched(id: "new:2"))
+        XCTAssertEqual(PlaybackAudioCatalog.preferenceMatch(named: "別の音声", in: options), .missing)
+        XCTAssertEqual(PlaybackAudioCatalog.preferenceMatch(named: "English", in: options + [
+            .init(id: "new:3", name: "English", preferenceKey: "English")
+        ]), .ambiguous)
+    }
+
+    func testEmptyCompletedCatalogReportsMissingOnlyForNamedPreference() {
+        XCTAssertEqual(PlaybackAudioCatalog.preferenceMatch(named: "English", in: []), .missing)
+        XCTAssertEqual(PlaybackAudioCatalog.preferenceMatch(named: nil, in: []), .notRequested)
+        let unnamed = PlaybackAudioCatalog.options(sourceID: UUID(), descriptors: [.init(trackID: 1, name: nil)])
+        XCTAssertEqual(PlaybackAudioCatalog.preferenceMatch(named: "音声 1", in: unnamed), .missing)
+    }
+
+    func testOnlyFailedRestorationProducesNotice() {
+        XCTAssertNil(PlaybackAudioPreferenceMatch.notRequested.notice)
+        XCTAssertNil(PlaybackAudioPreferenceMatch.matched(id: "new:2").notice)
+        XCTAssertNotNil(PlaybackAudioPreferenceMatch.missing.notice)
+        XCTAssertNotNil(PlaybackAudioPreferenceMatch.ambiguous.notice)
+        XCTAssertNotEqual(PlaybackAudioPreferenceMatch.missing.notice, PlaybackAudioPreferenceMatch.ambiguous.notice)
+    }
+
     func testRejectsOversizedTrackCatalogInsteadOfShowingPartialChoices() {
         let descriptors = (0..<PlaybackAudioCatalog.maximumTracks).map { PlaybackAudioDescriptor(trackID: $0, name: nil) }
         XCTAssertEqual(PlaybackAudioCatalog.options(sourceID: UUID(), descriptors: descriptors).count, PlaybackAudioCatalog.maximumTracks)

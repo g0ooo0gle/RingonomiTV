@@ -12,6 +12,10 @@ public struct Channel: Decodable, Identifiable, Sendable {
     public let isWatchable: Bool
     public let isDisplay: Bool
     public let programPresent: Program?
+    /// Optional metadata retained for local broadcast-family filtering. Older
+    /// channel responses may omit both fields.
+    public let type: String?
+    public let channelNumber: String?
 }
 /// Channel metadata embedded in a recorded-program response.
 ///
@@ -147,9 +151,11 @@ public struct RecordedVideo: Decodable, Sendable {
     /// Server-generated commercial intervals in seconds from video start.
     /// The field is omitted or null until analysis produces usable metadata.
     public let cmSections: [CommercialSection]?
+    /// Optional server-generated scene atlas. Invalid optional metadata must not prevent playback.
+    public let thumbnailInfo: RecordingThumbnailInfo?
 
     private enum CodingKeys: String, CodingKey {
-        case id, duration, status, cmSections
+        case id, duration, status, cmSections, thumbnailInfo
     }
 
     public init(from decoder: Decoder) throws {
@@ -166,6 +172,7 @@ public struct RecordedVideo: Decodable, Sendable {
         duration = try container.decode(Double.self, forKey: .duration)
         status = try container.decodeIfPresent(String.self, forKey: .status)
         cmSections = Self.decodeCommercialSections(from: container)
+        thumbnailInfo = try? container.decodeIfPresent(RecordingThumbnailInfo.self, forKey: .thumbnailInfo)
     }
 
     private static func decodeCommercialSections(
@@ -264,10 +271,42 @@ public enum ConnectionError: Error, LocalizedError, Equatable, Sendable {
 public struct RingonomiClient: Sendable {
     public let baseURL: URL
     public let accessToken: BackendAccessToken?
+    internal let httpBasicCredential: HTTPBasicCredential?
+    internal let httpBasicScope: HTTPBasicAuthenticationScope?
+    internal let httpBasicTransport: HTTPBasicTransport?
 
-    public init(address: String, accessToken: BackendAccessToken? = nil) throws {
+    public init(address: String, accessToken: BackendAccessToken? = nil,
+                httpBasicCredential: HTTPBasicCredential? = nil,
+                sessionConfiguration: URLSessionConfiguration? = nil) throws {
         baseURL = try BackendURLRules.normalize(address)
+        guard accessToken == nil || httpBasicCredential == nil else {
+            throw HTTPBasicAuthenticationError.conflictingAuthorization
+        }
         self.accessToken = accessToken
+        self.httpBasicCredential = httpBasicCredential
+        if let httpBasicCredential {
+            let scope = try HTTPBasicAuthenticationScope(address: baseURL.absoluteString)
+            httpBasicScope = scope
+            httpBasicTransport = try HTTPBasicTransport(scope: scope, credential: httpBasicCredential,
+                                                       sessionConfiguration: sessionConfiguration)
+        } else { httpBasicScope = nil; httpBasicTransport = nil }
+    }
+
+    public var usesHTTPBasicAuthentication: Bool { httpBasicTransport != nil }
+
+    /// A distinct relay belongs to one decoder generation. Merely creating it
+    /// sends no request and does not change an existing playback session.
+    public func makeAuthenticatedMediaRelay() throws -> HTTPMediaRelay? {
+        try httpBasicTransport?.makeMediaRelay()
+    }
+
+    internal func basicTransport(using session: URLSession) throws -> HTTPBasicTransport? {
+        guard let httpBasicTransport, let httpBasicScope, let httpBasicCredential else { return nil }
+        if session === URLSession.shared { return httpBasicTransport }
+        // Honor explicit test/host session configuration while retaining the
+        // same redirect, cookie, trust, and credential-store restrictions.
+        return try HTTPBasicTransport(scope: httpBasicScope, credential: httpBasicCredential,
+                                      sessionConfiguration: session.configuration)
     }
     public func endpoint(_ components: [String]) -> URL {
         components.reduce(baseURL) { $0.appendingPathComponent($1) }
@@ -310,12 +349,67 @@ public struct RingonomiClient: Sendable {
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         return try decoder.decode(T.self, from: data)
     }
-    public func channels() async throws -> [Channel] {
-        let groups = try await fetch(["api", "channels"], as: [String: [Channel]].self)
+    public func channels(using urlSession: URLSession = .shared) async throws -> [Channel] {
+        var request = URLRequest(url: endpoint(["api", "channels"]))
+        request.timeoutInterval = 20
+        let responseData: (BackendResponseStream, URLResponse)
+        do {
+            responseData = try await backendBytes(for: request, using: urlSession)
+        } catch let error as ConnectionError where error == .http(0) {
+            // The shared transport uses HTTP 0 for a non-HTTP response. A
+            // channel list must report that as malformed data rather than a
+            // server status.
+            throw ConnectionError.invalidResponse
+        }
+        let bytes = responseData.0
+        let response = responseData.1
+        defer { bytes.cancel() }
+        guard let http = response as? HTTPURLResponse else {
+            throw ConnectionError.invalidResponse
+        }
+        guard http.statusCode == 200 else {
+            if (200..<300).contains(http.statusCode) {
+                throw ConnectionError.invalidResponse
+            }
+            throw ConnectionError.http(http.statusCode)
+        }
+
+        let maximumBytes = 4 * 1024 * 1024
+        guard response.expectedContentLength <= Int64(maximumBytes) || response.expectedContentLength < 0 else {
+            throw ConnectionError.invalidResponse
+        }
+        var data = Data()
+        data.reserveCapacity(Int(max(0, response.expectedContentLength)))
+        for try await byte in bytes {
+            guard data.count < maximumBytes else { throw ConnectionError.invalidResponse }
+            data.append(byte)
+        }
+        try Task.checkCancellation()
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let groups: [String: [Channel]]
+        do {
+            groups = try decoder.decode([String: [Channel]].self, from: data)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw ConnectionError.invalidResponse
+        }
+        let totalChannels = groups.values.reduce(into: 0) { total, group in
+            total += group.count
+        }
+        guard totalChannels <= 4096 else { throw ConnectionError.invalidResponse }
         var result: [Channel] = []
         for kind in ["GR", "BS", "CS", "CATV", "SKY", "BS4K"] {
             for channel in groups[kind] ?? [] {
-                if channel.isWatchable && channel.isDisplay { result.append(channel) }
+                guard channel.isWatchable && channel.isDisplay else { continue }
+                let identifier = channel.displayChannelId.utf8
+                guard !identifier.isEmpty, identifier.count <= 128,
+                      identifier.allSatisfy({ byte in
+                          (0x30...0x39).contains(byte) || (0x41...0x5A).contains(byte) ||
+                          (0x61...0x7A).contains(byte) || byte == 0x2D || byte == 0x5F
+                      }) else { throw ConnectionError.invalidResponse }
+                result.append(channel)
             }
         }
         return result
