@@ -34,5 +34,8 @@ jobs:
       - name: Swiftテストを実行
         run: ./test.sh
 
+      - name: 予約書込みジャーナル状態プローブを実行
+        run: python3 Tests/AppStateChecks/check_reservation_mutation.py
+
       - name: 通信契約チェックを実行
         run: xcrun swift run --package-path . --scratch-path .build --cache-path "$RINGONOMITV_CACHE_ROOT/swiftpm" RingonomiContractCheck

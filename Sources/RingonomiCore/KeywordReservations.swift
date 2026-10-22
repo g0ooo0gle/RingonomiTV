@@ -568,10 +568,24 @@ public extension RingonomiClient {
         // A 201 response is allowed to contain no object. Resolve it only if
         // exactly one list entry has the same complete search condition. A
         // duplicate match cannot identify the newly-created condition safely.
-        let list = try await keywordReservations(using: session)
-        let matches = list.reservationConditions.filter { $0.programSearchCondition == search }
-        guard matches.count == 1 else {
+        let list: KeywordReservationsResponse
+        do {
+            list = try await keywordReservations(using: session)
+        } catch {
+            // The list request follows a successful POST. Its HTTP status
+            // cannot prove that the original write was rejected.
+            throw ReservationError.outcomeUnknown
+        }
+        let matches = list.reservationConditions.filter {
+            $0.programSearchCondition == search && $0.recordSettings == settings
+        }
+        guard !matches.isEmpty else {
             throw ReservationError.emptyCreatedReservation
+        }
+        guard matches.count == 1 else {
+            // A matching search/settings pair can still be duplicated by a
+            // concurrent client; do not guess which condition this POST made.
+            throw ReservationError.outcomeUnknown
         }
         return matches[0]
     }
@@ -590,7 +604,13 @@ public extension RingonomiClient {
             using: session
         )
         if Self.isEmptyResponseBody(response.data) {
-            return try await keywordReservation(id: id, using: session)
+            do {
+                return try await keywordReservation(id: id, using: session)
+            } catch {
+                // The PUT may already have been applied; keep the write in
+                // the recovery journal when verification cannot complete.
+                throw ReservationError.outcomeUnknown
+            }
         }
         return try decodeResponse(ReservationCondition.self, from: response.data)
     }

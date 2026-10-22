@@ -316,6 +316,60 @@ final class KeywordReservationTests: XCTestCase {
         XCTAssertEqual(methods, ["POST", "GET"])
     }
 
+    func testAddNull201WithMultipleMatchingSearchAndSettingsIsOutcomeUnknown() async throws {
+        let (client, session) = try clientAndSession()
+        var methods: [String] = []
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let condition = try decoder.decode(ReservationCondition.self, from: conditionJSON())
+        KeywordReservationURLProtocol.handler = { request in
+            methods.append(request.httpMethod ?? "")
+            if request.httpMethod == "POST" { return self.jsonResponse(request, 201, Data("null".utf8)) }
+            return self.jsonResponse(request, 200, self.listJSON(keyword: condition.programSearchCondition.keyword, count: 2))
+        }
+        defer { KeywordReservationURLProtocol.handler = nil }
+
+        do {
+            _ = try await client.addKeywordReservation(
+                search: condition.programSearchCondition,
+                settings: condition.recordSettings,
+                using: session
+            )
+            XCTFail("multiple matching keyword conditions must not identify the POST result")
+        } catch let error as ReservationError {
+            XCTAssertEqual(error, .outcomeUnknown)
+        }
+        XCTAssertEqual(methods, ["POST", "GET"])
+    }
+
+    func testAddNull201DoesNotAcceptSearchOnlyMatchWithDifferentSettings() async throws {
+        let (client, session) = try clientAndSession()
+        var methods: [String] = []
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let condition = try decoder.decode(ReservationCondition.self, from: conditionJSON())
+        var differentSettings = condition.recordSettings
+        differentSettings.priority += 1
+        KeywordReservationURLProtocol.handler = { request in
+            methods.append(request.httpMethod ?? "")
+            if request.httpMethod == "POST" { return self.jsonResponse(request, 201, Data("null".utf8)) }
+            return self.jsonResponse(request, 200, self.listJSON(keyword: condition.programSearchCondition.keyword))
+        }
+        defer { KeywordReservationURLProtocol.handler = nil }
+
+        do {
+            _ = try await client.addKeywordReservation(
+                search: condition.programSearchCondition,
+                settings: differentSettings,
+                using: session
+            )
+            XCTFail("a search-only match with different settings must not be accepted")
+        } catch let error as ReservationError {
+            XCTAssertEqual(error, .emptyCreatedReservation)
+        }
+        XCTAssertEqual(methods, ["POST", "GET"])
+    }
+
     func testAddDuplicateSearchCannotBeResolvedFromNull201() async throws {
         let (client, session) = try clientAndSession()
         var methods: [String] = []

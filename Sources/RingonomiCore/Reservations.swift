@@ -371,6 +371,9 @@ public enum ReservationError: Error, LocalizedError, Equatable, Sendable {
     case invalidResponse
     case requestEncoding
     case emptyCreatedReservation
+    /// The mutation request may have been accepted, but the follow-up
+    /// retrieval used to identify or verify its result failed.
+    case outcomeUnknown
     case http(status: Int, detail: String?)
 
     public var statusCode: Int? {
@@ -388,6 +391,8 @@ public enum ReservationError: Error, LocalizedError, Equatable, Sendable {
             return "録画予約の設定を送信形式に変換できませんでした。"
         case .emptyCreatedReservation:
             return "予約は追加されましたが、追加結果を取得できませんでした。予約一覧を再読み込みしてください。"
+        case .outcomeUnknown:
+            return "予約操作の結果を確認できません。予約一覧を再読み込みしてください。"
         case .http(let status, let detail):
             let message: String
             switch status {
@@ -466,11 +471,24 @@ public extension RingonomiClient {
         // serialize that body as whitespace or JSON null. A follow-up GET is
         // retrieval, not a retry, and prevents a POST timeout from being sent
         // again by this client.
-        let list = try await reservations(using: session)
-        guard let created = list.reservations.first(where: { $0.program.id == programID }) else {
+        let list: ReservationsResponse
+        do {
+            list = try await reservations(using: session)
+        } catch {
+            // This GET happens after the POST. A 4xx here is not evidence
+            // that the original write was rejected.
+            throw ReservationError.outcomeUnknown
+        }
+        let matches = list.reservations.filter { $0.program.id == programID }
+        guard !matches.isEmpty else {
             throw ReservationError.emptyCreatedReservation
         }
-        return created
+        guard matches.count == 1 else {
+            // More than one matching reservation cannot identify the result of
+            // this POST safely. Keep the caller's write journal pending.
+            throw ReservationError.outcomeUnknown
+        }
+        return matches[0]
     }
 
     func updateReservation(
@@ -490,7 +508,13 @@ public extension RingonomiClient {
             // The documented response contains the updated reservation. If a
             // compatible server returns an empty 2xx body, retrieve the state
             // once instead of reporting a successful update with stale UI data.
-            return try await reservation(id: id, using: session)
+            do {
+                return try await reservation(id: id, using: session)
+            } catch {
+                // The PUT has already been accepted at this point; a failed
+                // verification GET must remain outcome-unknown.
+                throw ReservationError.outcomeUnknown
+            }
         }
         return try decodeResponse(Reservation.self, from: response.data)
     }
