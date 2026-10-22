@@ -295,7 +295,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
                 do {
                     let resolved = try await mediaConnection.resolve(source: url, kind: .media) { [weak self] error in
                         guard let self, self.loadGeneration == expectedLoadGeneration else { return }
-                        self.fail(error.localizedDescription)
+                        self.failMediaConnection(error)
                     }
                     guard let self, !Task.isCancelled, self.loadGeneration == expectedLoadGeneration,
                           !self.isStopped, !self.isSuspendedForBackground else { return }
@@ -304,7 +304,11 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
                 } catch {
                     guard let self, !Task.isCancelled, !(error is CancellationError),
                           self.loadGeneration == expectedLoadGeneration else { return }
-                    self.fail(error.localizedDescription)
+                    if let failure = error as? HTTPMediaRelayFailure {
+                        self.failMediaConnection(failure)
+                    } else {
+                        self.fail(error.localizedDescription)
+                    }
                 }
             }
         }
@@ -949,7 +953,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
                 return
             }
             if player.state == .error || player.state == .ended || !isLoading {
-                fail("配信が中断されました。接続を確認して再試行してください。")
+                failMediaConnection(.connection)
                 return
             }
             // A not-yet-started player can report stopped while loading.
@@ -1115,6 +1119,14 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
             guard self.stopWaitGeneration == expectedGeneration else { return }
             self.stopTask = nil
         }
+    }
+
+    private func failMediaConnection(_ error: HTTPMediaRelayFailure) {
+        if isLoading {
+            startupDeadline.observe(mediaConnection?.startupProgress,
+                                     generation: loadGeneration)
+        }
+        fail(startupDeadline.failureMessage(for: error))
     }
 
     private func fail(_ message: String) {

@@ -29,6 +29,23 @@ public enum PlaybackStartupPhase: String, Sendable, Equatable {
         }
     }
 
+    fileprivate var connectionFailureMessage: String {
+        switch self {
+        case .waitingForMedia:
+            return "画質を切り替えられませんでした。再試行してください。"
+        case .preparingPlayer, .waitingForRequest:
+            return "再生を開始できませんでした。もう一度お試しください。"
+        case .waitingForResponse:
+            return "サーバーから応答を受け取れませんでした。接続を確認して再試行してください。"
+        case .waitingForData:
+            return "映像データを受信できませんでした。接続を確認して再試行してください。"
+        case .decoding:
+            return "映像と音声の準備が完了しませんでした。再試行してください。"
+        case .buffering:
+            return "映像の読み込みが中断されました。接続を確認して再試行してください。"
+        }
+    }
+
     fileprivate var timeout: Double {
         switch self {
         case .waitingForMedia, .waitingForRequest: return 15
@@ -105,6 +122,15 @@ public struct LivePlaybackStartupDeadline: Sendable {
               time >= startedAt, time >= phaseStartedAt else { return nil }
         return time - phaseStartedAt >= phase.timeout || time - startedAt >= totalTimeout
             ? phase : nil
+    }
+
+    /// 通信側の期限や切断が先に確定しても、待機していた段階を保つ。
+    /// HTTPエラーや切断をタイムアウトと断定せず、認証・形式エラーは維持する。
+    public func failureMessage(for failure: HTTPMediaRelayFailure) -> String {
+        guard failure == .connection, let phase = currentPhase else {
+            return failure.localizedDescription
+        }
+        return phase.connectionFailureMessage
     }
 
     public mutating func finish(generation: Int) {

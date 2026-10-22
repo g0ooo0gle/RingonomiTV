@@ -82,6 +82,37 @@ final class PlaybackStartupProgressTests: XCTestCase {
         XCTAssertEqual(deadline.timedOutPhase(generation: 1, at: 130), .buffering)
     }
 
+    func testEarlyTransportFailureKeepsWaitReasonWithoutClaimingTimeout() {
+        var deadline = LivePlaybackStartupDeadline()
+        deadline.begin(generation: 1, at: 0)
+        deadline.playerStarted(generation: 1, usesRelay: true, at: 1)
+        deadline.observe(.init(phase: .waitingForResponse, attempt: 1), generation: 1, at: 2)
+        XCTAssertNil(deadline.timedOutPhase(generation: 1, at: 20))
+        XCTAssertTrue(deadline.failureMessage(for: .connection).contains("応答"))
+        XCTAssertFalse(deadline.failureMessage(for: .connection).contains("タイムアウト"))
+        deadline.observe(.init(phase: .waitingForData, attempt: 1), generation: 1, at: 21)
+        XCTAssertTrue(deadline.failureMessage(for: .connection).contains("映像データ"))
+    }
+
+    func testStartupReasonDoesNotReplaceAuthenticationOrFormatFailure() {
+        var deadline = LivePlaybackStartupDeadline()
+        deadline.begin(generation: 1, phase: .waitingForResponse, at: 0)
+        for failure in [HTTPMediaRelayFailure.authenticationRequired, .unsupportedPlaylist] {
+            XCTAssertEqual(deadline.failureMessage(for: failure), failure.localizedDescription)
+        }
+    }
+
+    func testReadyOrRetiredLoadCannotLeaveAStaleFailureReason() {
+        var deadline = LivePlaybackStartupDeadline()
+        deadline.begin(generation: 1, phase: .waitingForData, at: 0)
+        deadline.finish(generation: 1)
+        XCTAssertEqual(deadline.failureMessage(for: .connection), HTTPMediaRelayFailure.connection.localizedDescription)
+        deadline.begin(generation: 2, phase: .buffering, at: 10)
+        XCTAssertTrue(deadline.failureMessage(for: .connection).contains("読み込み"))
+        deadline.invalidate()
+        XCTAssertEqual(deadline.failureMessage(for: .connection), HTTPMediaRelayFailure.connection.localizedDescription)
+    }
+
     func testStopSuspendAndReadyRetireTheDeadlineUntilNextLoad() {
         var deadline = LivePlaybackStartupDeadline()
         deadline.begin(generation: 1, at: 0)
