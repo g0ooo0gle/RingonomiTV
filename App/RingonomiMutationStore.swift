@@ -9,94 +9,31 @@ protocol ReservationMutationJournalStorage: AnyObject {
 }
 
 enum ReservationMutationJournalStorageError: Error, LocalizedError, Equatable {
-    case applicationSupportUnavailable
+    case keychainReadFailed
+    case keychainWriteFailed
+    case keychainRemoveFailed
+    case legacyCorrupt
+    case legacyConflict
+    case legacyMigrationFailed
     case cleanupFailed
 
     var errorDescription: String? {
         switch self {
-        case .applicationSupportUnavailable:
-            return "予約操作の保存場所を準備できません。"
+        case .keychainReadFailed:
+            return "予約操作の記録を端末の安全な保存領域から読み込めませんでした。"
+        case .keychainWriteFailed:
+            return "予約操作の記録を端末の安全な保存領域へ保存できませんでした。送信は行われていません。"
+        case .keychainRemoveFailed:
+            return "予約操作の記録を端末の安全な保存領域から解除できません。記録を残したまま停止しています。"
+        case .legacyCorrupt:
+            return "以前の予約操作の記録を読み込めませんでした。内容を確認してから復旧してください。"
+        case .legacyConflict:
+            return "予約操作の記録が複数の保存先で一致しません。内容を確認してから復旧してください。"
+        case .legacyMigrationFailed:
+            return "以前の予約操作の記録を安全に移行できません。記録を残したまま停止しています。"
         case .cleanupFailed:
             return "予約操作の記録を解除できません。予約一覧を確認してから再試行してください。"
         }
-    }
-}
-
-/// A small durable file in Application Support. The temporary file is written
-/// and synchronized before replacement, so a failed write is reported before
-/// the network mutation is started.
-final class ApplicationSupportReservationMutationStorage: ReservationMutationJournalStorage {
-    private let fileManager: FileManager
-    private let fileURL: URL
-    private let defaults: UserDefaults
-    private let legacyKey: String
-
-    init(
-        fileManager: FileManager = .default,
-        defaults: UserDefaults = .standard,
-        legacyKey: String = "ringonomiPendingReservationWrite.v1",
-        fileURL: URL? = nil
-    ) throws {
-        self.fileManager = fileManager
-        self.defaults = defaults
-        self.legacyKey = legacyKey
-        if let fileURL {
-            self.fileURL = fileURL
-            return
-        }
-        guard let support = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
-            throw ReservationMutationJournalStorageError.applicationSupportUnavailable
-        }
-        self.fileURL = support
-            .appendingPathComponent("RingonomiTV", isDirectory: true)
-            .appendingPathComponent("reservation-write-journal.json", isDirectory: false)
-    }
-
-    func read() throws -> Data? {
-        if fileManager.fileExists(atPath: fileURL.path) {
-            return try Data(contentsOf: fileURL)
-        }
-        guard let legacy = defaults.object(forKey: legacyKey) else { return nil }
-        guard let data = legacy as? Data else {
-            // A previous build may have left a string/dictionary or another
-            // value under the old Defaults key. Preserve it as a recovery
-            // condition rather than treating it as an empty journal.
-            throw CocoaError(.fileReadCorruptFile)
-        }
-        return data
-    }
-
-    func write(_ data: Data) throws {
-        let directory = fileURL.deletingLastPathComponent()
-        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-        let temporary = directory.appendingPathComponent(
-            ".reservation-write-journal-\(UUID().uuidString).tmp",
-            isDirectory: false
-        )
-        defer { try? fileManager.removeItem(at: temporary) }
-
-        guard fileManager.createFile(atPath: temporary.path, contents: nil) else {
-            throw CocoaError(.fileWriteUnknown)
-        }
-        let handle = try FileHandle(forWritingTo: temporary)
-        defer { try? handle.close() }
-        try handle.write(contentsOf: data)
-        try handle.synchronize()
-        try handle.close()
-
-        if fileManager.fileExists(atPath: fileURL.path) {
-            _ = try fileManager.replaceItemAt(fileURL, withItemAt: temporary)
-        } else {
-            try fileManager.moveItem(at: temporary, to: fileURL)
-        }
-        defaults.removeObject(forKey: legacyKey)
-    }
-
-    func remove() throws {
-        if fileManager.fileExists(atPath: fileURL.path) {
-            try fileManager.removeItem(at: fileURL)
-        }
-        defaults.removeObject(forKey: legacyKey)
     }
 }
 
@@ -105,13 +42,7 @@ final class ApplicationSupportReservationMutationStorage: ReservationMutationJou
 /// this store so that two screens cannot submit concurrent mutations.
 @MainActor
 final class RingonomiMutationStore: ObservableObject {
-    static let shared: RingonomiMutationStore = {
-        do {
-            return try RingonomiMutationStore(storage: ApplicationSupportReservationMutationStorage())
-        } catch {
-            return RingonomiMutationStore(storage: UnavailableReservationMutationStorage(error: error))
-        }
-    }()
+    static let shared = RingonomiMutationStore(storage: KeychainReservationMutationStorage())
 
     @Published private(set) var busy = false
     @Published private(set) var pending: ReservationMutationIntent?
@@ -129,7 +60,7 @@ final class RingonomiMutationStore: ObservableObject {
             // Keep a visible recovery marker. Deleting malformed data here
             // could discard evidence that a server accepted a write.
             journalUnreadable = true
-            journalError = error.localizedDescription
+            journalError = Self.journalErrorMessage(for: error)
             pending = .recoveryEntry()
         }
     }
@@ -275,7 +206,7 @@ final class RingonomiMutationStore: ObservableObject {
         do {
             try storage.remove()
         } catch {
-            journalError = error.localizedDescription
+            journalError = Self.journalErrorMessage(for: error)
             return false
         }
         pending = nil
@@ -283,15 +214,12 @@ final class RingonomiMutationStore: ObservableObject {
         journalError = nil
         return true
     }
-}
 
-/// Keeps a startup recovery marker visible if Application Support itself is
-/// unavailable. No write can proceed because `write` throws before send.
-private final class UnavailableReservationMutationStorage: ReservationMutationJournalStorage {
-    private let error: Error
-
-    init(error: Error) { self.error = error }
-    func read() throws -> Data? { throw error }
-    func write(_ data: Data) throws { throw error }
-    func remove() throws { throw error }
+    private static func journalErrorMessage(for error: Error) -> String {
+        if let storageError = error as? ReservationMutationJournalStorageError,
+           let message = storageError.errorDescription {
+            return message
+        }
+        return "予約操作の記録を読み込めませんでした。内容を確認してから復旧してください。"
+    }
 }

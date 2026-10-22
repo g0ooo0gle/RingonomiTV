@@ -31,6 +31,29 @@ private final class ProbeStorage: ReservationMutationJournalStorage {
     }
 }
 
+private final class ProbeKeychain: ReservationMutationJournalKeychain {
+    var data: Data?
+    var failRead = false
+    var failWrite = false
+    var failRemove = false
+    var writeMismatch = false
+
+    func read() throws -> Data? {
+        guard !failRead else { throw ReservationMutationJournalStorageError.keychainReadFailed }
+        return data
+    }
+
+    func write(_ data: Data) throws {
+        guard !failWrite else { throw ReservationMutationJournalStorageError.keychainWriteFailed }
+        self.data = writeMismatch ? Data("different".utf8) : data
+    }
+
+    func remove() throws {
+        guard !failRemove else { throw ReservationMutationJournalStorageError.keychainRemoveFailed }
+        data = nil
+    }
+}
+
 @MainActor
 private final class ProbeCounter {
     var sends = 0
@@ -349,14 +372,10 @@ struct ReservationMutationCheck {
                        "corrupt recovery must remove durable marker")
         }
 
-        // The file-backed adapter treats an old non-Data Defaults value and
-        // an unreadable path as recovery conditions, and removes the legacy
-        // value only after explicit recovery.
+        // The Keychain adapter migrates a legacy Data value only after a
+        // successful write/readback, and keeps old Defaults corruption
+        // recoverable without touching a real host Keychain.
         do {
-            let fileManager = FileManager.default
-            let root = fileManager.temporaryDirectory
-                .appendingPathComponent("ringonomi-mutation-probe-\(UUID().uuidString)", isDirectory: true)
-            let fileURL = root.appendingPathComponent("journal.json", isDirectory: false)
             let legacyKey = "legacy-\(UUID().uuidString)"
             let defaultsSuite = "ringonomi-probe-\(UUID().uuidString)"
             guard let defaults = UserDefaults(suiteName: defaultsSuite) else {
@@ -364,16 +383,39 @@ struct ReservationMutationCheck {
             }
             defer {
                 defaults.removePersistentDomain(forName: defaultsSuite)
-                try? fileManager.removeItem(at: root)
             }
-            defaults.set("old string value", forKey: legacyKey)
-            let legacyStorage = try ApplicationSupportReservationMutationStorage(
-                fileManager: fileManager,
+            let keychain = ProbeKeychain()
+            let legacyStorage = KeychainReservationMutationStorage(
+                keychain: keychain,
                 defaults: defaults,
-                legacyKey: legacyKey,
-                fileURL: fileURL
+                legacyKey: legacyKey
             )
-            let legacyCorrupt = RingonomiMutationStore(storage: legacyStorage)
+            let legacyIntent = ReservationMutationIntent(
+                address: address,
+                target: .reservation,
+                action: .add,
+                title: "legacy"
+            )
+            let legacyData = try JSONEncoder().encode(legacyIntent)
+            defaults.set(legacyData, forKey: legacyKey)
+            let migrated = RingonomiMutationStore(storage: legacyStorage)
+            try expect(!migrated.journalUnreadable && migrated.pending == legacyIntent,
+                       "legacy Data must be readable after migration")
+            try expect(keychain.data == legacyData && defaults.object(forKey: legacyKey) == nil,
+                       "legacy Data must be removed only after Keychain readback")
+
+            let corruptDefaultsSuite = "ringonomi-probe-corrupt-\(UUID().uuidString)"
+            guard let corruptDefaults = UserDefaults(suiteName: corruptDefaultsSuite) else {
+                throw ProbeFailure.message("could not create isolated corrupt defaults suite")
+            }
+            defer { corruptDefaults.removePersistentDomain(forName: corruptDefaultsSuite) }
+            corruptDefaults.set("old string value", forKey: legacyKey)
+            let corruptStorage = KeychainReservationMutationStorage(
+                keychain: ProbeKeychain(),
+                defaults: corruptDefaults,
+                legacyKey: legacyKey
+            )
+            let legacyCorrupt = RingonomiMutationStore(storage: corruptStorage)
             try expect(legacyCorrupt.journalUnreadable && legacyCorrupt.pending?.isRecoveryEntry == true,
                        "legacy non-Data value must be visible as corruption")
             guard let legacyMarker = legacyCorrupt.pending else {
@@ -386,19 +428,131 @@ struct ReservationMutationCheck {
                 reservationReadAddress: address,
                 keywordReadAddress: address
             ), "legacy corruption recovery should succeed")
-            try expect(defaults.object(forKey: legacyKey) == nil,
+            try expect(corruptDefaults.object(forKey: legacyKey) == nil,
                        "legacy Defaults value must be removed only during recovery")
 
-            try fileManager.createDirectory(at: fileURL, withIntermediateDirectories: true)
-            let unreadableStorage = try ApplicationSupportReservationMutationStorage(
-                fileManager: fileManager,
+            let malformedLegacyData = Data("not-json".utf8)
+            let malformedKeychain = ProbeKeychain()
+            defaults.set(malformedLegacyData, forKey: legacyKey)
+            let malformed = RingonomiMutationStore(storage: KeychainReservationMutationStorage(
+                keychain: malformedKeychain,
                 defaults: defaults,
-                legacyKey: legacyKey,
-                fileURL: fileURL
+                legacyKey: legacyKey
+            ))
+            try expect(malformed.journalUnreadable && malformed.pending?.isRecoveryEntry == true,
+                       "malformed legacy Data must be visible as corruption")
+            try expect(malformedKeychain.data == malformedLegacyData && defaults.object(forKey: legacyKey) == nil,
+                       "malformed legacy Data must migrate before explicit recovery")
+            guard let malformedMarker = malformed.pending else {
+                throw ProbeFailure.message("missing malformed legacy recovery marker")
+            }
+            try expect(malformed.recoverCorruptJournalAfterReview(
+                address: address,
+                reservationReadAt: malformedMarker.startedAt.addingTimeInterval(1),
+                keywordReadAt: malformedMarker.startedAt.addingTimeInterval(1),
+                reservationReadAddress: address,
+                keywordReadAddress: address
+            ), "malformed legacy recovery should succeed")
+            try expect(malformedKeychain.data == nil,
+                       "malformed legacy recovery must clear migrated Keychain data")
+
+            defaults.set(legacyData, forKey: legacyKey)
+            let temporarilyUnavailableKeychain = ProbeKeychain()
+            temporarilyUnavailableKeychain.failRead = true
+            let fallback = RingonomiMutationStore(storage: KeychainReservationMutationStorage(
+                keychain: temporarilyUnavailableKeychain,
+                defaults: defaults,
+                legacyKey: legacyKey
+            ))
+            try expect(!fallback.journalUnreadable && fallback.pending == legacyIntent,
+                       "valid legacy Data must remain reviewable when Keychain is temporarily unavailable")
+            try expect((defaults.object(forKey: legacyKey) as? Data) == legacyData,
+                       "legacy Data must remain until Keychain migration completes")
+            defaults.removeObject(forKey: legacyKey)
+
+            let unreadableKeychain = ProbeKeychain()
+            unreadableKeychain.failRead = true
+            let unreadableStorage = KeychainReservationMutationStorage(
+                keychain: unreadableKeychain,
+                defaults: defaults,
+                legacyKey: legacyKey
             )
             let unreadable = RingonomiMutationStore(storage: unreadableStorage)
             try expect(unreadable.journalUnreadable && unreadable.pending?.isRecoveryEntry == true,
-                       "unreadable journal path must be visible as corruption")
+                       "unreadable Keychain must be visible as corruption")
+        }
+
+        // Keychain write/readback and deletion failures stop the mutation or
+        // retain the pending intent without touching a real Keychain.
+        do {
+            let defaultsSuite = "ringonomi-probe-keychain-failure-\(UUID().uuidString)"
+            guard let defaults = UserDefaults(suiteName: defaultsSuite) else {
+                throw ProbeFailure.message("could not create isolated keychain defaults suite")
+            }
+            defer { defaults.removePersistentDomain(forName: defaultsSuite) }
+            let legacyKey = "legacy-\(UUID().uuidString)"
+
+            let failingWriteKeychain = ProbeKeychain()
+            failingWriteKeychain.failWrite = true
+            let failingWriteStore = RingonomiMutationStore(storage: KeychainReservationMutationStorage(
+                keychain: failingWriteKeychain,
+                defaults: defaults,
+                legacyKey: legacyKey
+            ))
+            let failingWriteCounter = ProbeCounter()
+            var writeFailed = false
+            do {
+                _ = try await run(failingWriteStore, send: { _ in
+                    failingWriteCounter.sends += 1
+                    return 1
+                })
+            } catch let error as ReservationMutationJournalStorageError {
+                try expect(error == .keychainWriteFailed,
+                           "Keychain write failure must report keychainWriteFailed")
+                writeFailed = true
+            }
+            try expect(writeFailed && failingWriteCounter.sends == 0 && failingWriteStore.pending == nil,
+                       "Keychain write failure must prevent send")
+
+            let mismatchKeychain = ProbeKeychain()
+            mismatchKeychain.writeMismatch = true
+            let mismatchStore = RingonomiMutationStore(storage: KeychainReservationMutationStorage(
+                keychain: mismatchKeychain,
+                defaults: defaults,
+                legacyKey: legacyKey
+            ))
+            let mismatchCounter = ProbeCounter()
+            do {
+                _ = try await run(mismatchStore, send: { _ in
+                    mismatchCounter.sends += 1
+                    return 1
+                })
+                throw ProbeFailure.message("Keychain readback mismatch unexpectedly succeeded")
+            } catch is ReservationMutationJournalStorageError {
+                // expected
+            }
+            try expect(mismatchCounter.sends == 0 && mismatchStore.pending == nil,
+                       "Keychain readback mismatch must prevent send")
+
+            let failingRemoveKeychain = ProbeKeychain()
+            failingRemoveKeychain.failRemove = true
+            let failingRemoveStore = RingonomiMutationStore(storage: KeychainReservationMutationStorage(
+                keychain: failingRemoveKeychain,
+                defaults: defaults,
+                legacyKey: legacyKey
+            ))
+            let failingRemoveCounter = ProbeCounter()
+            do {
+                _ = try await run(failingRemoveStore, send: { _ in
+                    failingRemoveCounter.sends += 1
+                    return 1
+                })
+                throw ProbeFailure.message("Keychain remove failure unexpectedly succeeded")
+            } catch is ReservationMutationJournalStorageError {
+                // expected
+            }
+            try expect(failingRemoveCounter.sends == 1 && failingRemoveStore.pending != nil && failingRemoveKeychain.data != nil,
+                       "Keychain remove failure must retain pending")
         }
 
         // Cleanup failure retains the intent and continues to block retry.

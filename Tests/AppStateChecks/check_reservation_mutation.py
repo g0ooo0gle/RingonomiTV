@@ -46,6 +46,7 @@ subprocess.run(
         "-target", target_architecture + "-apple-macosx14.0",
         "-module-cache-path", str(build / "module-cache"),
         "-I", str(module_dir),
+        str(root / "App/ReservationMutationJournalKeychain.swift"),
         str(root / "App/RingonomiMutationStore.swift"),
         str(root / "Tests/AppStateChecks/ReservationMutationCheck.swift"),
         *map(str, objects),
