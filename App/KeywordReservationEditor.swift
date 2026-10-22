@@ -70,6 +70,7 @@ struct KeywordReservationEditor: View {
                         }
                     }
                 }
+                if let message { Section { Text(message).foregroundStyle(.red) } }
                 Section {
                     if busy { ProgressView("サーバーの処理結果を確認しています…") }
                     Button(original == nil ? "条件を追加" : "変更を保存") { confirmation = true }
@@ -95,11 +96,6 @@ struct KeywordReservationEditor: View {
             .onChange(of: maximumDuration) { _, _ in invalidatePreview() }
             .onChange(of: duplicateDays) { _, _ in invalidatePreview() }
             .onDisappear { invalidatePreview() }
-            .alert("操作できませんでした", isPresented: Binding(
-                get: { message != nil }, set: { if !$0 { message = nil } }
-            )) {
-                Button("閉じる") { message = nil }
-            } message: { Text(message ?? "") }
             .confirmationDialog("この検索条件を保存しますか？", isPresented: $confirmation, titleVisibility: .visible) {
                 Button("保存する") { Task { await save() } }
                 Button("キャンセル", role: .cancel) {}
