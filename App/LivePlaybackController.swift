@@ -661,7 +661,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
 #endif
         }
 
-        let optionMap = Dictionary(uniqueKeysWithValues: nextCatalog.options.compactMap { option in
+        let optionMap: [String: Int32] = Dictionary(uniqueKeysWithValues: nextCatalog.options.compactMap { option -> (String, Int32)? in
             guard let rawID = nextCatalog.rawID(for: option.id) else { return nil }
             return (option.id, rawID)
         })
