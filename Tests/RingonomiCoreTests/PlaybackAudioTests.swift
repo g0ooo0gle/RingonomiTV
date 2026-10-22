@@ -84,4 +84,112 @@ final class PlaybackAudioTests: XCTestCase {
         XCTAssertEqual(PlaybackAudioCatalog.options(sourceID: UUID(), descriptors: descriptors).count, PlaybackAudioCatalog.maximumTracks)
         XCTAssertTrue(PlaybackAudioCatalog.options(sourceID: UUID(), descriptors: descriptors + [.init(trackID: 1000, name: "extra")]).isEmpty)
     }
+
+    func testCatalogGenerationChangesWhenAReusedIDChangesName() {
+        let source = UUID()
+        let first = PlaybackAudioCatalogGeneration(sourceID: source, descriptors: [
+            .init(trackID: 7, name: "日本語")
+        ])
+        let renamed = first.replacing(sourceID: source, descriptors: [
+            .init(trackID: 7, name: "English")
+        ])
+
+        XCTAssertEqual(first.generation + 1, renamed.generation)
+        XCTAssertNotEqual(first.options[0].id, renamed.options[0].id)
+        XCTAssertFalse(renamed.contains(optionID: first.options[0].id, rawID: 7))
+        XCTAssertEqual(renamed.options[0].preferenceKey, "English")
+    }
+
+    func testCatalogGenerationChangesWhenOrderChangesAndKeepsStableEnumerationStable() {
+        let source = UUID()
+        let first = PlaybackAudioCatalogGeneration(sourceID: source, descriptors: [
+            .init(trackID: 1, name: "日本語"),
+            .init(trackID: 2, name: "English")
+        ])
+        let same = first.replacing(sourceID: source, descriptors: [
+            .init(trackID: 1, name: " 日本語 "),
+            .init(trackID: 2, name: "English")
+        ])
+        let reordered = first.replacing(sourceID: source, descriptors: [
+            .init(trackID: 2, name: "English"),
+            .init(trackID: 1, name: "日本語")
+        ])
+
+        XCTAssertEqual(first, same)
+        XCTAssertEqual(first.generation, same.generation)
+        XCTAssertEqual(first.generation + 1, reordered.generation)
+        XCTAssertNotEqual(first.options[0].id, reordered.options[0].id)
+        XCTAssertEqual(reordered.options.map(\.name), ["English", "日本語"])
+    }
+
+    func testEmptyAndOversizedGenerationsInvalidateOldSelectionsAndRecover() {
+        let source = UUID()
+        let first = PlaybackAudioCatalogGeneration(sourceID: source, descriptors: [
+            .init(trackID: 3, name: "主音声")
+        ])
+        let empty = first.replacing(sourceID: source, descriptors: [])
+        let oversizedDescriptors = (0...PlaybackAudioCatalog.maximumTracks).map {
+            PlaybackAudioDescriptor(trackID: $0, name: nil)
+        }
+        let oversized = empty.replacing(sourceID: source, descriptors: oversizedDescriptors)
+        let recovered = oversized.replacing(sourceID: source, descriptors: [
+            .init(trackID: 3, name: "主音声")
+        ])
+
+        XCTAssertTrue(empty.isEmpty)
+        XCTAssertFalse(empty.isUsable)
+        XCTAssertFalse(empty.contains(optionID: first.options[0].id, rawID: 3))
+        XCTAssertTrue(oversized.isOversized)
+        XCTAssertTrue(oversized.isEmpty)
+        XCTAssertFalse(oversized.isUsable)
+        XCTAssertTrue(recovered.isUsable)
+        XCTAssertEqual(recovered.options[0].preferenceKey, "主音声")
+        XCTAssertNotEqual(first.options[0].id, recovered.options[0].id)
+    }
+
+    func testSourceResetAndOldPendingOptionAreRejected() {
+        let firstSource = UUID()
+        let secondSource = UUID()
+        let first = PlaybackAudioCatalogGeneration(sourceID: firstSource, descriptors: [
+            .init(trackID: 9, name: "日本語")
+        ])
+        let reset = first.replacing(sourceID: secondSource, descriptors: [
+            .init(trackID: 9, name: "日本語")
+        ])
+
+        XCTAssertEqual(first.generation + 1, reset.generation)
+        XCTAssertNotEqual(first.options[0].id, reset.options[0].id)
+        XCTAssertFalse(reset.contains(optionID: first.options[0].id, rawID: 9))
+        XCTAssertTrue(reset.contains(optionID: reset.options[0].id, rawID: 9))
+        XCTAssertEqual(reset.rawID(for: reset.options[0].id), 9)
+    }
+
+    func testGenerationRestoresAUniqueNamedChoiceWithoutReusingOldID() {
+        let source = UUID()
+        let first = PlaybackAudioCatalogGeneration(sourceID: source, descriptors: [
+            .init(trackID: 4, name: "日本語"),
+            .init(trackID: 5, name: "English")
+        ])
+        let latest = first.replacing(sourceID: source, descriptors: [
+            .init(trackID: 8, name: "English"),
+            .init(trackID: 9, name: "日本語")
+        ])
+        let restoredID = PlaybackAudioCatalog.preferredID(
+            named: "English", in: latest.options)
+
+        XCTAssertEqual(restoredID, latest.options[0].id)
+        XCTAssertNotEqual(restoredID, first.options[1].id)
+        XCTAssertTrue(latest.contains(optionID: restoredID!, rawID: 8))
+    }
+
+    func testGenerationDropsTrackIDsThatCannotBeRepresentedByVLC() {
+        let tooLargeForInt32 = Int(Int32.max) + 1
+        let catalog = PlaybackAudioCatalogGeneration(sourceID: UUID(), descriptors: [
+            .init(trackID: tooLargeForInt32, name: "無効")
+        ])
+
+        XCTAssertTrue(catalog.options.isEmpty)
+        XCTAssertTrue(catalog.isEmpty)
+        XCTAssertFalse(catalog.isUsable)
+    }
 }
