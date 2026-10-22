@@ -6,21 +6,28 @@ private actor PlaybackRelayFixture: PlaybackMediaRelaying {
     let local: URL
     let waits: Bool
     let failsStartup: Bool
+    let publishesProgress: Bool
     nonisolated let failurePolicy: PlaybackMediaFailurePolicy
     var lastFailure: HTTPMediaRelayFailure?
+    var startupProgress: PlaybackStartupProgress?
     private(set) var starts = 0
     private(set) var stops = 0
     private var continuation: CheckedContinuation<URL, Error>?
     init(_ id: Int, waits: Bool = false, failsStartup: Bool = false,
-         failurePolicy: PlaybackMediaFailurePolicy = .playerMayRecover) {
+         failurePolicy: PlaybackMediaFailurePolicy = .playerMayRecover,
+         publishesProgress: Bool = false) {
         local = URL(string: "http://127.0.0.1:12345/media/fixture-\(id).bin")!
         self.waits = waits
         self.failsStartup = failsStartup
         self.failurePolicy = failurePolicy
+        self.publishesProgress = publishesProgress
     }
     func start(source: URL, kind: HTTPMediaResourceKind) async throws -> URL {
         starts += 1
         if failsStartup { throw HLSRelayError.stopped }
+        if publishesProgress {
+            startupProgress = PlaybackStartupProgress(phase: .waitingForRequest, attempt: 0)
+        }
         if waits { return try await withCheckedThrowingContinuation { continuation = $0 } }
         return local
     }
@@ -29,6 +36,7 @@ private actor PlaybackRelayFixture: PlaybackMediaRelaying {
         continuation?.resume(throwing: HLSRelayError.stopped); continuation = nil
     }
     func setFailure(_ failure: HTTPMediaRelayFailure) { lastFailure = failure }
+    func setStartupProgress(_ progress: PlaybackStartupProgress?) { startupProgress = progress }
 }
 
 private final class PlaybackRelayQueue: @unchecked Sendable {
@@ -137,6 +145,50 @@ final class PlaybackMediaConnectionTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(5))
         }
         XCTAssertEqual(errors, [.authenticationRequired])
+        await owner.stop()
+    }
+
+    func testStartupProgressIsPublishedAfterRelayStartAndPolled() async throws {
+        let relay = PlaybackRelayFixture(1, publishesProgress: true)
+        let owner = PlaybackMediaConnection(makeRelay: { relay }, failurePollInterval: .milliseconds(10))
+        _ = try await owner.resolve(source: source, kind: .media) { _ in }
+
+        XCTAssertEqual(owner.startupProgress,
+                       PlaybackStartupProgress(phase: .waitingForRequest, attempt: 0))
+        await relay.setStartupProgress(PlaybackStartupProgress(phase: .buffering, attempt: 1))
+        for _ in 0..<100 {
+            if owner.startupProgress?.phase == .buffering { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertEqual(owner.startupProgress,
+                       PlaybackStartupProgress(phase: .buffering, attempt: 1))
+
+        owner.invalidate()
+        XCTAssertNil(owner.startupProgress, "invalidate clears progress synchronously")
+        await owner.stop()
+    }
+
+    func testLateProgressFromRetiredRelayCannotOverwriteReplacement() async throws {
+        let first = PlaybackRelayFixture(1, publishesProgress: true)
+        let second = PlaybackRelayFixture(2, publishesProgress: true)
+        let queue = PlaybackRelayQueue([first, second])
+        let owner = PlaybackMediaConnection(makeRelay: { queue.next() }, failurePollInterval: .milliseconds(10))
+
+        _ = try await owner.resolve(source: source, kind: .media) { _ in }
+        await first.setStartupProgress(PlaybackStartupProgress(phase: .decoding, attempt: 1))
+        for _ in 0..<100 {
+            if owner.startupProgress?.phase == .decoding { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+
+        _ = try await owner.resolve(source: source, kind: .media) { _ in }
+        XCTAssertEqual(owner.startupProgress,
+                       PlaybackStartupProgress(phase: .waitingForRequest, attempt: 0))
+        await first.setStartupProgress(PlaybackStartupProgress(phase: .waitingForResponse, attempt: 99))
+        await first.setFailure(.connection)
+        try await Task.sleep(for: .milliseconds(35))
+        XCTAssertEqual(owner.startupProgress,
+                       PlaybackStartupProgress(phase: .waitingForRequest, attempt: 0))
         await owner.stop()
     }
 

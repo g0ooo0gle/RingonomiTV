@@ -221,6 +221,19 @@ final class LiveCaptionRelayTests: XCTestCase, @unchecked Sendable {
         return await relay.lastFailure
     }
 
+    private func waitForStartupProgress(_ relay: LiveCaptionRelay,
+                                        phase: PlaybackStartupPhase,
+                                        attempt: UInt64) async -> Bool {
+        for _ in 0..<200 {
+            if let progress = await relay.startupProgress,
+               progress.phase == phase, progress.attempt == attempt {
+                return true
+            }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        return false
+    }
+
     func testBatchCarriesParserGenerationAndClockState() {
         let id = UUID()
         let caption = MPEGTSARIBCaption(payload: Data([0x80, 0xFF, 0x01]),
@@ -258,6 +271,38 @@ final class LiveCaptionRelayTests: XCTestCase, @unchecked Sendable {
         XCTAssertNil(requests.first?.value(forHTTPHeaderField: "Cookie"))
         let failure = await waitForFailure(relay)
         XCTAssertEqual(failure, .connection, "a finite upstream body is an unexpected EOF for a live TS")
+    }
+
+    func testStartupProgressTracksDecoderAttemptsAndStop() async throws {
+        LiveCaptionRelayFixtureProtocol.reset { _ in
+            .init(body: Data(repeating: 0x47, count: 32 * 1024),
+                  headers: ["Content-Type": "video/mp2t"], hold: true)
+        }
+        let (relay, local) = try await startRelay()
+        let initialProgress = await relay.startupProgress
+        XCTAssertEqual(initialProgress,
+                       PlaybackStartupProgress(phase: .waitingForRequest, attempt: 0))
+
+        let first = try LiveCaptionLoopbackClient(local)
+        let firstStatus = await first.responseStatus()
+        XCTAssertEqual(firstStatus, 200)
+        let firstDecoding = await waitForStartupProgress(relay, phase: .decoding, attempt: 1)
+        XCTAssertTrue(firstDecoding)
+        first.cancel()
+        let firstReady = await waitForStartupProgress(relay, phase: .waitingForRequest, attempt: 1)
+        XCTAssertTrue(firstReady)
+
+        // The replacement request gets a new attempt number even if the old
+        // GET's cancellation completion is still draining asynchronously.
+        let second = try LiveCaptionLoopbackClient(local)
+        let secondStatus = await second.responseStatus()
+        XCTAssertEqual(secondStatus, 200)
+        let secondDecoding = await waitForStartupProgress(relay, phase: .decoding, attempt: 2)
+        XCTAssertTrue(secondDecoding)
+        second.cancel()
+        await relay.stop()
+        let stoppedProgress = await relay.startupProgress
+        XCTAssertNil(stoppedProgress)
     }
 
     func testHEADDoesNotOpenAuthenticatedUpstream() async throws {
