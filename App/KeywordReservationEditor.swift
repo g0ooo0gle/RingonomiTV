@@ -18,6 +18,7 @@ struct KeywordReservationEditor: View {
     @State private var preview: ProgramSearchResponse?
     @State private var previewGeneration = UUID()
     @State private var previewTask: Task<Void, Never>?
+    @FocusState private var closeFocused: Bool
     @ObservedObject private var mutation = RingonomiMutationStore.shared
     @Environment(\.dismiss) private var dismiss
 
@@ -78,12 +79,17 @@ struct KeywordReservationEditor: View {
                             .disabled(store.saving || previewing || mutation.busy || mutation.pending != nil)
                     }
                     Button("閉じる") { dismiss() }
+                        .focused($closeFocused)
                 }
             }
             .disabled(busy)
             .navigationFormViewport()
             .appNavigationTitle(Text(original == nil ? "新しいキーワード予約" : "キーワード予約を変更"))
             .interactiveDismissDisabled(busy)
+            .onChange(of: busy) { _, isBusy in
+                guard !isBusy, mutation.pending != nil else { return }
+                closeFocused = true
+            }
             .onChange(of: search.rawValues) { _, _ in invalidatePreview() }
             .onChange(of: minimumDuration) { _, _ in invalidatePreview() }
             .onChange(of: maximumDuration) { _, _ in invalidatePreview() }
@@ -222,7 +228,7 @@ struct KeywordReservationEditor: View {
 #endif
         } catch {
             guard !Task.isCancelled, previewGeneration == expected else { return }
-            message = "検索できませんでした。\(error.localizedDescription)"
+            message = "検索できませんでした。\(reservationErrorMessage(error))"
         }
     }
 
@@ -248,7 +254,7 @@ struct KeywordReservationEditor: View {
 #endif
             dismiss()
         } catch {
-            message = error.localizedDescription + (mutation.pending == nil ? "" : " 操作結果が不明な場合は、再送前に一覧を確認してください。")
+            message = reservationErrorMessage(error) + (mutation.pending == nil ? "" : " 操作結果が不明な場合は、再送前に一覧を確認してください。")
         }
     }
 
@@ -263,6 +269,6 @@ struct KeywordReservationEditor: View {
             print("RingonomiKeywordDeleted")
 #endif
             dismiss()
-        } catch { message = error.localizedDescription + " 一覧を確認してください。" }
+        } catch { message = reservationErrorMessage(error) + " 一覧を確認してください。" }
     }
 }

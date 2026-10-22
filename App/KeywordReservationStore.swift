@@ -69,7 +69,7 @@ private enum KeywordWriteResult: Sendable {
 #endif
         } catch {
             guard !Task.isCancelled, generation == expected else { return }
-            self.error = "キーワード予約を読み込めませんでした。\(error.localizedDescription)"
+            self.error = "キーワード予約を読み込めませんでした。\(reservationErrorMessage(error))"
         }
     }
 
@@ -164,7 +164,7 @@ private enum KeywordWriteResult: Sendable {
                 }
             )
         } catch {
-            if generation == expected { self.error = error.localizedDescription }
+            if generation == expected { self.error = reservationErrorMessage(error) }
             throw error
         }
     }
@@ -212,7 +212,7 @@ private enum KeywordWriteResult: Sendable {
                 }
             )
         } catch {
-            if generation == expected { self.error = error.localizedDescription }
+            if generation == expected { self.error = reservationErrorMessage(error) }
             throw error
         }
     }

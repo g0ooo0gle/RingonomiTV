@@ -75,7 +75,7 @@ private enum ReservationWriteResult: Sendable {
 #endif
         } catch {
             guard !Task.isCancelled, generation == expected else { return }
-            self.error = "予約一覧を読み込めませんでした。\(error.localizedDescription)"
+            self.error = "予約一覧を読み込めませんでした。\(reservationErrorMessage(error))"
         }
     }
 
@@ -166,7 +166,7 @@ private enum ReservationWriteResult: Sendable {
                 }
             )
         } catch {
-            if generation == expected { self.error = error.localizedDescription }
+            if generation == expected { self.error = reservationErrorMessage(error) }
             throw error
         }
     }
@@ -216,7 +216,7 @@ private enum ReservationWriteResult: Sendable {
                 }
             )
         } catch {
-            if generation == expected { self.error = error.localizedDescription }
+            if generation == expected { self.error = reservationErrorMessage(error) }
             throw error
         }
     }
@@ -246,6 +246,42 @@ struct ReservationUIError: LocalizedError {
     let message: String
     init(_ message: String) { self.message = message }
     var errorDescription: String? { message }
+}
+
+func reservationErrorMessage(_ error: Error) -> String {
+    if error is CancellationError {
+        return "通信をキャンセルしました。"
+    }
+
+    guard let urlError = error as? URLError else {
+        return error.localizedDescription
+    }
+
+    switch urlError.code {
+    case .cancelled:
+        return "通信をキャンセルしました。"
+    case .timedOut:
+        return "通信がタイムアウトしました。接続を確認してください。"
+    case .networkConnectionLost:
+        return "通信が切断されました。接続を確認してください。"
+    case .notConnectedToInternet:
+        return "ネットワークに接続できません。接続を確認してください。"
+    case .cannotFindHost, .cannotConnectToHost:
+        return "サーバーに接続できません。接続先を確認してください。"
+    case .dnsLookupFailed:
+        return "接続先を解決できません。接続先を確認してください。"
+    case .secureConnectionFailed,
+         .serverCertificateHasBadDate,
+         .serverCertificateUntrusted,
+         .serverCertificateHasUnknownRoot,
+         .serverCertificateNotYetValid,
+         .clientCertificateRejected,
+         .clientCertificateRequired,
+         .appTransportSecurityRequiresSecureConnection:
+        return "安全な接続を確立できません。接続先の設定を確認してください。"
+    default:
+        return "通信に失敗しました。接続を確認してください。"
+    }
 }
 
 private func preservesRequestedFields(actual: RecordSettings, expected: RecordSettings) -> Bool {
