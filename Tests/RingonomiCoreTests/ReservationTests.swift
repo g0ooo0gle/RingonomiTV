@@ -306,6 +306,30 @@ final class ReservationTests: XCTestCase {
         XCTAssertEqual(methods, ["POST", "GET"])
     }
 
+    func testAddEmpty201WithMultipleMatchingReservationsIsOutcomeUnknown() async throws {
+        let (client, session) = try clientAndSession()
+        var methods: [String] = []
+        ReservationURLProtocol.handler = { request in
+            methods.append(request.httpMethod ?? "")
+            if request.httpMethod == "POST" { return self.jsonResponse(request, 201) }
+            let item = String(data: self.reservationJSON, encoding: .utf8)!
+            return self.jsonResponse(
+                request,
+                200,
+                Data(("{\"total\":2,\"reservations\":[" + item + "," + item + "]}").utf8)
+            )
+        }
+        defer { ReservationURLProtocol.handler = nil }
+
+        do {
+            _ = try await client.addReservation(programID: "program-12", using: session)
+            XCTFail("multiple matching reservations must not identify the POST result")
+        } catch let error as ReservationError {
+            XCTAssertEqual(error, .outcomeUnknown)
+        }
+        XCTAssertEqual(methods, ["POST", "GET"])
+    }
+
     func testAddMalformed201ObjectFailsWithoutReadback() async throws {
         let (client, session) = try clientAndSession()
         var methods: [String] = []

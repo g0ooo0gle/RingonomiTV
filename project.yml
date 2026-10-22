@@ -13,6 +13,8 @@ targets:
     info:
       path: App/Info.plist
       properties:
+        CFBundleShortVersionString: '$(MARKETING_VERSION)'
+        CFBundleVersion: '$(CURRENT_PROJECT_VERSION)'
         UIBackgroundModes: [audio]
         NSLocalNetworkUsageDescription: 設定した視聴サーバーから番組情報と映像を取得します。
         NSAppTransportSecurity:
@@ -50,7 +52,7 @@ targets:
         TARGETED_DEVICE_FAMILY: '3'
         CODE_SIGN_STYLE: Automatic
         MARKETING_VERSION: '0.1.0'
-        CURRENT_PROJECT_VERSION: '1'
+        CURRENT_PROJECT_VERSION: '2'
         INFOPLIST_KEY_CFBundleDisplayName: りんごのみTV
 schemes:
   RingonomiTV:

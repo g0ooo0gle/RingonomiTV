@@ -630,12 +630,13 @@ public actor LiveCaptionRelay {
 #if DEBUG
             debugFailure = Self.debugFailureName(failure)
 #endif
-            if Task.isCancelled {
-#if DEBUG
-                debugFailure = "cancelled"
-#endif
-                return nil
-            }
+            // The upstream response has already been classified at this
+            // point.  A player can close the loopback connection as soon as
+            // it receives the 502 headers, which cancels the serving task
+            // while that response is being flushed.  Do not lose the
+            // upstream failure just because that local cancellation raced
+            // with publication; `finished` still suppresses it when the
+            // relay itself is stopped.
             if !sentHeaders {
                 do {
                     try await send(responseHeader(status: 502, fields: ["Content-Length": "0"]), to: connection)
@@ -644,7 +645,7 @@ public actor LiveCaptionRelay {
 #endif
                 } catch { }
             }
-            return Task.isCancelled ? nil : failure
+            return failure
         } catch let error as HTTPBasicTransportError {
 #if DEBUG
             debugFailure = error == .authenticationRequired ? "authenticationRequired" : "connection"
