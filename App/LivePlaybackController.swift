@@ -139,6 +139,10 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
     private var waitingDiagnosticDate = Date.distantPast
 #endif
     private var audioSourceID: UUID?
+    /// The native track list may change while VLC keeps the same source UUID.
+    /// Keep a separate catalog generation so an old menu item cannot target a
+    /// newly reused raw track ID.
+    private var audioCatalogGeneration: PlaybackAudioCatalogGeneration?
     private var audioTrackIDsByOptionID: [String: Int32] = [:]
     private var preferredAudioName: String?
     private var hasExplicitAudioSelection = false
@@ -155,9 +159,11 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
     private var audioBaselinePending = false
     private var audioRecoveryPending = false
     private var audioRecoveryRawID: Int32?
+    private var audioRecoveryCatalogGeneration: UInt64?
     private struct PendingAudioSelection {
         let id: String
         let rawID: Int32
+        let catalogGeneration: UInt64
         let previousID: String?
         let previousRawID: Int32?
         let rememberPreference: Bool
@@ -167,6 +173,9 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
     private var cachedVideoSampleAspectRatio: RingonomiVLCVideoSampleAspectRatio?
     private var videoGeometryReadToken = UUID()
     private var videoGeometryReadScheduled = false
+    private var audioCatalogChangeNotice: String {
+        "音声の構成が変わりました。現在の音声を確認してください。"
+    }
     override init() { super.init(); player.delegate = self }
 
     deinit {
@@ -175,16 +184,30 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
 
     func selectAudioTrack(id: String) {
         guard !isStopped, currentURL != nil, failure == nil, !isLoading else { return }
+        // The 500 ms monitor is not the only catalog boundary. Refresh once
+        // immediately before accepting UI input so a reused raw ID cannot be
+        // selected between monitor ticks.
+        guard player.media != nil else {
+            audioSelectionError = "選択した音声を利用できません。"
+            return
+        }
+        refreshAudioTracks(restorePreference: false)
+        guard let catalog = audioCatalogGeneration else {
+            audioSelectionError = "選択した音声を利用できません。"
+            return
+        }
         guard
               pendingAudioSelection == nil,
               !audioRecoveryPending,
-              audioSourceID != nil,
-              let rawID = audioTrackIDsByOptionID[id],
+              let rawID = catalog.rawID(for: id),
+              catalog.contains(optionID: id, rawID: rawID),
               audioOptions.contains(where: { $0.id == id }) else {
             audioSelectionError = "選択した音声を利用できません。"
             return
         }
-        _ = applyAudioTrack(id: id, rawID: rawID, rememberPreference: true)
+        _ = applyAudioTrack(id: id, rawID: rawID,
+                            catalogGeneration: catalog.generation,
+                            rememberPreference: true)
     }
 
     func prepareQualityChange() {
@@ -453,6 +476,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
 
     private func resetAudioCatalog() {
         audioSourceID = UUID()
+        audioCatalogGeneration = nil
         audioTrackIDsByOptionID.removeAll(keepingCapacity: false)
         audioOptions = []
         selectedAudioID = nil
@@ -466,11 +490,13 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         audioBaselinePending = false
         audioRecoveryPending = false
         audioRecoveryRawID = nil
+        audioRecoveryCatalogGeneration = nil
         pendingAudioSelection = nil
     }
 
     private func clearAudioCatalog(notifyUI: Bool = true) {
         audioSourceID = nil
+        audioCatalogGeneration = nil
         audioTrackIDsByOptionID.removeAll(keepingCapacity: false)
         if notifyUI {
             audioOptions = []
@@ -488,14 +514,42 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         audioBaselinePending = false
         audioRecoveryPending = false
         audioRecoveryRawID = nil
+        audioRecoveryCatalogGeneration = nil
         pendingAudioSelection = nil
     }
 
     private func clearDiscoveredAudioOptions() {
+        // Keep the source alive, but publish an empty generation. This
+        // invalidates pending/recovery/selected state even when VLC later
+        // reuses the same raw IDs for a recovered list.
+        let previousGeneration = audioCatalogGeneration?.generation
+        let invalidatedPending = pendingAudioSelection != nil
+            || audioRecoveryPending || selectedAudioID != nil
+        let hadCatalogChangeNotice = audioSelectionError == audioCatalogChangeNotice
+        if let sourceID = audioSourceID {
+            let empty = audioCatalogGeneration.map {
+                $0.replacing(sourceID: sourceID, descriptors: [])
+            } ?? PlaybackAudioCatalogGeneration(sourceID: sourceID, descriptors: [])
+            audioCatalogGeneration = empty
+        } else {
+            audioCatalogGeneration = nil
+        }
         audioTrackIDsByOptionID.removeAll(keepingCapacity: false)
         if !audioOptions.isEmpty { audioOptions = [] }
         if selectedAudioID != nil { selectedAudioID = nil }
         lastPreferredAudioAttemptID = nil
+        pendingAudioSelection = nil
+        audioRecoveryPending = false
+        audioRecoveryRawID = nil
+        audioRecoveryCatalogGeneration = nil
+        didReportMissingAudioForSource = false
+        audioSelectionError = invalidatedPending || hadCatalogChangeNotice
+            ? audioCatalogChangeNotice : nil
+#if DEBUG
+        if previousGeneration != audioCatalogGeneration?.generation {
+            print("RingonomiTVAudioCatalog: generation=\(audioCatalogGeneration?.generation ?? 0) options=0 usable=false invalidated=\(invalidatedPending)")
+        }
+#endif
     }
 
     private struct NativePlaybackStatistics {
@@ -560,7 +614,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         gate.reset()
     }
 
-    private func refreshAudioTracks() {
+    private func refreshAudioTracks(restorePreference: Bool = true) {
         guard !isStopped, currentURL != nil, failure == nil,
               let sourceID = audioSourceID, player.media != nil else { return }
 
@@ -572,51 +626,62 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
             return
         }
         var descriptors: [PlaybackAudioDescriptor] = []
-        var rawIDsByOptionID: [String: Int32] = [:]
 
         for (offset, rawIndex) in rawIndexes.enumerated() {
             guard let numericID = integerValue(rawIndex), numericID >= 0,
-                  let trackID = Int32(exactly: numericID) else { continue }
+                  Int32(exactly: numericID) != nil else { continue }
             let name = offset < rawNames.count ? stringValue(rawNames[offset]) : nil
             guard !isDisabledAudioName(name) else { continue }
             descriptors.append(PlaybackAudioDescriptor(trackID: numericID, name: name))
-            rawIDsByOptionID["\(sourceID.uuidString):\(numericID)"] = trackID
         }
 
-        guard !descriptors.isEmpty else {
-            clearDiscoveredAudioOptions()
-            logAudioCatalog(options: [], currentRawID: currentRawAudioTrackID)
-            return
+        let nextCatalog = audioCatalogGeneration.map {
+            $0.replacing(sourceID: sourceID, descriptors: descriptors)
+        } ?? PlaybackAudioCatalogGeneration(sourceID: sourceID, descriptors: descriptors)
+        let catalogChanged = audioCatalogGeneration != nextCatalog
+        audioCatalogGeneration = nextCatalog
+
+        if catalogChanged {
+            // Keep the explicit label preference so a recovered/renamed list
+            // can be restored by name, but discard every ID-bound operation.
+            let invalidatedPending = pendingAudioSelection != nil
+                || audioRecoveryPending || selectedAudioID != nil
+            let hadCatalogChangeNotice = audioSelectionError == audioCatalogChangeNotice
+            pendingAudioSelection = nil
+            audioRecoveryPending = false
+            audioRecoveryRawID = nil
+            audioRecoveryCatalogGeneration = nil
+            selectedAudioID = nil
+            lastPreferredAudioAttemptID = nil
+            didReportMissingAudioForSource = false
+            audioSelectionError = invalidatedPending || hadCatalogChangeNotice
+                ? audioCatalogChangeNotice : nil
+#if DEBUG
+            print("RingonomiTVAudioCatalog: generation=\(nextCatalog.generation) options=\(nextCatalog.options.count) usable=\(nextCatalog.isUsable) invalidated=\(invalidatedPending)")
+#endif
         }
 
-        let options = PlaybackAudioCatalog.options(sourceID: sourceID, descriptors: descriptors)
-        guard !options.isEmpty else {
-            clearDiscoveredAudioOptions()
-            logAudioCatalog(options: [], currentRawID: currentRawAudioTrackID)
-            return
-        }
-
-        var optionMap: [String: Int32] = [:]
-        for option in options {
-            if let rawID = rawIDsByOptionID[option.id] {
-                optionMap[option.id] = rawID
-            }
-        }
-        guard !optionMap.isEmpty else {
-            clearDiscoveredAudioOptions()
-            logAudioCatalog(options: [], currentRawID: currentRawAudioTrackID)
-            return
-        }
-
-        let filteredOptions = options.filter { optionMap[$0.id] != nil }
+        let optionMap: [String: Int32] = Dictionary(uniqueKeysWithValues: nextCatalog.options.compactMap { option -> (String, Int32)? in
+            guard let rawID = nextCatalog.rawID(for: option.id) else { return nil }
+            return (option.id, rawID)
+        })
+        let filteredOptions = nextCatalog.options
         if audioTrackIDsByOptionID != optionMap { audioTrackIDsByOptionID = optionMap }
         if audioOptions != filteredOptions { audioOptions = filteredOptions }
         let currentRawID = currentRawAudioTrackID
 
+        guard !filteredOptions.isEmpty else {
+            logAudioCatalog(options: [], currentRawID: currentRawID)
+            return
+        }
+
         resolvePendingAudioSelection(currentRawID: currentRawID)
-        if audioRecoveryPending, currentRawID == audioRecoveryRawID {
+        if audioRecoveryPending,
+           audioRecoveryCatalogGeneration == nextCatalog.generation,
+           currentRawID == audioRecoveryRawID {
             audioRecoveryPending = false
             audioRecoveryRawID = nil
+            audioRecoveryCatalogGeneration = nil
         }
 
         let preference = PlaybackAudioCatalog.preferenceMatch(
@@ -624,11 +689,14 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         if let preferredID = preference.selectedID, let preferredRawID = optionMap[preferredID] {
             if currentRawID == preferredRawID {
                 selectedAudioID = preferredID
-            } else if lastPreferredAudioAttemptID != preferredID {
+                audioSelectionError = nil
+            } else if restorePreference, lastPreferredAudioAttemptID != preferredID {
                 lastPreferredAudioAttemptID = preferredID
-                _ = applyAudioTrack(id: preferredID, rawID: preferredRawID, rememberPreference: false)
+                _ = applyAudioTrack(id: preferredID, rawID: preferredRawID,
+                                    catalogGeneration: nextCatalog.generation,
+                                    rememberPreference: false)
             }
-        } else if let notice = preference.notice, !didReportMissingAudioForSource, audioSelectionError == nil {
+        } else if let notice = preference.notice, !didReportMissingAudioForSource {
             didReportMissingAudioForSource = true
             audioSelectionError = notice
         }
@@ -644,6 +712,17 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
 
     private func resolvePendingAudioSelection(currentRawID: Int32?) {
         guard let pending = pendingAudioSelection else { return }
+        guard let catalog = audioCatalogGeneration,
+              catalog.generation == pending.catalogGeneration,
+              catalog.contains(optionID: pending.id, rawID: pending.rawID) else {
+            pendingAudioSelection = nil
+            audioRecoveryPending = false
+            audioRecoveryRawID = nil
+            audioRecoveryCatalogGeneration = nil
+            selectedAudioID = nil
+            audioSelectionError = audioCatalogChangeNotice
+            return
+        }
         if currentRawID == pending.rawID {
             pendingAudioSelection = nil
             if selectedAudioID != pending.id { selectedAudioID = pending.id }
@@ -667,12 +746,14 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         guard Date().timeIntervalSince(pending.startedAt) >= 2 else { return }
 
         pendingAudioSelection = nil
-        if let previousRawID = pending.previousRawID {
+        if let previousRawID = pending.previousRawID,
+           catalog.generation == pending.catalogGeneration {
             player.currentAudioTrackIndex = previousRawID
         }
         let actualRawID = currentRawAudioTrackID
         audioRecoveryRawID = pending.previousRawID
         audioRecoveryPending = actualRawID != pending.previousRawID
+        audioRecoveryCatalogGeneration = pending.catalogGeneration
         captureAudioBaseline()
         selectedAudioID = pending.previousID
         if wantsPause, !isLoading {
@@ -692,8 +773,14 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
 #endif
     }
 
-    private func applyAudioTrack(id: String, rawID: Int32, rememberPreference: Bool) -> Bool {
+    private func applyAudioTrack(id: String,
+                                 rawID: Int32,
+                                 catalogGeneration: UInt64,
+                                 rememberPreference: Bool) -> Bool {
         guard currentURL != nil, failure == nil,
+              let catalog = audioCatalogGeneration,
+              catalog.generation == catalogGeneration,
+              catalog.contains(optionID: id, rawID: rawID),
               let mappedRawID = audioTrackIDsByOptionID[id], mappedRawID == rawID,
               let option = audioOptions.first(where: { $0.id == id }) else { return false }
 
@@ -715,12 +802,19 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
         let pending = PendingAudioSelection(
             id: id,
             rawID: rawID,
+            catalogGeneration: catalogGeneration,
             previousID: selectedAudioID,
             previousRawID: previousRawID,
             rememberPreference: rememberPreference,
             startedAt: Date()
         )
         pendingAudioSelection = pending
+        if rememberPreference {
+            // A deliberate, current-generation choice dismisses the stale
+            // catalog-change notice immediately; a failed ACK reports its own
+            // error through resolvePendingAudioSelection.
+            audioSelectionError = nil
+        }
         captureAudioBaseline()
         if wantsPause {
             player.audio?.isMuted = true
@@ -865,7 +959,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
                 let elapsed = lastLogUptime.map { uptime - $0 } ?? 0
                 let rate = elapsed > 0 && pictures >= lastLogPictures
                     ? String(format: "%.1f", Double(pictures - lastLogPictures) / elapsed) : "n/a"
-                print("RingonomiTVLive: pictures=\(pictures) loading=\(isLoading) muted=\(player.audio?.isMuted == true) uptime=\(uptime) timeMS=\(player.time.intValue) fps=\(rate) state=\(player.state.rawValue)")
+                print("RingonomiTVLive: pictures=\(pictures) loading=\(isLoading) muted=\(player.audio?.isMuted == true) uptime=\(uptime) timeMS=\(player.time.intValue) fps=\(rate) state=\(player.state.rawValue) decodedAudio=\(decodedAudio) playedAudio=\(playedAudioBuffers) baselineDecoded=\(audioBaselineDecoded) baselinePlayed=\(audioBaselinePlayed) baselinePending=\(audioBaselinePending) freshAudio=\(audioNeedsFreshBuffers)")
                 lastLogUptime = uptime
                 lastLogPictures = pictures
             }
