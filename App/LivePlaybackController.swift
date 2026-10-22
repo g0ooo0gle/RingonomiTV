@@ -959,7 +959,7 @@ final class PlaybackController: NSObject, ObservableObject, VLCMediaPlayerDelega
                 let elapsed = lastLogUptime.map { uptime - $0 } ?? 0
                 let rate = elapsed > 0 && pictures >= lastLogPictures
                     ? String(format: "%.1f", Double(pictures - lastLogPictures) / elapsed) : "n/a"
-                print("RingonomiTVLive: pictures=\(pictures) loading=\(isLoading) muted=\(player.audio?.isMuted == true) uptime=\(uptime) timeMS=\(player.time.intValue) fps=\(rate) state=\(player.state.rawValue)")
+                print("RingonomiTVLive: pictures=\(pictures) loading=\(isLoading) muted=\(player.audio?.isMuted == true) uptime=\(uptime) timeMS=\(player.time.intValue) fps=\(rate) state=\(player.state.rawValue) decodedAudio=\(decodedAudio) playedAudio=\(playedAudioBuffers) baselineDecoded=\(audioBaselineDecoded) baselinePlayed=\(audioBaselinePlayed) baselinePending=\(audioBaselinePending) freshAudio=\(audioNeedsFreshBuffers)")
                 lastLogUptime = uptime
                 lastLogPictures = pictures
             }
