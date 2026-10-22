@@ -24,6 +24,109 @@ public struct PlaybackAudioDescriptor: Equatable, Sendable {
     }
 }
 
+/// A generation-scoped view of the native audio tracks.
+///
+/// VLC may reuse an engine track identifier after a broadcast track list is
+/// rebuilt.  A `PlaybackAudioOption` created by `PlaybackAudioCatalog.options`
+/// intentionally remains source-scoped for compatibility, so controllers that
+/// keep a menu open must use this type.  Its option IDs include the catalog
+/// generation and therefore cannot be accepted after the native list changes.
+public struct PlaybackAudioCatalogGeneration: Equatable, Sendable {
+    public let sourceID: UUID
+    public let generation: UInt64
+    public let options: [PlaybackAudioOption]
+    public let isUsable: Bool
+
+    private let rawIDsByOptionID: [String: Int32]
+    private let normalizedSignature: [NormalizedEntry]
+    private let wasOversized: Bool
+
+    fileprivate struct NormalizedEntry: Equatable, Sendable {
+        let trackID: Int
+        let name: String?
+    }
+
+    /// Creates the first generation for a native source. Empty and oversized
+    /// lists are represented as unusable generations so a controller can drop
+    /// pending/recovery state immediately instead of retaining stale IDs.
+    public init(sourceID: UUID, descriptors: [PlaybackAudioDescriptor]) {
+        self.init(sourceID: sourceID, descriptors: descriptors, generation: 1)
+    }
+
+    private init(sourceID: UUID,
+                 descriptors: [PlaybackAudioDescriptor],
+                 generation: UInt64) {
+        self.sourceID = sourceID
+        self.generation = generation
+        self.wasOversized = descriptors.count > PlaybackAudioCatalog.maximumTracks
+
+        let normalized = PlaybackAudioCatalog.normalizedEntries(from: descriptors)
+        self.normalizedSignature = normalized
+
+        guard !wasOversized else {
+            self.options = []
+            self.rawIDsByOptionID = [:]
+            self.isUsable = false
+            return
+        }
+
+        var builtOptions: [PlaybackAudioOption] = []
+        var rawIDs: [String: Int32] = [:]
+        builtOptions.reserveCapacity(normalized.count)
+        for entry in normalized {
+            // Native VLC track indices are Int32. Do not expose an option
+            // that can never be sent back to the engine.
+            guard let rawID = Int32(exactly: entry.trackID) else { continue }
+            let optionID = PlaybackAudioCatalog.generationOptionID(
+                sourceID: sourceID,
+                generation: generation,
+                trackID: entry.trackID
+            )
+            let displayName = entry.name ?? "音声 \(builtOptions.count + 1)"
+            let option = PlaybackAudioOption(
+                id: optionID,
+                name: displayName,
+                preferenceKey: entry.name
+            )
+            builtOptions.append(option)
+            rawIDs[optionID] = rawID
+        }
+        self.options = builtOptions
+        self.rawIDsByOptionID = rawIDs
+        self.isUsable = !builtOptions.isEmpty
+    }
+
+    /// Returns this generation unchanged for an identical normalized catalog,
+    /// or a new generation when source, track ID, label, or order changes.
+    public func replacing(sourceID: UUID,
+                          descriptors: [PlaybackAudioDescriptor]) -> Self {
+        let candidateSignature = PlaybackAudioCatalog.normalizedEntries(from: descriptors)
+        let candidateOversized = descriptors.count > PlaybackAudioCatalog.maximumTracks
+        guard sourceID != self.sourceID
+                || candidateSignature != normalizedSignature
+                || candidateOversized != wasOversized else {
+            return self
+        }
+        return Self(sourceID: sourceID,
+                    descriptors: descriptors,
+                    generation: generation &+ 1)
+    }
+
+    /// The native ID corresponding to a current-generation option ID.
+    public func rawID(for optionID: String) -> Int32? {
+        rawIDsByOptionID[optionID]
+    }
+
+    /// Returns whether an option/raw-ID pair belongs to this exact generation.
+    public func contains(optionID: String, rawID: Int32? = nil) -> Bool {
+        guard let mapped = rawIDsByOptionID[optionID] else { return false }
+        return rawID == nil || rawID == mapped
+    }
+
+    public var isEmpty: Bool { options.isEmpty }
+    public var isOversized: Bool { wasOversized }
+}
+
 /// The choice is restored by a unique label, never by a reused engine ID.
 public enum PlaybackAudioPreferenceMatch: Equatable, Sendable {
     case notRequested
@@ -52,17 +155,31 @@ public enum PlaybackAudioPreferenceMatch: Equatable, Sendable {
 public enum PlaybackAudioCatalog {
     public static let maximumTracks = 64
 
+    fileprivate static func generationOptionID(sourceID: UUID,
+                                                generation: UInt64,
+                                                trackID: Int) -> String {
+        "\(sourceID.uuidString):g\(generation):\(trackID)"
+    }
+
+    fileprivate static func normalizedEntries(from descriptors: [PlaybackAudioDescriptor])
+        -> [PlaybackAudioCatalogGeneration.NormalizedEntry] {
+        var seen = Set<Int>()
+        return descriptors.compactMap { descriptor in
+            guard descriptor.trackID >= 0,
+                  seen.insert(descriptor.trackID).inserted else { return nil }
+            let name = descriptor.name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return .init(trackID: descriptor.trackID, name: name.isEmpty ? nil : name)
+        }
+    }
+
     /// The source identity prevents a menu left open during a reload from
     /// selecting an unrelated track whose engine ID happens to be reused.
     public static func options(sourceID: UUID, descriptors: [PlaybackAudioDescriptor]) -> [PlaybackAudioOption] {
         guard descriptors.count <= maximumTracks else { return [] }
-        var seen = Set<Int>()
-        return descriptors.compactMap { descriptor in
-            guard descriptor.trackID >= 0, seen.insert(descriptor.trackID).inserted else { return nil }
-            let name = descriptor.name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            return PlaybackAudioOption(id: "\(sourceID.uuidString):\(descriptor.trackID)",
-                                       name: name.isEmpty ? "音声 \(seen.count)" : name,
-                                       preferenceKey: name.isEmpty ? nil : name)
+        return normalizedEntries(from: descriptors).enumerated().map { offset, entry in
+            PlaybackAudioOption(id: "\(sourceID.uuidString):\(entry.trackID)",
+                                name: entry.name ?? "音声 \(offset + 1)",
+                                preferenceKey: entry.name)
         }
     }
 
